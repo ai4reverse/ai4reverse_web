@@ -129,17 +129,99 @@ test('the CLI cookbook script exits successfully', async () => {
   assert.match(stdout, /JSVMP tracing summary/)
 })
 
-test('examples/README documents every example', async () => {
-  const readme = await readFile(`${EXAMPLES}/README.md`, 'utf8')
-  // `examples/` is not exclusively ours: a checkout may contain extra
-  // directories (a vendored corpus, `products/`) that are not example sources.
-  // Only regular, non-hidden files are part of the documentation contract.
+/** `git ls-files examples` result, memoised: every contract test needs it. */
+let trackedListing
+
+/**
+ * Top-level entries under `examples/` that git tracks, or `null` when git
+ * cannot answer (no git binary, or not a work tree).
+ *
+ * Tracked entries are the documentation contract because they are the only
+ * entries that are part of the repository: a checkout may hold extra untracked
+ * corpora (`products/`, `mega/`, a vendored sample dump) that no README can be
+ * expected to describe.
+ * @returns {Promise<string[]|null>}
+ */
+function trackedTopLevelEntries() {
+  trackedListing ??= (async () => {
+    try {
+      const { stdout } = await exec('git', ['ls-files', '-z', '--', 'examples'], { cwd: ROOT })
+      const names = stdout
+        .split('\0')
+        .filter(Boolean)
+        .map((path) => path.split('/')[1])
+        .filter(Boolean)
+      return names.length > 0 ? [...new Set(names)].sort() : null
+    } catch {
+      return null
+    }
+  })()
+  return trackedListing
+}
+
+/** Regular, non-hidden files directly under `examples/`. */
+async function exampleFiles() {
   const entries = await readdir(EXAMPLES, { withFileTypes: true })
-  const files = entries
-    .filter((entry) => entry.isFile() && !entry.name.startsWith('.') && entry.name !== 'README.md')
+  return entries
+    .filter((entry) => entry.isFile() && !entry.name.startsWith('.'))
     .map((entry) => entry.name)
-  assert.ok(files.length > 0, 'examples/ has no example sources')
-  for (const name of files) {
-    assert.ok(readme.includes(name), `examples/README.md does not mention ${name}`)
-  }
+    .sort()
+}
+
+/**
+ * Names `examples/README.md` must mention. Files and directories both count: a
+ * committed corpus directory is as much a documented example as a single file.
+ * Without git only the file listing is observable, so the contract degrades to
+ * regular files instead of silently passing.
+ * @param {string[]|null} tracked tracked top-level names, or null without git
+ * @param {string[]} files regular files found on disk
+ * @returns {string[]}
+ */
+function contractEntries(tracked, files) {
+  return (tracked ?? files).filter((name) => name !== 'README.md' && !name.startsWith('.'))
+}
+
+/**
+ * @param {string} readme examples/README.md contents
+ * @param {string[]} entries names that must be mentioned
+ * @returns {string[]} entries the README never mentions
+ */
+function undocumentedEntries(readme, entries) {
+  return entries.filter((name) => !readme.includes(name))
+}
+
+test('examples/README documents every tracked example', async () => {
+  const readme = await readFile(`${EXAMPLES}/README.md`, 'utf8')
+  const entries = contractEntries(await trackedTopLevelEntries(), await exampleFiles())
+  assert.ok(entries.length > 0, 'examples/ has no example sources')
+  assert.deepEqual(undocumentedEntries(readme, entries), [], 'examples/README.md is missing tracked examples')
+})
+
+test('a tracked example directory the README omits fails the contract', async () => {
+  const readme = await readFile(`${EXAMPLES}/README.md`, 'utf8')
+  // Simulated listing: no real files are added to examples/. A committed
+  // directory must be documented exactly like a committed file, which is what
+  // the file-only version of this test stopped enforcing (audit F1).
+  const simulatedTracked = ['benign.js', 'synthetic-corpus']
+  assert.deepEqual(contractEntries(simulatedTracked, []), simulatedTracked)
+  assert.deepEqual(undocumentedEntries(readme, simulatedTracked), ['synthetic-corpus'])
+  // The no-git fallback cannot see directories, which is why git is preferred.
+  assert.deepEqual(contractEntries(null, ['benign.js']), ['benign.js'])
+})
+
+test('untracked working-tree directories stay outside the contract', async () => {
+  const tracked = await trackedTopLevelEntries()
+  const onDisk = await readdir(EXAMPLES)
+  const contract = contractEntries(tracked, await exampleFiles())
+  // Simulated: an untracked corpus directory next to the documented examples.
+  const simulatedTracked = ['benign.js', 'national-sdk']
+  const simulatedDisk = ['benign.js', 'vendored-corpus']
+  assert.deepEqual(contractEntries(simulatedTracked, simulatedDisk), simulatedTracked)
+  if (tracked === null) return
+  const untracked = onDisk.filter((name) => !tracked.includes(name))
+  assert.deepEqual(
+    untracked.filter((name) => contract.includes(name)),
+    [],
+    `untracked directories leaked into the documentation contract: ${untracked.join(',')}`,
+  )
 })
