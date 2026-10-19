@@ -147,3 +147,44 @@ test('the declaration files are published, self-contained and parse as ES module
     }
   }
 })
+
+/**
+ * Settle/limits drift gate.
+ *
+ * A classified stack breach inside a timer or promise callback lives on
+ * `SandboxRunRecord.settle`; typing that field as `unknown` (or dropping
+ * `SandboxDisposal.skipped`) hands the consumer a shape it cannot narrow, which
+ * is the same lie as an undeclared export. This pins the names, not the layout.
+ */
+test('the run record types the event-loop settle outcome and its abandon marker', async () => {
+  const source = await readTypes('ai4reverse.d.ts')
+  const { types } = exportedNames(source)
+  for (const name of ['SandboxSettle', 'SandboxSettleDrained', 'SandboxSettleError', 'SandboxRunRecord']) {
+    assert.ok(types.has(name), `types/ai4reverse.d.ts must declare ${name}`)
+  }
+
+  /** Body of one `export interface Name { ... }` block. */
+  const bodyOf = (declaration) => {
+    // The brace keeps `SandboxDisposal` from matching `SandboxDisposalError`.
+    const start = source.indexOf(`export interface ${declaration} {`)
+    assert.ok(start >= 0, `missing declaration for ${declaration}`)
+    const end = source.indexOf('\n}', start)
+    return source.slice(start, end)
+  }
+
+  const record = bodyOf('SandboxRunRecord')
+  assert.match(record, /settle\?: SandboxSettle/, 'SandboxRunRecord.settle must name the settle shape')
+  assert.doesNotMatch(record, /settle\?: (unknown|object)\b/, 'SandboxRunRecord.settle must not be opaque')
+
+  const settle = bodyOf('SandboxSettleDrained')
+  for (const field of ['virtualMs', 'pendingTimers', 'jobs', 'limitsHit', 'error']) {
+    assert.match(settle, new RegExp(`\\b${field}\\??:`), `SandboxSettleDrained must declare ${field}`)
+  }
+
+  const error = bodyOf('SandboxSettleError')
+  for (const field of ['origin', 'name', 'message']) {
+    assert.match(error, new RegExp(`\\b${field}:`), `SandboxSettleError must declare ${field}`)
+  }
+
+  assert.match(bodyOf('SandboxDisposal'), /skipped\?: boolean/, 'SandboxDisposal.skipped must be declared')
+})

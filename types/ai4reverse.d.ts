@@ -494,6 +494,70 @@ export interface SandboxDisposal {
   errors: SandboxDisposalError[]
   leaked?: boolean
   stage?: string | null
+  /**
+   * The runtime was abandoned instead of disposed because a stack-limit breach
+   * left handles on its GC list; disposing it would abort the WASM engine. The
+   * module is quarantined and the next run recompiles it.
+   */
+  skipped?: boolean
+}
+
+/**
+ * The event-loop failure that stopped settlement.
+ *
+ * `origin` names the callback class that recursed (`'timer'`, `'promise-job'`
+ * or `'microtask'`), which is the only attribution available when the entry
+ * script itself succeeded.
+ */
+export interface SandboxSettleError {
+  origin: string
+  name: string
+  message: string
+  stack?: string
+}
+
+/**
+ * Settlement that actually drained the event loop.
+ *
+ * `limitsHit` is `[]` unless a callback exhausted the stack; a stack breach is
+ * also the trigger for `SandboxDisposal.skipped`.
+ */
+export interface SandboxSettleDrained {
+  jobs: number
+  timerCallbacks: number
+  promiseErrors: number
+  /** A job/timer/virtual-time budget ran out before the queues were empty. */
+  exhausted: boolean
+  pendingTimers: number
+  virtualMs: number
+  limitsHit: string[]
+  error: SandboxSettleError | null
+}
+
+/**
+ * Settlement that never ran because the runtime was interrupted (`'timeout'`,
+ * `'virtual-time'`, `'aborted'`). Only the reason is known, so nothing else is
+ * promised.
+ */
+export interface SandboxSettleSkipped {
+  skipped: true
+  reason: string
+}
+
+/**
+ * Outcome of the event-loop drain after the entry script returned.
+ *
+ * This is where a stack breach inside a timer or promise callback is recorded:
+ * the script succeeded, so `SandboxRunRecord.ok` stays true while `limitsHit`
+ * gains `'stack'` and the runtime is abandoned rather than disposed.
+ */
+export type SandboxSettle = SandboxSettleDrained | SandboxSettleSkipped
+
+/** Per-run overrides for the event-loop budgets used by settlement. */
+export interface SandboxSettleOptions {
+  maxJobs?: number
+  maxTimerCallbacks?: number
+  maxVirtualMs?: number
 }
 
 export interface IntegritySnapshot {
@@ -557,7 +621,11 @@ export interface SandboxRunRecord {
   filename?: string
   durationMs: number
   virtualMs: number
-  settle?: unknown
+  /**
+   * Event-loop outcome. Absent when the run never reached the event loop (a
+   * failed run record), because no settlement was attempted.
+   */
+  settle?: SandboxSettle | null
   facts?: StaticFacts | null
   vm?: object | null
   instrumentation?: { stats: InstrumentedCode['stats'] | null; describe: InstrumentationDescribe } | object
@@ -602,7 +670,7 @@ export interface SandboxRunOptions {
   keepTrace?: boolean
   mocks?: unknown[]
   network?: object
-  settle?: object
+  settle?: SandboxSettleOptions
   hooks?: HookDescriptor[]
 }
 
@@ -956,7 +1024,7 @@ export interface AnalyzeSampleOptions extends SandboxOptions {
   keepTrace?: boolean
   mocks?: unknown[]
   network?: object
-  settle?: object
+  settle?: SandboxSettleOptions
   strictEnv?: boolean
   jsvmpAnalysis?: boolean
   generateOptions?: object
