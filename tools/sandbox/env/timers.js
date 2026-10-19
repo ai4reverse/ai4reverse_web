@@ -13,6 +13,8 @@ export function install(bridge) {
   const { ctx, clock } = bridge
   /** @type {Map<number, {handle?: object, source?: string, interval: boolean, args: unknown[]}>} */
   const registry = new Map()
+  /** Timer ids whose callback is currently on the stack. */
+  const active = new Set()
   const microtasks = []
   // queueMicrotask must share the promise job queue so FIFO ordering with
   // `Promise.resolve().then(...)` is preserved. This guest helper does the
@@ -28,39 +30,78 @@ export function install(bridge) {
     return values
   }
 
-  const invoke = (entry, id) => {
-    if (!entry) return
-    if (entry.source !== undefined) {
-      // Browsers accept a string of code as a timer callback.
-      const result = ctx.evalCode(entry.source, 'about:blank')
-      if (result.error) {
-        const dumped = bridge.fromGuest(result.error)
-        result.error.dispose()
-        bridge.emit('exception', 'uncaught', { origin: 'timer', timerId: id, error: dumped })
-      } else {
-        result.value.dispose()
-      }
+  /**
+   * Dispose a callback handle, or defer it while its own call is on the stack.
+   * QuickJS corrupts its handle list when a function handle is disposed while
+   * the engine is still executing it, so a self-clearing timer may only mark
+   * the entry and `finishCallback` completes the disposal afterwards.
+   * @param {number} id
+   * @param {{handle?: object, pendingDispose?: boolean}} entry
+   */
+  const releaseHandle = (id, entry) => {
+    if (!entry?.handle) return
+    if (active.has(id)) {
+      entry.pendingDispose = true
       return
     }
-    const argHandles = []
+    entry.handle.dispose()
+    entry.handle = null
+  }
+
+  /**
+   * Bookkeeping once a callback returned: a one-shot timer is always released
+   * (it will never fire again) and a cleared interval finishes its deferred
+   * disposal. Both happen after the guest call returned, never inside it.
+   * @param {number} id
+   * @param {object} entry
+   */
+  const finishCallback = (id, entry) => {
+    active.delete(id)
+    if (!entry.interval) {
+      if (entry.handle) {
+        entry.handle.dispose()
+        entry.handle = null
+      }
+      if (registry.get(id) === entry) registry.delete(id)
+    } else if (entry.pendingDispose) {
+      releaseHandle(id, entry)
+    }
+  }
+
+  const invoke = (entry, id) => {
+    if (!entry) return
+    active.add(id)
     try {
-      for (const value of entry.args) argHandles.push(bridge.toGuest(value))
-      const result = ctx.callFunction(entry.handle, bridge.global, argHandles)
-      if (result.error) {
-        const dumped = bridge.fromGuest(result.error)
-        result.error.dispose()
-        bridge.emit('exception', 'uncaught', { origin: 'timer', timerId: id, error: dumped })
-      } else {
-        result.value.dispose()
+      if (entry.source !== undefined) {
+        // Browsers accept a string of code as a timer callback.
+        const result = ctx.evalCode(entry.source, 'about:blank')
+        if (result.error) {
+          const dumped = bridge.fromGuest(result.error)
+          result.error.dispose()
+          bridge.emit('exception', 'uncaught', { origin: 'timer', timerId: id, error: dumped })
+        } else {
+          result.value.dispose()
+        }
+        return
+      }
+      const argHandles = []
+      try {
+        for (const value of entry.args) argHandles.push(bridge.toGuest(value))
+        const result = ctx.callFunction(entry.handle, bridge.global, argHandles)
+        if (result.error) {
+          const dumped = bridge.fromGuest(result.error)
+          result.error.dispose()
+          bridge.emit('exception', 'uncaught', { origin: 'timer', timerId: id, error: dumped })
+        } else {
+          result.value.dispose()
+        }
+      } finally {
+        for (const handle of argHandles) {
+          if (handle && typeof handle.dispose === 'function') handle.dispose()
+        }
       }
     } finally {
-      for (const handle of argHandles) {
-        if (handle && typeof handle.dispose === 'function') handle.dispose()
-      }
-      if (!entry.interval && entry.handle) {
-        entry.handle.dispose()
-        registry.delete(id)
-      }
+      finishCallback(id, entry)
     }
   }
 
@@ -113,8 +154,10 @@ export function install(bridge) {
     bridge.fn(name, 1, ({ args }) => {
       const id = bridge.num(args, 0, 0)
       const entry = registry.get(id)
-      if (entry?.handle) entry.handle.dispose()
-      registry.delete(id)
+      if (entry) {
+        releaseHandle(id, entry)
+        registry.delete(id)
+      }
       clock.cancel(id)
       bridge.emit('timer', 'exit', { api: name, id })
       return ctx.undefined
@@ -142,14 +185,17 @@ export function install(bridge) {
         fn: () => {
           const entry = registry.get(id)
           if (!entry) return
-          const timestamp = clock.performanceNow()
-          const argHandle = bridge.toGuest(timestamp)
-          const result = ctx.callFunction(entry.handle, bridge.global, [argHandle])
-          argHandle.dispose()
-          if (result.error) result.error.dispose()
-          else result.value.dispose()
-          entry.handle?.dispose()
-          registry.delete(id)
+          active.add(id)
+          try {
+            const timestamp = clock.performanceNow()
+            const argHandle = bridge.toGuest(timestamp)
+            const result = ctx.callFunction(entry.handle, bridge.global, [argHandle])
+            argHandle.dispose()
+            if (result.error) result.error.dispose()
+            else result.value.dispose()
+          } finally {
+            finishCallback(id, entry)
+          }
         },
       })
       const entry = { interval: false, args: [], handle: callback?.dup?.(), source: undefined }
@@ -166,8 +212,10 @@ export function install(bridge) {
     bridge.fn('cancelAnimationFrame', 1, ({ args }) => {
       const id = bridge.num(args, 0, 0)
       const entry = registry.get(id)
-      entry?.handle?.dispose()
-      registry.delete(id)
+      if (entry) {
+        releaseHandle(id, entry)
+        registry.delete(id)
+      }
       clock.cancel(id)
       return ctx.undefined
     }),
@@ -207,14 +255,21 @@ export function install(bridge) {
         fn: () => {
           const entry = registry.get(id)
           if (!entry) return
-          const deadline = bridge.obj({ didTimeout: true, timeRemaining: () => 0 })
-          const argHandle = bridge.toGuest(deadline)
-          const result = ctx.callFunction(entry.handle, bridge.global, [argHandle])
-          argHandle.dispose()
-          if (result.error) result.error.dispose()
-          else result.value.dispose()
-          entry.handle?.dispose()
-          registry.delete(id)
+          active.add(id)
+          const deadline = ctx.newObject()
+          try {
+            ctx.setProp(deadline, 'didTimeout', ctx.true)
+            // `timeRemaining` has to be a guest function: `bridge.toGuest`
+            // refuses host closures, and a plain `() => 0` used to make every
+            // idle callback throw before it ran.
+            ctx.setProp(deadline, 'timeRemaining', bridge.fn('timeRemaining', 0, () => ctx.newNumber(0)))
+            const result = ctx.callFunction(entry.handle, bridge.global, [deadline])
+            if (result.error) result.error.dispose()
+            else result.value.dispose()
+          } finally {
+            deadline.dispose()
+            finishCallback(id, entry)
+          }
         },
       })
       registry.set(id, { interval: false, args: [], handle: callback?.dup?.() })
@@ -228,8 +283,11 @@ export function install(bridge) {
     'cancelIdleCallback',
     bridge.fn('cancelIdleCallback', 1, ({ args }) => {
       const id = bridge.num(args, 0, 0)
-      registry.get(id)?.handle?.dispose()
-      registry.delete(id)
+      const entry = registry.get(id)
+      if (entry) {
+        releaseHandle(id, entry)
+        registry.delete(id)
+      }
       clock.cancel(id)
       return ctx.undefined
     }),
