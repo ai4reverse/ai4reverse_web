@@ -131,7 +131,14 @@ test('the CLI cookbook script exits successfully', async () => {
 
 test('examples/README documents every example', async () => {
   const readme = await readFile(`${EXAMPLES}/README.md`, 'utf8')
-  const files = (await readdir(EXAMPLES)).filter((name) => name !== 'README.md')
+  // `examples/` is not exclusively ours: a checkout may contain extra
+  // directories (a vendored corpus, `products/`) that are not example sources.
+  // Only regular, non-hidden files are part of the documentation contract.
+  const entries = await readdir(EXAMPLES, { withFileTypes: true })
+  const files = entries
+    .filter((entry) => entry.isFile() && !entry.name.startsWith('.') && entry.name !== 'README.md')
+    .map((entry) => entry.name)
+  assert.ok(files.length > 0, 'examples/ has no example sources')
   for (const name of files) {
     assert.ok(readme.includes(name), `examples/README.md does not mention ${name}`)
   }
