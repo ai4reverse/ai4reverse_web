@@ -25,11 +25,13 @@ Usage:
   ai4reverse run <file> [options]         single dynamic run, trace summary
   ai4reverse passes [--json]              list restoration passes
   ai4reverse version
+  ai4reverse --help
 
 Options (analyze/run):
   --json                 emit machine-readable JSON on stdout
   --out <path>           write result to a file ("-" for stdout)
-  --seed <value>         profile/PRNG seed (default 0x5eed)
+  --seed <value>         profile/PRNG seed, decimal or 0x-prefixed hex
+                         (default 0x5eed)
   --timeout <ms>         host wall-clock limit per run (default 5000)
   --virtual-ms <ms>      virtual time budget (default 60000)
   --level <level>        instrumentation level: off|function|branch|statement
@@ -38,7 +40,9 @@ Options (analyze/run):
   --run-restored         also execute restored code for comparison
   --source-url <url>     original script URL (used for stack fidelity + IOCs)
   --entry <name>         call a global function after evaluation
-  --arg <json>           JSON argument for --entry (repeatable)
+  --arg <value>          argument for --entry (repeatable). Parsed as JSON when
+                         it is valid JSON, otherwise passed as a string, so
+                         --arg 42 is a number and --arg hello is "hello"
   --profile <json>       profile overrides, e.g. '{"os":"macos","locale":"en-US"}'
   --mocks <json>         API mocks: [{"api":"fetch","response":{"ok":false}}]
   --log-level <level>    pino level (default warn)
@@ -47,14 +51,34 @@ Options (analyze/run):
 Options (restore):
   --passes <ids>         comma-separated pass ids (default: all)
   --exclude <ids>        comma-separated pass ids to skip
-  --rounds <n>           pipeline rounds (default 2)
+  --rounds <n>           pipeline rounds, integer 1-5 (default 2)
+
+Option values are validated: an unknown option, an unknown pass id, a bad
+--level or a malformed number is a usage error (exit 2) with the message on
+stderr and nothing on stdout.
+
+Exit codes:
+  0  success
+  1  analysis/run failed, or an unexpected error
+  2  usage error (bad arguments, unreadable input, unwritable --out)
 `
+
+/** Options that are validated against a closed set at parse time. */
+const LEVELS = ['off', 'function', 'branch', 'statement']
+/** `restore` pipeline rounds: more than five never reaches a new fixed point. */
+const MAX_ROUNDS = 5
+
+function passIds() {
+  return listPasses().map((pass) => pass.id)
+}
 
 function parseCli(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
-    strict: false,
+    // Strict parsing: an unknown option is a typo, and a silently ignored typo
+    // changes what evidence is produced. Fail instead of guessing.
+    strict: true,
     options: {
       json: { type: 'boolean', default: false },
       out: { type: 'string' },
@@ -76,7 +100,7 @@ function parseCli(argv) {
       exclude: { type: 'string' },
       rounds: { type: 'string' },
       events: { type: 'boolean', default: false },
-      help: { type: 'boolean', default: false },
+      help: { type: 'boolean', short: 'h', default: false },
     },
   })
   return { values, positionals }
@@ -108,11 +132,86 @@ function numericOption(name, text) {
   return value
 }
 
+/**
+ * Validate `--seed`. Only decimal and 0x-prefixed hex integers are accepted;
+ * the text is passed through untouched because the seed is hashed as a string
+ * downstream, so accepting it verbatim keeps existing seeds reproducible.
+ *
+ * @param {string|undefined} text
+ * @returns {string|undefined}
+ */
+function seedOption(text) {
+  if (text === undefined) return undefined
+  if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(String(text).trim())) {
+    throw new UsageError(`--seed must be a decimal or 0x-prefixed hex integer, got ${JSON.stringify(text)}`)
+  }
+  return text
+}
+
+/**
+ * Validate `--rounds` as an integer in `[1, MAX_ROUNDS]`. A non-numeric value
+ * used to become `NaN` and silently skip the pipeline.
+ *
+ * @param {string|undefined} text
+ * @returns {number|undefined}
+ */
+function roundsOption(text) {
+  if (text === undefined) return undefined
+  const raw = String(text).trim()
+  const rounds = /^[0-9]+$/.test(raw) ? Number(raw) : Number.NaN
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > MAX_ROUNDS) {
+    throw new UsageError(`--rounds must be an integer between 1 and ${MAX_ROUNDS}, got ${JSON.stringify(text)}`)
+  }
+  return rounds
+}
+
+/**
+ * Validate `--level` against the instrumentation levels the guest supports.
+ * Unknown levels previously fell back to `statement` without a warning.
+ *
+ * @param {string|undefined} text
+ * @returns {string|undefined}
+ */
+function levelOption(text) {
+  if (text === undefined) return undefined
+  const level = String(text)
+  if (!LEVELS.includes(level)) {
+    throw new UsageError(`--level must be one of ${LEVELS.join('|')}, got ${JSON.stringify(text)}`)
+  }
+  return level
+}
+
+/**
+ * Validate a comma-separated pass id list against the pass registry, so an
+ * unknown id fails instead of producing an unmodified "restored" file.
+ *
+ * @param {string} name - option name, for the message
+ * @param {string|undefined} text
+ * @returns {string[]|null} `null` when the option was not supplied
+ */
+function passListOption(name, text) {
+  if (text === undefined) return null
+  const ids = String(text).split(',').map((item) => item.trim()).filter(Boolean)
+  if (ids.length === 0) return null
+  const valid = passIds()
+  const unknown = ids.filter((id) => !valid.includes(id))
+  if (unknown.length > 0) {
+    throw new UsageError(`unknown pass id for --${name}: ${unknown.join(', ')} (valid: ${valid.join(', ')})`)
+  }
+  return ids
+}
+
 class UsageError extends Error {}
 
 async function emitResult(text, options) {
   if (options.out && options.out !== '-') {
-    await writeFile(options.out, text)
+    try {
+      await writeFile(options.out, text)
+    } catch (error) {
+      // An unwritable --out would otherwise surface as a stack trace and exit 1
+      // with the analysis already done; report it as the usage error it is.
+      throw new UsageError(`cannot write ${options.out}: ${error.code ?? error.message}`)
+    }
     process.stderr.write(`wrote ${Buffer.byteLength(text)} bytes to ${options.out}\n`)
     return
   }
@@ -134,6 +233,19 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const command = positionals[0]
   const file = positionals[1]
+  // Validate every closed-set option before a file is read or analysis starts.
+  // A typo must never produce a result: batch pipelines treat a silent default
+  // as evidence.
+  const settings = {
+    seed: seedOption(values.seed),
+    rounds: roundsOption(values.rounds),
+    level: levelOption(values.level),
+    passes: passListOption('passes', values.passes),
+    exclude: passListOption('exclude', values.exclude),
+    // Malformed numbers are usage errors too, and they are checked before any
+    // file is read rather than when the limit object is finally built.
+    limits: buildLimits(values),
+  }
   // Results go to stdout; every diagnostic belongs on stderr so
   // `ai4reverse analyze --json | jq` stays parseable.
   const logger = createLogger({ level: values['log-level'], pretty: values.pretty, destination: 2 })
@@ -162,12 +274,12 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'restore') {
     const source = await readSource(file)
     const selection = {
-      only: values.passes ? String(values.passes).split(',').map((item) => item.trim()).filter(Boolean) : null,
-      exclude: values.exclude ? String(values.exclude).split(',').map((item) => item.trim()).filter(Boolean) : [],
+      only: settings.passes,
+      exclude: settings.exclude ?? [],
     }
     const result = restore(source, {
       ...selection,
-      maxRounds: values.rounds ? Number(values.rounds) : 2,
+      maxRounds: settings.rounds ?? 2,
       filename: file,
       logger,
     })
@@ -186,8 +298,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (command === 'run') {
     const source = await readSource(file)
     const sandbox = await TracelessSandbox.create({
-      seed: values.seed ?? 0x5eed,
-      limits: buildLimits(values),
+      seed: settings.seed ?? 0x5eed,
+      limits: settings.limits,
       logger,
       env: { strict: false },
     })
@@ -195,7 +307,7 @@ export async function main(argv = process.argv.slice(2)) {
       const run = await sandbox.run(source, {
         sourceUrl: values['source-url'],
         filename: file,
-        level: values.level,
+        level: settings.level,
         entry: values.entry,
         args: (values.arg ?? []).map(parseJsonArg),
       })
@@ -231,18 +343,18 @@ export async function main(argv = process.argv.slice(2)) {
     const result = await analyzeSample(source, {
       name: file,
       sourceUrl: values['source-url'],
-      seed: values.seed ?? 0x5eed,
+      seed: settings.seed ?? 0x5eed,
       logger,
-      limits: buildLimits(values),
+      limits: settings.limits,
       dynamic: !values['no-dynamic'],
       restore: !values['no-restore'],
       runRestored: values['run-restored'],
-      level: values.level,
+      level: settings.level,
       entry: values.entry,
       args: (values.arg ?? []).map(parseJsonArg),
       profile: values.profile ? parseJsonOption('profile', values.profile) : undefined,
       mocks: values.mocks ? parseJsonOption('mocks', values.mocks) : undefined,
-      instrumentation: values.level ? { code: { level: values.level } } : undefined,
+      instrumentation: settings.level ? { code: { level: settings.level } } : undefined,
     })
     const output = values.json ? `${JSON.stringify(result.report, null, 2)}\n` : result.markdown
     await emitResult(output, values)
