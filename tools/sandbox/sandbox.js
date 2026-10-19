@@ -24,7 +24,10 @@ import { shortHash } from '../util/hash.js'
  *  - native-looking host functions and a masked `Function.prototype.toString`;
  *  - a trace channel reachable only through a run-unique registered symbol;
  *  - integrity snapshots before/after to prove nothing leaked in or out;
- *  - full handle disposal, verified by the WASM runtime's leak assertion.
+ *  - full handle disposal, verified by the WASM runtime's leak assertion;
+ *  - the exception is the stack-limit path, where the runtime cannot be
+ *    released at all: it is abandoned, the WASM module is quarantined and the
+ *    next run recompiles it (reported as `disposal.skipped`).
  */
 export class TracelessSandbox {
   /**
@@ -150,6 +153,8 @@ export class TracelessSandbox {
     let failure = null
     const disposalErrors = []
     let leaked = false
+    // Set when the runtime is abandoned instead of disposed (stack breach).
+    let skippedRuntime = false
     let phase = 'init'
 
     try {
@@ -339,6 +344,12 @@ export class TracelessSandbox {
       })
     } finally {
       hooks.emit('lifecycle:dispose', { runId })
+      // A stack-limit breach leaves handles on the runtime's GC list, so
+      // `runtime.dispose()` would abort the WASM engine and print
+      // `Aborted(Assertion failed: list_empty(&rt->gc_obj_list))` to stderr (see
+      // `runtime.js`). Abandon the runtime and quarantine the module instead;
+      // the run record still states the leak (`disposal.skipped`).
+      const stackBreach = Boolean(record?.limitsHit?.includes('stack'))
       // Reverse acquisition order; every step is independent, so one failing
       // disposal never skips the next one.
       for (const [label, fn] of [
@@ -347,6 +358,11 @@ export class TracelessSandbox {
         ['stealth', () => stealth?.dispose()],
         ['context', () => ctx?.dispose()],
         ['runtime', () => {
+          if (stackBreach && runtimeHandle) {
+            runtimeHandle.abandon()
+            skippedRuntime = true
+            return
+          }
           const result = runtimeHandle?.dispose()
           if (result && result.ok === false) {
             // `runtime.dispose()` returning not-ok means the WASM heap is
@@ -369,8 +385,14 @@ export class TracelessSandbox {
       // Failure shape is additive: successful disposals keep the existing
       // `{ ok: true, errors: [] }` contract, while a failed one also states
       // whether the WASM heap was corrupted (`leaked`) and at which stage.
-      const disposal = { ok: disposalErrors.length === 0, errors: disposalErrors }
-      if (!disposal.ok) {
+      const disposal = { ok: disposalErrors.length === 0 && !skippedRuntime, errors: disposalErrors }
+      if (skippedRuntime) {
+        // Outran the stack limit, so the runtime can never be released; the
+        // module was quarantined and the next run recompiles it.
+        disposal.leaked = true
+        disposal.stage = 'runtime'
+        disposal.skipped = true
+      } else if (!disposal.ok) {
         disposal.leaked = leaked
         disposal.stage = disposalErrors[0]?.stage ?? null
       }

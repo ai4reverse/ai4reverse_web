@@ -15,6 +15,28 @@ async function sandbox(options = {}) {
   })
 }
 
+/**
+ * Intercept both sinks the WASM engine can print an abort to: emscripten's
+ * `err()` uses `console.error`, a raw write uses `process.stderr.write`.
+ * @param {string[]} sink collected chunks
+ * @returns {() => void} restore hook
+ */
+function captureEngineOutput(sink) {
+  const originalWrite = process.stderr.write
+  const originalError = console.error
+  process.stderr.write = (chunk) => {
+    sink.push(String(chunk))
+    return true
+  }
+  console.error = (...args) => {
+    sink.push(args.map((item) => String(item)).join(' '))
+  }
+  return () => {
+    process.stderr.write = originalWrite
+    console.error = originalError
+  }
+}
+
 test('sandbox runs code and reports the last expression value', async () => {
   const sb = await sandbox()
   try {
@@ -59,15 +81,38 @@ test('host timeout interrupts an infinite loop and is classified', async () => {
   }
 })
 
-test('stack exhaustion is classified as a stack limit', async () => {
+test('stack exhaustion is classified as a stack limit and never aborts the engine', async () => {
   const sb = await sandbox()
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
   try {
     const run = await sb.run('function f(n){ return f(n + 1) } f(0)')
     assert.equal(run.ok, false)
     assert.match(`${run.error.name}: ${run.error.message}`, /stack|overflow|too deep/i)
+    assert.ok(run.limitsHit.includes('stack'), JSON.stringify(run.limitsHit))
+    // After stack exhaustion the runtime cannot be released at all, so it is
+    // abandoned and the module quarantined: `ok === false` plus an explicit
+    // leak marker, and no disposal error because nothing was attempted.
+    assert.deepEqual(
+      { ...run.disposal, errors: run.disposal.errors.length },
+      { ok: false, errors: 0, leaked: true, stage: 'runtime', skipped: true },
+    )
+
+    // The next run recompiles the module and disposes cleanly.
+    const next = await sb.run('1+1')
+    assert.equal(next.ok, true, JSON.stringify(next.error))
+    assert.equal(next.result.value, 2)
+    assert.deepEqual(next.disposal, { ok: true, errors: [] })
   } finally {
+    restoreEngine()
     sb.dispose()
   }
+
+  assert.deepEqual(
+    printed.filter((chunk) => /Aborted/i.test(chunk)),
+    [],
+    `engine abort printed to stderr: ${printed.join('')}`,
+  )
 })
 
 test('memory limit is enforced', async () => {

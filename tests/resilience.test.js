@@ -19,9 +19,33 @@ async function sandbox(options = {}) {
   })
 }
 
+/**
+ * Intercept both sinks the WASM engine can print an abort to: emscripten's
+ * `err()` uses `console.error`, a raw write uses `process.stderr.write`.
+ * @param {string[]} sink collected chunks
+ * @returns {() => void} restore hook
+ */
+function captureEngineOutput(sink) {
+  const originalWrite = process.stderr.write
+  const originalError = console.error
+  process.stderr.write = (chunk) => {
+    sink.push(String(chunk))
+    return true
+  }
+  console.error = (...args) => {
+    sink.push(args.map((item) => String(item)).join(' '))
+  }
+  return () => {
+    process.stderr.write = originalWrite
+    console.error = originalError
+  }
+}
+
 test(`${OVERFLOW_RUNS} consecutive stack overflows do not disable the sandbox (D1)`, async () => {
   const sb = await sandbox()
   const started = Date.now()
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
   try {
     const runs = []
     for (let i = 1; i <= OVERFLOW_RUNS; i++) {
@@ -35,18 +59,20 @@ test(`${OVERFLOW_RUNS} consecutive stack overflows do not disable the sandbox (D
         run.limitsHit.includes('stack'),
         `run ${i}: expected stack in limitsHit, got ${JSON.stringify(run.limitsHit)}`,
       )
+      assert.match(`${run.error?.name}: ${run.error?.message}`, /stack|overflow|too deep/i)
     }
 
-    // The leak is real and must stay visible: an engine-inherent aborted
-    // `runtime.dispose()` is reported, never hidden or retried into silence.
-    const leakedRun = runs.find((run) => run.disposal?.leaked === true)
-    assert.ok(leakedRun, 'expected at least one run to report disposal.leaked === true')
-    assert.equal(leakedRun.disposal.ok, false)
-    assert.equal(leakedRun.disposal.stage, 'runtime')
-    assert.ok(
-      leakedRun.disposal.errors.some((entry) => entry.stage === 'runtime'),
-      JSON.stringify(leakedRun.disposal.errors),
-    )
+    // The leak is real and must stay visible: the runtime cannot be released
+    // after stack exhaustion, so it is abandoned instead of disposed and the
+    // record says exactly that. Before the fix `runtime.dispose()` aborted the
+    // WASM engine (`list_empty(&rt->gc_obj_list)`) and printed the assertion.
+    for (const [index, run] of runs.entries()) {
+      assert.equal(run.disposal?.ok, false, `run ${index + 1}: disposal must report failure`)
+      assert.equal(run.disposal?.leaked, true, `run ${index + 1}: leak marker missing`)
+      assert.equal(run.disposal?.stage, 'runtime', `run ${index + 1}: wrong disposal stage`)
+      assert.equal(run.disposal?.skipped, true, `run ${index + 1}: disposal was not skipped`)
+      assert.deepEqual(run.disposal?.errors, [], `run ${index + 1}: a skipped disposal is not an error`)
+    }
 
     // The quarantine must give the process its analysis capability back.
     const normal = await sb.run('1+1')
@@ -58,8 +84,15 @@ test(`${OVERFLOW_RUNS} consecutive stack overflows do not disable the sandbox (D
     const elapsed = Date.now() - started
     assert.ok(elapsed < 60_000, `resilience sequence took ${elapsed}ms`)
   } finally {
+    restoreEngine()
     sb.dispose()
   }
+
+  // The engine abort must never surface: no `Aborted(Assertion failed: ...)` on
+  // the host's stderr, and no abort exception escaping as a run error (checked
+  // above through the RangeError shape of every record).
+  const aborts = printed.filter((chunk) => /Aborted/i.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
 })
 
 test('a failed disposal quarantines the module and loadQuickJS() replaces it (D1)', async () => {

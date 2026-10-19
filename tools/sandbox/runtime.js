@@ -16,6 +16,13 @@ import { getQuickJS, newQuickJSWASMModule } from 'quickjs-emscripten'
  * disposal therefore marks the module unhealthy and `loadQuickJS()` compiles a
  * fresh one, so one hostile recursion cannot disable analysis for the rest of
  * the process.
+ *
+ * The abort is best avoided rather than survived: the emscripten build prints
+ * `Aborted(Assertion failed: ...)` to the host's stderr before the assertion
+ * throws, which pollutes CI logs and any operator watching the process. A run
+ * that already knows the stack limit was breached (the engine reports
+ * `Maximum call stack size exceeded`, so the runtime's heap is unrecoverable)
+ * abandons the runtime instead — see `abandon()`.
  */
 
 let modulePromise = null
@@ -125,6 +132,7 @@ export function createRuntime(options) {
   })
 
   let disposed = false
+  let abandoned = false
   return {
     runtime,
     state,
@@ -146,7 +154,35 @@ export function createRuntime(options) {
         virtualMs: Math.round(clock.elapsedMs),
       }
     },
+    /**
+     * Give up on this runtime without calling `runtime.dispose()`.
+     *
+     * Only for the stack-exhaustion path: the guest left handles on the
+     * runtime's GC list, so `dispose()` would abort the engine and print the
+     * `list_empty(&rt->gc_obj_list)` assertion to stderr. The heap cannot be
+     * repaired, so the module is quarantined here (the next `loadQuickJS()`
+     * compiles a fresh one) and the runtime itself is deliberately leaked into
+     * the abandoned module.
+     *
+     * @returns {{ok: false, skipped: true}}
+     */
+    abandon() {
+      // Idempotent: a second call must not claim a cleaner outcome than the
+      // first one.
+      if (disposed) return { ok: false, skipped: true }
+      disposed = true
+      abandoned = true
+      markModuleUnhealthy(module)
+      // `debug`, not `error`: an abandoned runtime is an expected outcome of a
+      // hostile sample, and the run record carries the truth (`disposal`).
+      logger?.debug?.({ reason: 'stack-limit' }, 'runtime abandoned; WASM module quarantined')
+      trace?.emit('sandbox', 'error', { event: 'runtime.dispose.skipped', reason: 'stack-limit' })
+      return { ok: false, skipped: true }
+    },
     dispose() {
+      // An abandoned runtime was never released, so a later `dispose()` must not
+      // claim a clean teardown.
+      if (abandoned) return { ok: false, skipped: true }
       if (disposed) return { ok: true }
       disposed = true
       try {
