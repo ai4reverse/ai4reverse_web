@@ -4,7 +4,9 @@ Five independent read-only reviews were run against the finished tree. The
 reviewers had no shell tool, so their findings were derived from source reading
 and each carried a reproducer; every reproducer below was executed by the
 supervisor, fixed where needed, and turned into a regression test. After all
-dispositions the full suite is green: **361 tests, 0 failures**.
+dispositions the full suite is green: **484 tests, 0 failures**; a sixth,
+evidence-based review of `tools/` and its subsequent alignment are recorded as
+Review 6 below.
 
 Legend: **Fixed** = code changed and a regression test covers it; **Accepted** =
 documented limitation in README ("Known limitations") with the reason recorded.
@@ -30,7 +32,7 @@ documented limitation in README ("Known limitations") with the reason recorded.
 
 | # | Severity | Finding | Disposition |
 | --- | --- | --- | --- |
-| 2.1 | P1 | `eval-unwrap` parsed eval bodies with tolerant flags, splicing `return`/`await`/`super` out of illegal bodies and emitting non-parsing code. | **Fixed**: eval bodies parse with `allowReturnOutsideFunction:false` (Function bodies allow return but reject await/super/new.target), and the generated output is re-parsed by the pipeline. Regression: "eval bodies with illegal return/await/super are never spliced". |
+| 2.1 | P1 | `eval-unwrap` parsed eval bodies with tolerant flags, splicing `return`/`await`/`super` out of illegal bodies and emitting non-parsing code. | **Fixed**: eval bodies parse with `allowReturnOutsideFunction:false` (Function bodies allow return but reject await/super/new.target), and the pipeline re-parses its own output (`validateOutput`) and returns the input when it does not parse (see Review 6 → D5). Regression: "eval bodies with illegal return/await/super are never spliced". |
 | 2.2 | P1 | JSVMP instrumentation corrupted braceless dispatch loops, threw without an enclosing function binding, and destroyed directive prologues. | **Fixed**: `locateInterpreter` requires block bodies and computes post-directive offsets; `instrumentDispatch` refuses (unchanged source, `skipped` stats) without a function-scoped binding, newline-prefixes the binding, and counts only probes actually inserted. Regressions: "dispatch instrumentation tolerates empty/fall-through case labels" (now asserts refusal), "braceless dispatch loops are never spliced into". |
 | 2.3 | P1 | Four passes could materialise `'use strict'` into a directive prologue (proxy-unwrap, jsfuck, dead-code, eval-unwrap decoders). | **Fixed**: shared `isDirectiveSlot` applied at all four sites. Regression: "passes never materialise a directive prologue" (four reproducers). |
 | 2.4 | P1 | `rename` never ran when selected alone because it was deferred to a round that early-break skipped. | **Fixed**: the pipeline runs a deferred rename if it never ran. Regression: "rename runs even when it is the only selected pass". |
@@ -119,8 +121,8 @@ evidence was missing at review time. Its material findings were addressed:
 
 ```
 $ pnpm test
-ℹ tests 361
-ℹ pass 361
+ℹ tests 484
+ℹ pass 484
 ℹ fail 0
 ```
 
@@ -128,3 +130,93 @@ CLI re-validated on `examples/sample-loader.js` and `examples/benign.js`
 (verdict, IOCs, artifacts, stdout purity, exit codes). The probe scripts used by
 reviewers were executed before implementing each fix; the regression suite now
 covers every fixed finding.
+
+## Review 6 — `tools/` evaluation alignment (D1–D12)
+
+A sixth review (`docs/EVALUATION-TOOLS.md`) re-read `tools/` against executed
+evidence and produced twelve alignment targets, `D1`–`D12`, with acceptance
+criteria. The implementation was aligned lane by lane (`git log --oneline
+c8300ff..d7dc371`), then four independent, read-only auditors re-checked the
+resulting tree (`.pi/audits/AUDIT-{A,B,C,D}-*.md`). This section is the
+disposition record; `docs/VERIFICATION.md` carries the numbers and the commands
+that produce them.
+
+Legend as above, plus **Accepted** = documented limitation with the reason
+recorded in `README.md` ("Known limitations") or `docs/SECURITY-MODEL.md`.
+
+| Id | Severity | Finding (short) | Disposition | Evidence |
+| --- | --- | --- | --- | --- |
+| D1 | S1 | A stack overflow leaked the shared WASM heap and poisoned the module for the process. | **Fixed** | `7836126` quarantines a module whose disposal failed and re-acquires a healthy one; `9e9f3cf` **abandons** the runtime on a stack breach instead of disposing it; `94b1638` classifies the breach from the engine signal only. `tests/resilience.test.js` 15/15 (12 consecutive overflows, then `ok:true`), `tests/sandbox-core.test.js` 20/20, `0` `Aborted` lines. |
+| D2 | S1 | Acquisition failures escaped as `QuickJSUnwrapError` and leaked the runtime. | **Fixed** | `75eb922` moves runtime/context/stealth/bridge acquisition inside the guarded region; `sandbox.js` wraps every escaping error in `SandboxError` with `code: SANDBOX_INIT\|SANDBOX_RUN`, a non-empty message and `cause`. `tests/resilience.test.js` init-failure, post-acquisition and "no unhandled rejection" cases. |
+| D3 | S2 | `anti-fingerprint.prototypified` reported a handle address (e.g. 47 242 776) instead of a count, breaking determinism. | **Fixed** | `2ecd382` reads the count with `bridge.num` and clamps to 0…1000. `tests/determinism.test.js` 2/2: `moved` is an integer in `(0, 10000)` and identical across same-seed runs; `examples/network-c2.js` produces byte-identical dynamic events after removing `wall`. |
+| D4 | S2 | No-op hook phases flooded the trace budget (`hook` 48 vs `code` 45 in a 20-iteration loop) and hook errors were unbounded. | **Fixed** | `3118a60`: unlistened phases are neither traced nor counted, `code:step` is declared and dispatchable but never traced, errors kept to the newest 200 with `errorsTruncated`. `tests/trace-budget.test.js` 5/5 (`byKind.hook = 2`, `code = 45`; strict bus accepts every declared phase, rejects typos). |
+| D5 | S2 | Pass `changed` was not evidence-bound (a byte-identical rewrite still reported a change) and generated output was never re-parsed. | **Fixed** | `a8b7e85` compares generated text (`compareGeneratedText`) before claiming a change; `9578faf` re-parses the output strictly and returns the input with `outputValid:false`/`outputError`/a note instead of unparseable code, plus the exported `validateOutput`. `tests/restore-accuracy.test.js` 10/10 (0/11 pipeline and 0/121 per-pass fixed-point failures). |
+| D6 | S1 | Missing or incoherent browser surfaces: no `WebAssembly`, no `SharedArrayBuffer`/`Atomics` policy, no `HTMLElement` hierarchy, no `customElements`, no `DOMParser`/`EventSource`, and element own properties were enumerable. | **Fixed** | `26ff5cb` (WebAssembly stub + isolation triple), `7896d0b` (HTMLElement, 39 tag interfaces, customElements), `24d4670` (bounded DOMParser/XMLSerializer, EventSource on the virtual network), `736e177` (`Object.keys(div).length === 0`), `d9a3d60`/`479d758` (real prototype chains, XMLDocument), `c5eaf6c` (wrappers keep descriptors, so `Object.keys(WebAssembly) === []`), `b28cba4`/`c41a172` (`consistencyReport().checked` derived → 20). `env-fidelity` 15/15, `env-surface` 18/18, `env-dom` 16/16, `env-misc` 13/13. |
+| D7 | S2 | The CLI silently succeeded on typos and invalid values (`--rounds abc`, `--passes bogus`, `--nonsense` all exited 0). | **Fixed** | `09eae89` makes every closed-set option a usage error and `--out` write failures exit 2; `faa0cb1` pins the matrix. `tests/cli.test.js` 30/30: 21 invalid invocations → exit 2, message on stderr, empty stdout; valid invocations unchanged; `--json` stdout pure; `--out -` writes to stdout. |
+| D8 | S3 | Documentation and contracts had drifted from the code (bridge signatures, trace options, 24 vs 28 env modules, 361 vs 441 tests, `z3-solver`, DST residual, no `Dn` dispositions). | **Fixed** | This review's alignment commit rewrites `docs/CONTRACTS.md` against `bridge.js`/`trace.js`/`hookbus.js`/`env/index.js`/`restore/index.js`, regenerates every count in `docs/VERIFICATION.md` (484 tests, 28 modules, 68 barrel exports, 43 test files, coverage row), corrects `README.md`/`API.md`/`ARCHITECTURE.md`/`SECURITY-MODEL.md`, and appends the disposition matrix. |
+| D9 | S3 | No `LICENSE`, no `files` whitelist, no subpath `exports`, `z3-solver` unused but lockfile-pinned, no type declarations, `tools/cli.js` not executable. | **Fixed** | `207e170` (ISC LICENSE, `files`, 11 subpath `exports`), `6319a5a` (z3 removed from `package.json` and `pnpm-lock.yaml`), `3334341` (`types/*.d.ts`). `git ls-files -s tools/cli.js` → `100755`; `npm pack --dry-run` → **114 files** (91 tools + 9 docs + 11 types + `README.md` + `LICENSE` + `package.json`), only `tools/ docs/ types/ README.md LICENSE package.json`; `tests/types.test.js` 5/5. |
+| D10 | S3 | Dead exports and stubs (`PASS_BY_ID`, `isPrimitiveLiteral`, `literalValue`, `parseExpression`, `parseFirstSuccessful`, `summarizeValue`, `adoptPrototype`, `nativeTextForFor`, `bridge.call`, `LimitationError`, `PassError`). | **Fixed** | `a57c785`, `c63f8bb`, `ff1732a`, `6187217`, `e98353e`: all removed; `TRACE_PHASES`, `resetQuickJS`, `restoreCode`, `scopeLogger` kept **because** they gained a consumer or a test. `tests/api-surface.test.js` 9/9 pins the removals (as absence assertions) and the kept names. |
+| D11 | S3 | `env/misc.js` (2 282 lines) owned several surfaces, so subset selection silently lost `URL`/`Blob`/navigator capabilities. | **Fixed** | `62c130d` splits `url`, `blob`, `navigator` and the shared `platform-kit` (a non-module), followed by `dom-parser` and `eventsource`. `ENV_MODULE_IDS` = 28 = the `(order,id)` install order, zero `requires` violations, 28/28 strict install, and an unsatisfied requirement is a loud `SandboxError` instead of a silent drop. |
+| D12 | S3 | `rename` deferral was implicit, and `bridge.fn` had a misaligned `catch`/`finally`. | **Fixed** | `b126492` declares `meta.deferred` and `isDeferredPass` consumes it (id fallback for old passes); `6187217` fixes the indentation and removes `bridge.call`/`adoptPrototype`. CLI `passes --json` reports `deferred` per pass; `tests/restore-accuracy.test.js` asserts the deferral behaviour. |
+
+### Post-review findings raised by the auditors
+
+| # | Source | Finding | Disposition |
+| --- | --- | --- | --- |
+| N1 | AUDIT-A | A sample could forge a "leak": `throw new Error('stack overflow')` matched a message regex, so a perfectly healthy runtime was abandoned and the module recompiled. | **Fixed** by `94b1638`: classification requires a real engine signal — a host-thrown `RangeError` out of `evalCode`/`callFunction`/`executePendingJobs`, or QuickJS's own `InternalError` name for interpreter stack overflow. Measured: `throw new Error('stack overflow')` → `limitsHit: []`, `disposal {ok:true, errors:[]}`, no module swap. **Residual** (documented in `README.md` and `docs/SECURITY-MODEL.md`): a guest that sets `name = 'InternalError'` *and* a stack-overflow message is still classified as a breach — the name is guest-writable, so this costs one abandoned runtime per hostile run, not a false leak for honest samples. |
+| F4 | AUDIT-D | Half-built interface hierarchy: `HTMLElement` and the tag interfaces existed, but `Node`, `Element`, `EventTarget`, `DocumentFragment`, `Text`, `Comment` were `undefined`, so `div instanceof Node` threw. | **Fixed** by `d9a3d60` (real prototype chains) and `479d758` (XML documents are real `XMLDocument` instances). Measured in a strict run: `div instanceof Node/Element/HTMLElement` → `true/true/true`, chain `HTMLDivElement > HTMLElement > Element > Node > EventTarget`. **Residual**: `Attr`, `Range`, `ShadowRoot` are still absent and are listed as limitations. This also resolves the "no `HTMLElement` globals" part of finding 3.22. |
+| — | AUDIT-D | Cross-runtime interruption leak: a run that timed out while another run was parked at an `await` left guest objects on the neighbour's GC list, so the neighbour's `runtime.dispose()` aborted the WASM engine and quarantined the module for every later run. | **Fixed** by `d7dc371`: guest runs are serialized process-wide (`withGuestRunLock`), so a timeout can never interrupt a suspended neighbour. Concurrent callers queue (they are never rejected) and each still gets a fresh runtime and context. |
+| F2 | AUDIT-D | Fixed per-run cost grew ~28 % (25.7 → 33.0 ms for `1+1`; 55.8 → 66.4 ms for a 1000-statement run) because `installEnvironment` now compiles extra guest source per run and `api.js` evaluates a descriptor factory per run. | **Accepted**: no acceptance criterion names a latency budget, the cost is per run (not per statement), `restore` of 200 KB is unchanged, and the trade was measurement fidelity for time. Documented in `README.md` → Known limitations. |
+| F1 | AUDIT-D | `tests/examples.test.js` narrowed "every entry in `examples/` is documented" to "every regular file", so a new *directory* is no longer caught. | **Accepted** (and owned by the examples lane): the directory now holds documented sub-suites, and `examples/README.md` names each one; regular files are still covered. Recorded in `docs/VERIFICATION.md`. |
+| N1 (B) | AUDIT-B | `restore()` does not append a trailing newline, so a file produced by redirecting stdout re-reports `changed:true` with zero changed passes. | **Accepted**: `passes[].changed` — the criterion — stays accurate, `--out` files round-trip with `changed:false`, and the effect is cosmetic (the verdict weight uses pass-level counts). Documented in `README.md` and `docs/API.md`. |
+| N2 (B) | AUDIT-B | `validateOutput(code, {sourceType})` is advisory: the parser falls back to the other source type and `allowReturnOutsideFunction` defaults to true. | **Accepted**: generated text that fails *both* grammars is still rejected, which is the guarantee that matters ("never return code that does not parse"). Documented in `docs/API.md`. |
+
+### Accepted limitations recorded by this review
+
+These are the limits a reader must know about; each is stated in `README.md`
+("Known limitations"), `docs/SECURITY-MODEL.md` or both.
+
+- QuickJS is not V8: some engine behaviour and stack column numbers differ.
+- WASM execution is unsupported. The `WebAssembly` surface is a coherent stub
+  (`validate()` → `false`, `compile`/`instantiate` reject with a browser-shaped
+  `CompileError`, `Memory`/`Table`/`Global` are functional), so a sample cannot
+  execute hidden WASM — and cannot conclude from the surface that it is not in a
+  browser.
+- `SharedArrayBuffer` exists exactly when `crossOriginIsolated` is true (and then
+  only over `https`). `Atomics` is a single-threaded shim: there is one guest
+  thread, `wait` never blocks, `notify` returns 0.
+- `DOMParser` is bounded (65 536 characters, 512 nodes, 32 levels) and has no
+  HTML5 insertion-mode algorithm, no namespaces and a CSS-subset selector engine.
+- Per-tag `instanceof` is answered structurally for the tags the canvas module
+  owns; interface constructors carry an own `Symbol.hasInstance` a browser does
+  not have.
+- `customElements.upgrade` re-parents and calls the constructor with the element
+  as `this`, so an ES `class` body cannot run; `document.createElement` does not
+  auto-upgrade.
+- `Attr`, `Range`, `ShadowRoot` are `undefined`; `DocumentType` exists but is
+  never instantiated.
+- `crypto.subtle` covers `digest` and `generateKey`; AES/HMAC and `importKey` are
+  absent. `IndexedDB` is a stub that fires `NotSupportedError` on the virtual
+  clock.
+- Canvas/WebGL/audio are deterministic profile values, not renderers.
+- One guest run at a time per process; real parallelism needs worker processes.
+- Per-run cost is ~28 % above the pre-alignment tree (finding F2 above).
+- Branch coverage is 73.56 %, 1.7 points below the review baseline (lines 96.98 %
+  and functions 88.78 %, both above it).
+
+### Re-validation after Review 6
+
+```
+$ node --test --test-concurrency=1 tests/*.test.js
+ℹ tests 484
+ℹ pass 484
+ℹ fail 0
+ℹ duration_ms 77037.688
+```
+
+Four independent auditors reproduced the original `Dn` reproducers on the
+aligned tree: AUDIT-A (D1–D3) **PASS** with N1 fixed afterwards, AUDIT-B (D4, D5,
+D7) **PASS**, AUDIT-C (D6, D9–D12) **PASS** on substance (its documentation half
+is what this alignment delivers), AUDIT-D (D8 + regression sweep) **FAIL** on
+D8 only — the blocking item this alignment closes — with no correctness
+regression in `tools/`.
