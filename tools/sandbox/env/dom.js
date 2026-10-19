@@ -58,10 +58,15 @@ export function install(bridge) {
   const secureContext = pageUrl.protocol === 'https:'
 
   const shim = createShim(bridge, keep)
-  // Expose the element/node prototypes so later environment modules and the
-  // anti-fingerprint branding layer can attach interface brands without
-  // touching the DOM shim's internals.
-  for (const [key, name] of [['elementProto', 'elementPrototype'], ['nodeProto', 'nodePrototype'], ['documentProto', 'documentPrototype']]) {
+  // Expose the interface prototypes and constructors so later environment
+  // modules and the anti-fingerprint reconciliation layer can graft their own
+  // element/document classes onto the hierarchy without touching the shim.
+  for (const [key, name] of [
+    ['elementProto', 'elementPrototype'],
+    ['nodeProto', 'nodePrototype'],
+    ['documentProto', 'documentPrototype'],
+    ['interfaces', 'domInterfaces'],
+  ]) {
     const prototypeHandle = ctx.getProp(shim, key)
     if (prototypeHandle && !prototypeHandle.disposed) {
       bridge[name] = prototypeHandle
@@ -75,6 +80,29 @@ export function install(bridge) {
     }
   }
   const shimValue = (key) => keep(ctx.getProp(shim, key))
+
+  // ---- DOM interfaces ----------------------------------------------------
+  // `instanceof` for Node/Element/HTMLElement/HTML*Element/Text/Document/...
+  // is answered by these prototypes; a structural matcher would be a second
+  // source of truth and a fingerprint tell. Modules that build their own
+  // element classes (canvas) install a constructor with the same name later;
+  // anti-fingerprint grafts those onto this chain.
+  const interfaceEntries = keep(ctx.getProp(shim, 'interfaceEntries'))
+  const interfaceCount = ctx.getLength(interfaceEntries)
+  for (let index = 0; index < interfaceCount; index += 1) {
+    const entry = keep(ctx.getProp(interfaceEntries, index))
+    const nameHandle = keep(ctx.getProp(entry, 0))
+    const name = ctx.getString(nameHandle)
+    const ctor = ctx.getProp(entry, 1)
+    try {
+      bridge.adopt(ctor, name)
+      bridge.install(bridge.global, name, ctor, { enumerable: false, configurable: true, writable: true })
+    } finally {
+      // `install` reads the handle, it does not take ownership of a
+      // caller-owned lifetime: the handle itself must be disposed here.
+      ctor.dispose()
+    }
+  }
 
   // ---- event constructors ------------------------------------------------
   const eventInits = shimValue('eventInits')
@@ -276,7 +304,10 @@ export function install(bridge) {
   for (const tableName of [
     'eventTargetMethods',
     'nodeMethods',
+    'characterDataMethods',
+    'textMethods',
     'elementMethods',
+    'fragmentMethods',
     'documentMethods',
     'styleMethods',
     'classListMethods',
@@ -299,7 +330,26 @@ function installDocumentApi(bridge, context) {
   const { ctx } = bridge
   const { document, shim, keep, clockNow, currentUrl, pageUrl, secureContext } = context
   const shimCreateElement = keep(ctx.getProp(shim, 'createElement'))
+  const shimAdoptElement = keep(ctx.getProp(shim, 'adoptElement'))
   const methodFlags = { enumerable: false, configurable: true, writable: true }
+
+  /**
+   * Give an element built by another module's factory real node state.
+   * @param {object} element owned handle from the factory
+   * @param {string} tag requested tag name
+   * @returns {object} the same handle, ready to be returned to the guest
+   */
+  const adoptForeignElement = (element, tag) => {
+    const tagHandle = ctx.newString(tag)
+    try {
+      const result = ctx.callFunction(shimAdoptElement, ctx.undefined, [element, tagHandle])
+      if (result.error) result.error.dispose()
+      else result.value.dispose()
+    } finally {
+      tagHandle.dispose()
+    }
+    return element
+  }
 
   bridge.install(
     document,
@@ -322,7 +372,7 @@ function installDocumentApi(bridge, context) {
         } finally {
           if (!hasOptions) options.dispose()
         }
-        if (produced) return produced
+        if (produced) return adoptForeignElement(produced, tag)
       }
       bridge.emit('api', 'before', { api: 'document.createElement', tag })
       const call = ctx.callFunction(shimCreateElement, ctx.undefined, [bridge.toGuest(tag)])
@@ -741,6 +791,8 @@ function domShim(host) {
   var classStates = new WeakMap()
   /** @type {WeakMap<object, object[]>} live NodeList-ish collections */
   var collectionStates = new WeakMap()
+  /** @type {WeakMap<object, number>} last synced index count per collection */
+  var collectionSizes = new WeakMap()
 
   var constructors = Object.create(null)
   var ownerDocument = null
@@ -870,6 +922,29 @@ function domShim(host) {
     width: 'width',
   }
 
+  /**
+   * tag -> HTML interface name.
+   *
+   * Chromium builds one prototype per interface, so
+   * `document.createElement('div')` has `HTMLDivElement.prototype` in its
+   * chain and `instanceof` needs no structural shortcut. The table is the
+   * single source of truth for both element creation and the constructors
+   * published on the global object.
+   */
+  var TAG_INTERFACES = {
+    a: 'HTMLAnchorElement', area: 'HTMLAreaElement', audio: 'HTMLAudioElement', base: 'HTMLBaseElement',
+    body: 'HTMLBodyElement', br: 'HTMLBRElement', button: 'HTMLButtonElement', canvas: 'HTMLCanvasElement',
+    div: 'HTMLDivElement', embed: 'HTMLEmbedElement', form: 'HTMLFormElement', h1: 'HTMLHeadingElement',
+    h2: 'HTMLHeadingElement', h3: 'HTMLHeadingElement', head: 'HTMLHeadElement', hr: 'HTMLHRElement',
+    html: 'HTMLHtmlElement', iframe: 'HTMLIFrameElement', img: 'HTMLImageElement', input: 'HTMLInputElement',
+    label: 'HTMLLabelElement', li: 'HTMLLIElement', link: 'HTMLLinkElement', meta: 'HTMLMetaElement',
+    ol: 'HTMLOListElement', option: 'HTMLOptionElement', p: 'HTMLParagraphElement', pre: 'HTMLPreElement',
+    script: 'HTMLScriptElement', select: 'HTMLSelectElement', source: 'HTMLSourceElement',
+    span: 'HTMLSpanElement', style: 'HTMLStyleElement', table: 'HTMLTableElement', tbody: 'HTMLTableSectionElement',
+    td: 'HTMLTableCellElement', textarea: 'HTMLTextAreaElement', title: 'HTMLTitleElement',
+    tr: 'HTMLTableRowElement', ul: 'HTMLUListElement', video: 'HTMLVideoElement',
+  }
+
   // ---------------------------------------------------------------- helpers
   function defineValue(object, key, value) {
     Object.defineProperty(object, key, { value: value, writable: true, enumerable: true, configurable: true })
@@ -896,6 +971,50 @@ function domShim(host) {
       var entry = table[keys[i]]
       defineAccessor(prototype, keys[i], entry.get, entry.set)
     }
+  }
+
+  /**
+   * Interface constructor that throws on direct construction, like WebIDL.
+   *
+   * Every constructor gets its own source text ("function HTMLDivElement() ...")
+   * because the stealth masker keys native sources by source text: a shared
+   * closure would make every interface stringify as the same class.
+   * @param {string} name interface name
+   */
+  function makeInterfaceConstructor(name) {
+    var factory = new Function(
+      'return function ' + name + '() { throw new TypeError("Illegal constructor") }',
+    )
+    var ctor = factory()
+    Object.defineProperty(ctor, 'name', { value: name, configurable: true })
+    return ctor
+  }
+
+  /**
+   * Publish one interface: `prototype.constructor`, the `Symbol.toStringTag`
+   * brand and the global constructor table entry. The tag lives on the
+   * interface prototype, so `Object.prototype.toString.call(element)` is
+   * answered by the prototype chain rather than a per-instance getter.
+   * @param {object} prototype interface prototype
+   * @param {string} name interface name
+   */
+  function defineInterfacePrototype(prototype, name) {
+    var ctor = makeInterfaceConstructor(name)
+    ctor.prototype = prototype
+    Object.defineProperty(prototype, 'constructor', {
+      value: ctor,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    })
+    Object.defineProperty(prototype, Symbol.toStringTag, {
+      value: name,
+      writable: false,
+      enumerable: false,
+      configurable: true,
+    })
+    interfaces[name] = ctor
+    return ctor
   }
 
   // -------------------------------------------------------- IDL attributes
@@ -926,6 +1045,8 @@ function domShim(host) {
   ]
   var CHARACTER_DATA_ATTRIBUTE_NAMES = ['data', 'length']
   var attributeAccessors = []
+  /** @type {Record<string, Function>} interface name -> constructor */
+  var interfaces = Object.create(null)
 
   /** Internal-slot bag of the nearest node in the receiver's prototype chain. */
   function bagFor(receiver) {
@@ -971,6 +1092,68 @@ function domShim(host) {
 
   function stringOf(value) {
     return value === undefined || value === null ? '' : String(value)
+  }
+
+  // ------------------------------------------------------- CharacterData API
+  function characterDataOf(node) {
+    var bag = bagFor(node)
+    return bag ? stringOf(bag.data) : ''
+  }
+
+  function writeCharacterData(node, text) {
+    var bag = bagFor(node)
+    if (!bag) return
+    var value = stringOf(text)
+    bag.data = value
+    bag.length = value.length
+    bag.nodeValue = value
+    bag.textContent = value
+  }
+
+  function clampOffset(offset, length) {
+    var index = numberOr(offset, 0)
+    if (index < 0) return 0
+    return index > length ? length : index
+  }
+
+  var characterDataMethods = {
+    appendData: function appendData(text) {
+      writeCharacterData(this, characterDataOf(this) + stringOf(text))
+    },
+    insertData: function insertData(offset, text) {
+      var data = characterDataOf(this)
+      var index = clampOffset(offset, data.length)
+      writeCharacterData(this, data.slice(0, index) + stringOf(text) + data.slice(index))
+    },
+    deleteData: function deleteData(offset, count) {
+      var data = characterDataOf(this)
+      var start = clampOffset(offset, data.length)
+      var end = clampOffset(start + numberOr(count, 0), data.length)
+      writeCharacterData(this, data.slice(0, start) + data.slice(end))
+    },
+    replaceData: function replaceData(offset, count, text) {
+      var data = characterDataOf(this)
+      var start = clampOffset(offset, data.length)
+      var end = clampOffset(start + numberOr(count, 0), data.length)
+      writeCharacterData(this, data.slice(0, start) + stringOf(text) + data.slice(end))
+    },
+    substringData: function substringData(offset, count) {
+      var data = characterDataOf(this)
+      var start = clampOffset(offset, data.length)
+      return data.slice(start, clampOffset(start + numberOr(count, 0), data.length))
+    },
+  }
+
+  var textMethods = {
+    splitText: function splitText(offset) {
+      var data = characterDataOf(this)
+      var index = clampOffset(offset, data.length)
+      writeCharacterData(this, data.slice(0, index))
+      var tail = makeTextNode(data.slice(index))
+      var parent = this.parentNode
+      if (parent) insertNode(parent, tail, this.nextSibling)
+      return tail
+    },
   }
 
   function numberOr(value, fallback) {
@@ -1291,7 +1474,18 @@ function domShim(host) {
 
   // ------------------------------------------------------------ node model
   function createNodeState(tag) {
-    return { tag: tag, attrs: Object.create(null), childNodes: [], children: [], parent: null }
+    var state = {
+      tag: tag,
+      attrs: Object.create(null),
+      childNodes: [],
+      children: [],
+      parent: null,
+    }
+    // The collections share the backing arrays, so they are live: inserting or
+    // removing a child updates `length`, `item()` and the indices in place.
+    state.childNodesList = makeCollection('NodeList', state.childNodes)
+    state.childrenList = makeCollection('HTMLCollection', state.children)
+    return state
   }
 
   function refreshChildren(node) {
@@ -1301,6 +1495,8 @@ function domShim(host) {
     for (var index = 0; index < state.childNodes.length; index += 1) {
       if (state.childNodes[index].nodeType === 1) state.children.push(state.childNodes[index])
     }
+    syncCollectionIndices(state.childNodesList, state.childNodes)
+    syncCollectionIndices(state.childrenList, state.children)
     node.firstChild = state.childNodes.length > 0 ? state.childNodes[0] : null
     node.lastChild = state.childNodes.length > 0 ? state.childNodes[state.childNodes.length - 1] : null
     for (var position = 0; position < state.childNodes.length; position += 1) {
@@ -1417,16 +1613,16 @@ function domShim(host) {
       return copy
     },
     getElementsByTagName: function getElementsByTagName() {
-      return makeCollection()
+      return makeCollection('HTMLCollection')
     },
     getElementsByClassName: function getElementsByClassName() {
-      return makeCollection()
+      return makeCollection('HTMLCollection')
     },
     querySelector: function querySelector() {
       return null
     },
     querySelectorAll: function querySelectorAll() {
-      return makeCollection()
+      return makeCollection('NodeList')
     },
   }
 
@@ -1462,9 +1658,20 @@ function domShim(host) {
     return { width: width, height: height, top: 100 + (hash % 400), left: 8 + (hash % 100) }
   }
 
-  function makeElement(tagName) {
-    var tag = stringOf(tagName).toLowerCase() || 'div'
-    var element = Object.create(elementProto)
+  /** Prototype of the HTML interface for `tag`, `HTMLElement.prototype` if unknown. */
+  function prototypeForTag(tag) {
+    var name = TAG_INTERFACES[tag]
+    return (name && tagProtos[name]) || htmlElementProto
+  }
+
+  /**
+   * Put an element-like object into the node model: per-instance state (never
+   * own properties) plus the IDL attribute bag the accessors on
+   * `Element.prototype` read.
+   * @param {object} element receiver, already on the right prototype
+   * @param {string} tag lower-case tag name
+   */
+  function initElementState(element, tag) {
     var state = createNodeState(tag)
     nodeStates.set(element, state)
     var box = boxForElement({ localName: tag })
@@ -1480,8 +1687,8 @@ function domShim(host) {
       ownerDocument: ownerDocument,
       parentNode: null,
       parentElement: null,
-      childNodes: state.childNodes,
-      children: state.children,
+      childNodes: state.childNodesList,
+      children: state.childrenList,
       firstChild: null,
       lastChild: null,
       nextSibling: null,
@@ -1526,6 +1733,30 @@ function domShim(host) {
       scrollLeft: 0,
     }
     return element
+  }
+
+  function makeElement(tagName) {
+    var tag = stringOf(tagName).toLowerCase() || 'div'
+    return initElementState(Object.create(prototypeForTag(tag)), tag)
+  }
+
+  /**
+   * Register an element another environment module built itself.
+   *
+   * `canvas` installs its own `HTMLCanvasElement`/`HTMLImageElement`/
+   * `HTMLAudioElement`/`HTMLVideoElement` classes. Their prototypes are grafted
+   * onto the DOM interface chain by `anti-fingerprint`, but their *instances*
+   * must also carry node state: a real element supports `setAttribute`,
+   * `appendChild` and `localName`, and other modules (`dom-parser`) detect a
+   * shim node by exactly that API. Nothing is added to the instance itself, so
+   * `Object.keys(element)` stays empty.
+   * @param {object} element object produced by an element factory
+   * @param {string} tagName requested tag
+   */
+  function adoptElement(element, tagName) {
+    if (!element || typeof element !== 'object') return element
+    if (nodeStates.get(element)) return element
+    return initElementState(element, stringOf(tagName).toLowerCase() || 'div')
   }
 
   function reflectAttribute(element, key, value) {
@@ -1875,37 +2106,69 @@ function domShim(host) {
   }
 
   // ------------------------------------------------------------ collections
-  function makeCollection() {
-    var collection = Object.create(collectionProto)
-    collectionStates.set(collection, [])
+  /**
+   * Mirror the backing array's indices as own properties, the way a live
+   * `NodeList`/`HTMLCollection` exposes them. The node model mutates the
+   * backing array in place and calls this after every tree change, so
+   * `length`/`item()`/index reads stay live without a proxy.
+   * @param {object} collection
+   * @param {object[]} items backing array, shared with the node state
+   */
+  function syncCollectionIndices(collection, items) {
+    // The backing array is mutated in place, so the previous length has to be
+    // remembered separately: the array itself already reports the new one.
+    var previous = collectionSizes.get(collection) || 0
+    for (var stale = items.length; stale < previous; stale += 1) delete collection[stale]
+    for (var index = 0; index < items.length; index += 1) {
+      if (collection[index] !== items[index]) collection[index] = items[index]
+    }
+    collectionSizes.set(collection, items.length)
+  }
+
+  /**
+   * Array-like collection. `kind` selects the interface: `querySelectorAll`
+   * answers with a `NodeList`, the `getElementsBy*` family and `children` with
+   * an `HTMLCollection`, exactly as the platform does.
+   * @param {string} [kind]
+   * @param {object[]} [items] backing array shared with the owner
+   */
+  function makeCollection(kind, items) {
+    var collection = Object.create(kind === 'HTMLCollection' ? htmlCollectionProto : nodeListProto)
+    var backing = items || []
+    collectionStates.set(collection, backing)
+    syncCollectionIndices(collection, backing)
     return collection
+  }
+
+  function collectionItems(collection) {
+    return collectionStates.get(collection) || []
   }
 
   var collectionMethods = {
     item: function item(index) {
-      var items = collectionStates.get(this)
-      return items && items[index] !== undefined ? items[index] : null
+      var items = collectionItems(this)
+      return items[index] === undefined ? null : items[index]
     },
     namedItem: function namedItem(name) {
-      var items = collectionStates.get(this) || []
+      var items = collectionItems(this)
       for (var index = 0; index < items.length; index += 1) {
         if (items[index].id === name || items[index].name === name) return items[index]
       }
       return null
     },
     forEach: function forEach(callback) {
-      var items = collectionStates.get(this) || []
+      var items = collectionItems(this)
       if (typeof callback !== 'function') return
       for (var index = 0; index < items.length; index += 1) callback(items[index], index, this)
     },
     entries: function entries() {
-      return [][Symbol.iterator]()
+      return collectionItems(this).entries()
     },
     keys: function keys() {
-      return [][Symbol.iterator]()
+      return collectionItems(this).keys()
     },
     values: function values() {
-      return [][Symbol.iterator]()
+      return collectionItems(this).values()
     },
   }
 
@@ -1950,22 +2213,22 @@ function domShim(host) {
       return null
     },
     getElementsByName: function getElementsByName() {
-      return makeCollection()
+      return makeCollection('HTMLCollection')
     },
     getElementsByTagName: function getElementsByTagName() {
-      return makeCollection()
+      return makeCollection('HTMLCollection')
     },
     getElementsByTagNameNS: function getElementsByTagNameNS() {
-      return makeCollection()
+      return makeCollection('HTMLCollection')
     },
     getElementsByClassName: function getElementsByClassName() {
-      return makeCollection()
+      return makeCollection('HTMLCollection')
     },
     querySelector: function querySelector() {
       return null
     },
     querySelectorAll: function querySelectorAll() {
-      return makeCollection()
+      return makeCollection('NodeList')
     },
     createTextNode: function createTextNode(data) {
       return makeTextNode(data)
@@ -2039,7 +2302,7 @@ function domShim(host) {
 
   function createDocument(config) {
     var settings = config && typeof config === 'object' ? config : {}
-    var document = Object.create(documentProto)
+    var document = Object.create(htmlDocumentProto)
     var state = createNodeState('#document')
     nodeStates.set(document, state)
     ownerDocument = document
@@ -2047,8 +2310,8 @@ function domShim(host) {
     defineValue(document, 'nodeName', '#document')
     defineValue(document, 'nodeValue', null)
     defineValue(document, 'ownerDocument', null)
-    defineValue(document, 'childNodes', state.childNodes)
-    defineValue(document, 'children', state.children)
+    defineValue(document, 'childNodes', state.childNodesList)
+    defineValue(document, 'children', state.childrenList)
     defineValue(document, 'firstChild', null)
     defineValue(document, 'lastChild', null)
     defineValue(document, 'nextSibling', null)
@@ -2092,7 +2355,7 @@ function domShim(host) {
     defineValue(document, 'body', body)
     defineValue(document, 'activeElement', body)
     var collections = ['scripts', 'forms', 'images', 'links', 'anchors', 'embeds', 'plugins', 'applets', 'all', 'styleSheets']
-    for (var index = 0; index < collections.length; index += 1) defineValue(document, collections[index], makeCollection())
+    for (var index = 0; index < collections.length; index += 1) defineValue(document, collections[index], makeCollection('HTMLCollection'))
     documentHasFocus = settings.hasFocus !== false
     var currentScript = makeElement('script')
     currentScript.src = stringOf(settings.scriptUrl)
@@ -2126,9 +2389,28 @@ function domShim(host) {
     return style
   }
 
+  // ----------------------------------------------------- DocumentFragment API
+  var fragmentMethods = {
+    getElementById: function getElementById() {
+      return null
+    },
+    getElementsByTagName: function getElementsByTagName() {
+      return makeCollection('HTMLCollection')
+    },
+    getElementsByClassName: function getElementsByClassName() {
+      return makeCollection('HTMLCollection')
+    },
+    querySelector: function querySelector() {
+      return null
+    },
+    querySelectorAll: function querySelectorAll() {
+      return makeCollection('NodeList')
+    },
+  }
+
   // ------------------------------------------------------- node constructors
   function makeCharacterData(nodeType, nodeName, data) {
-    var node = Object.create(nodeProto)
+    var node = Object.create(nodeType === 8 ? commentProto : textProto)
     var state = createNodeState(nodeName)
     nodeStates.set(node, state)
     var text = stringOf(data)
@@ -2142,8 +2424,8 @@ function domShim(host) {
       ownerDocument: ownerDocument,
       parentNode: null,
       parentElement: null,
-      childNodes: state.childNodes,
-      children: state.children,
+      childNodes: state.childNodesList,
+      children: state.childrenList,
       firstChild: null,
       lastChild: null,
       nextSibling: null,
@@ -2161,7 +2443,7 @@ function domShim(host) {
   }
 
   function makeFragment() {
-    var node = Object.create(nodeProto)
+    var node = Object.create(documentFragmentProto)
     var state = createNodeState('#document-fragment')
     nodeStates.set(node, state)
     state.values = {
@@ -2171,8 +2453,8 @@ function domShim(host) {
       ownerDocument: ownerDocument,
       parentNode: null,
       parentElement: null,
-      childNodes: state.childNodes,
-      children: state.children,
+      childNodes: state.childNodesList,
+      children: state.childrenList,
       firstChild: null,
       lastChild: null,
       nextSibling: null,
@@ -2182,40 +2464,110 @@ function domShim(host) {
     return node
   }
 
-  // ------------------------------------------------------------ proto wiring
-  var nodeProto = {}
-  installMethodTable(nodeProto, eventTargetMethods)
-  installMethodTable(nodeProto, nodeMethods)
-  installAttributeTable(nodeProto, NODE_ATTRIBUTE_NAMES)
-  installAttributeTable(nodeProto, CHARACTER_DATA_ATTRIBUTE_NAMES)
+  // --------------------------------------------------------- proto wiring
+  /**
+   * The DOM interface hierarchy.
+   *
+   * The platform answers `instanceof` from a real prototype chain, so the shim
+   * builds the same chain instead of a single flat node/element object:
+   *
+   *   EventTarget <- Node <- Element <- HTMLElement <- HTML*Element
+   *               <- CharacterData <- Text/Comment
+   *               <- Document <- HTMLDocument, DocumentFragment, DocumentType
+   *
+   * `NodeList`/`HTMLCollection`/`DOMTokenList`/`CSSStyleDeclaration` are
+   * independent interfaces with their own prototypes.
+   */
+  var eventTargetProto = {}
+
+  var nodeProto = Object.create(eventTargetProto)
+
+  var characterDataProto = Object.create(nodeProto)
+  var textProto = Object.create(characterDataProto)
+  var commentProto = Object.create(characterDataProto)
 
   var elementProto = Object.create(nodeProto)
+  var htmlElementProto = Object.create(elementProto)
+
+  var documentFragmentProto = Object.create(nodeProto)
+  var documentProto = Object.create(nodeProto)
+  var htmlDocumentProto = Object.create(documentProto)
+  var documentTypeProto = Object.create(nodeProto)
+
+  var nodeListProto = {}
+  var htmlCollectionProto = {}
+  var styleProto = {}
+  var classListProto = {}
+
+  installMethodTable(eventTargetProto, eventTargetMethods)
+
+  installMethodTable(nodeProto, nodeMethods)
+  installAttributeTable(nodeProto, NODE_ATTRIBUTE_NAMES)
+
+  installMethodTable(characterDataProto, characterDataMethods)
+  installAttributeTable(characterDataProto, CHARACTER_DATA_ATTRIBUTE_NAMES)
+  installMethodTable(textProto, textMethods)
+
   installMethodTable(elementProto, elementMethods)
   installAttributeTable(elementProto, ELEMENT_ATTRIBUTE_NAMES)
 
-  var documentProto = Object.create(nodeProto)
+  installMethodTable(documentFragmentProto, fragmentMethods)
   installMethodTable(documentProto, documentMethods)
 
-  var styleProto = {}
+  var collectionProtos = [nodeListProto, htmlCollectionProto]
+  for (var collectionIndex = 0; collectionIndex < collectionProtos.length; collectionIndex += 1) {
+    installMethodTable(collectionProtos[collectionIndex], collectionMethods)
+    installAccessorTable(collectionProtos[collectionIndex], collectionAccessors)
+    defineHidden(collectionProtos[collectionIndex], Symbol.iterator, collectionMethods.values)
+  }
+
   installMethodTable(styleProto, styleMethods)
   installAccessorTable(styleProto, styleAccessors)
 
-  var classListProto = {}
   installMethodTable(classListProto, classListMethods)
   installAccessorTable(classListProto, classListAccessors)
 
-  var collectionProto = {}
-  installMethodTable(collectionProto, collectionMethods)
-  installAccessorTable(collectionProto, collectionAccessors)
-  defineHidden(collectionProto, Symbol.iterator, function iterator() {
-    return [][Symbol.iterator]()
-  })
+  defineInterfacePrototype(eventTargetProto, 'EventTarget')
+  defineInterfacePrototype(nodeProto, 'Node')
+  defineInterfacePrototype(characterDataProto, 'CharacterData')
+  defineInterfacePrototype(textProto, 'Text')
+  defineInterfacePrototype(commentProto, 'Comment')
+  defineInterfacePrototype(elementProto, 'Element')
+  defineInterfacePrototype(htmlElementProto, 'HTMLElement')
+
+  var tagProtos = Object.create(null)
+  var interfaceNames = Object.keys(TAG_INTERFACES)
+  var seenInterfaces = Object.create(null)
+  for (var tagIndex = 0; tagIndex < interfaceNames.length; tagIndex += 1) {
+    var interfaceName = TAG_INTERFACES[interfaceNames[tagIndex]]
+    if (seenInterfaces[interfaceName]) continue
+    seenInterfaces[interfaceName] = true
+    var tagProto = Object.create(htmlElementProto)
+    defineInterfacePrototype(tagProto, interfaceName)
+    tagProtos[interfaceName] = tagProto
+  }
+
+  defineInterfacePrototype(documentFragmentProto, 'DocumentFragment')
+  defineInterfacePrototype(documentProto, 'Document')
+  defineInterfacePrototype(htmlDocumentProto, 'HTMLDocument')
+  defineInterfacePrototype(documentTypeProto, 'DocumentType')
+  defineInterfacePrototype(nodeListProto, 'NodeList')
+  defineInterfacePrototype(htmlCollectionProto, 'HTMLCollection')
+  defineInterfacePrototype(styleProto, 'CSSStyleDeclaration')
+  defineInterfacePrototype(classListProto, 'DOMTokenList')
+
+  var interfaceEntries = []
+  var interfaceKeys = Object.keys(interfaces)
+  for (var entryIndex = 0; entryIndex < interfaceKeys.length; entryIndex += 1) {
+    interfaceEntries.push([interfaceKeys[entryIndex], interfaces[interfaceKeys[entryIndex]]])
+  }
 
   return {
     createDocument: createDocument,
     createElement: function createElement(tagName) {
       return makeElement(tagName)
     },
+    adoptElement: adoptElement,
     dispatchEvent: function dispatchEvent(target, event) {
       return dispatchEventOn(target, event)
     },
@@ -2239,9 +2591,14 @@ function domShim(host) {
     nodeMethods: nodeMethods,
     elementMethods: elementMethods,
     documentMethods: documentMethods,
-    elementProto: elementProto,
+    elementProto: htmlElementProto,
     nodeProto: nodeProto,
-    documentProto: documentProto,
+    documentProto: htmlDocumentProto,
+    interfaces: interfaces,
+    interfaceEntries: interfaceEntries,
+    characterDataMethods: characterDataMethods,
+    textMethods: textMethods,
+    fragmentMethods: fragmentMethods,
     styleMethods: styleMethods,
     classListMethods: classListMethods,
     collectionMethods: collectionMethods,

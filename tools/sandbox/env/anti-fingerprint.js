@@ -155,10 +155,13 @@ function prototypifySurfaces(bridge) {
  * `document.constructor.name === 'HTMLDocument'`, `[object Navigator]`,
  * `[object Storage]`.
  *
- * document and navigator are re-parented onto a fresh prototype carrying
- * `Symbol.toStringTag` + `constructor` (their previous prototype is
- * `Object.prototype`, so tagging it would affect every object). Storage shares
- * `Storage.prototype`, which is branded in place.
+ * navigator and the other host-built objects are re-parented onto a fresh
+ * prototype carrying `Symbol.toStringTag` + `constructor` (their previous
+ * prototype is `Object.prototype`, so tagging it would affect every object).
+ * Storage shares `Storage.prototype`, which is branded in place. `document` is
+ * *not* in this list: its brand and constructor come from the DOM interface
+ * hierarchy (`HTMLDocument.prototype`), which is the same source `instanceof`
+ * uses.
  * @param {object} bridge
  */
 function brandObjects(bridge) {
@@ -240,7 +243,6 @@ function brandObjects(bridge) {
   // `usePrototype` is encoded in the tag string's 4th argument above; the guest
   // factory reads (target, tag, ctorName, usePrototype) and calls makeCtor only
   // when ctorName is non-empty.
-  apply('globalThis.document', 'HTMLDocument', 'HTMLDocument', true)
   apply('globalThis.navigator', 'Navigator', 'Navigator', true)
   apply('globalThis.screen', 'Screen', 'Screen', true)
   apply('globalThis.location', 'Location', 'Location', true)
@@ -254,78 +256,69 @@ function brandObjects(bridge) {
 }
 
 /**
- * DOM interface brands and the `HTMLElement` hierarchy.
+ * Reconcile the DOM interface hierarchy with the modules that build their own
+ * element and document classes.
  *
- * Browsers expose one prototype per element interface: `document.createElement
- * ('div') instanceof HTMLDivElement`, `instanceof HTMLElement`, and
- * `Object.prototype.toString.call(div) === '[object HTMLDivElement]'` with no
- * own symbol on the instance. The DOM shim has a single element prototype, so
- * this module:
- *  - installs `HTMLElement` with `HTMLElement.prototype === elementPrototype`
- *    (making `el instanceof HTMLElement` a real prototype-chain test),
- *  - installs one constructor per tag interface with an own
- *    `Symbol.hasInstance` that matches on `tagName`, because the shim cannot
- *    rebuild a two-level prototype chain for already-created elements,
- *  - brands the shared prototype with `Symbol.toStringTag`/`constructor`
- *    accessors so the per-instance brand stays correct,
- *  - exposes `customElements` (registry, `whenDefined`, `upgrade`).
+ * `dom.js` owns the hierarchy (`EventTarget <- Node <- Element <- HTMLElement
+ * <- HTML*Element`, `CharacterData <- Text/Comment`, `Document <- HTMLDocument`)
+ * and publishes one interface prototype per class, so `instanceof` is answered
+ * by the prototype chain and never by a structural `Symbol.hasInstance` hook:
+ * a second source of truth is itself a fingerprint tell.
  *
- * Element instances keep zero own symbols and zero own properties: since the
- * WebIDL own-property transform (`dom.js` `elementPrototypifier`), attributes
- * and expandos live on an inserted prototype layer, so `Object.keys(element)`,
- * `Object.getOwnPropertyNames(element)` and `Object.getOwnPropertySymbols
- * (element)` are all empty like Chromium.
+ * Two modules legitimately own classes the hierarchy also names:
+ *  - `canvas` installs `HTMLCanvasElement`/`HTMLImageElement`/
+ *    `HTMLAudioElement`/`HTMLVideoElement` with real behaviour. Their identity
+ *    must survive, so only the parent link is added and the instance chain reads
+ *    exactly like Blink's.
+ *  - `dom-parser` installs `Document`/`HTMLDocument`/`XMLDocument` and builds
+ *    parsed trees from them. Its shared base prototype is grafted under
+ *    `HTMLDocument.prototype` and the hierarchy constructors are elected as the
+ *    globals, so `document instanceof Document`, `parsed instanceof Document`
+ *    and `parsed instanceof HTMLDocument` all hold.
+ *
+ * The registry (`customElements`) is guest code as well, because a custom
+ * element constructor is a guest value.
  * @param {object} bridge
  */
-const ELEMENT_INTERFACES = {
-  a: 'HTMLAnchorElement', area: 'HTMLAreaElement', audio: 'HTMLAudioElement', base: 'HTMLBaseElement',
-  body: 'HTMLBodyElement', br: 'HTMLBRElement', button: 'HTMLButtonElement', canvas: 'HTMLCanvasElement',
-  div: 'HTMLDivElement', embed: 'HTMLEmbedElement', form: 'HTMLFormElement', h1: 'HTMLHeadingElement',
-  h2: 'HTMLHeadingElement', h3: 'HTMLHeadingElement', head: 'HTMLHeadElement', hr: 'HTMLHRElement',
-  html: 'HTMLHtmlElement', iframe: 'HTMLIFrameElement', img: 'HTMLImageElement', input: 'HTMLInputElement',
-  label: 'HTMLLabelElement', li: 'HTMLLIElement', link: 'HTMLLinkElement', meta: 'HTMLMetaElement',
-  ol: 'HTMLOListElement', option: 'HTMLOptionElement', p: 'HTMLParagraphElement', pre: 'HTMLPreElement',
-  script: 'HTMLScriptElement', select: 'HTMLSelectElement', source: 'HTMLSourceElement',
-  span: 'HTMLSpanElement', style: 'HTMLStyleElement', table: 'HTMLTableElement', tbody: 'HTMLTableSectionElement',
-  td: 'HTMLTableCellElement', textarea: 'HTMLTextAreaElement', title: 'HTMLTitleElement',
-  tr: 'HTMLTableRowElement', ul: 'HTMLUListElement', video: 'HTMLVideoElement',
-}
-
-function brandElements(bridge) {
+function reconcileDomInterfaces(bridge) {
   const { ctx } = bridge
-  const elementProto = bridge.elementPrototype
-  const nodeProto = bridge.nodePrototype
-  // Without the DOM module there is no element prototype to brand; selecting a
+  const interfaces = bridge.domInterfaces
+  const htmlElementProto = bridge.elementPrototype
+  const htmlDocumentProto = bridge.documentPrototype
+  // Without the DOM module there is no hierarchy to reconcile; selecting a
   // subset environment is legitimate, so this is not an installation failure.
-  if (!elementProto || !nodeProto) {
+  if (!interfaces || !htmlElementProto || !htmlDocumentProto) {
     bridge.emit('sandbox', 'error', { event: 'anti-fingerprint.elements-skipped', reason: 'no-dom-module' })
     return
   }
 
-  /** tag -> [interface names] */
-  const tagTable = {}
-  for (const [tag, name] of Object.entries(ELEMENT_INTERFACES)) {
-    if (!tagTable[name]) tagTable[name] = []
-    tagTable[name].push(tag)
-  }
+  const styleInterface = ctx.getProp(interfaces, 'CSSStyleDeclaration')
+  const styleProto = ctx.getProp(styleInterface, 'prototype')
+  styleInterface.dispose()
 
-  const compiled = ctx.evalCode(ELEMENT_INTERFACES_SOURCE, 'ai4r-internal:element-interfaces')
+  const compiled = ctx.evalCode(DOM_INTERFACES_SOURCE, 'ai4r-internal:dom-interfaces')
   if (compiled.error) {
+    styleProto.dispose()
     const dumped = bridge.fromGuest(compiled.error)
     compiled.error.dispose()
     bridge.emit('sandbox', 'error', { event: 'anti-fingerprint.elements-failed', stage: 'compile', error: dumped })
     return
   }
-  const factory = compiled.value
-  const tagTableHandle = bridge.toGuest(tagTable)
-  const call = ctx.callFunction(factory, ctx.undefined, [elementProto, nodeProto, tagTableHandle])
-  factory.dispose()
+  const call = ctx.callFunction(compiled.value, ctx.undefined, [
+    interfaces,
+    htmlElementProto,
+    htmlDocumentProto,
+    styleProto,
+  ])
+  compiled.value.dispose()
+  styleProto.dispose()
   if (call.error) {
     const dumped = bridge.fromGuest(call.error)
     call.error.dispose()
     bridge.emit('sandbox', 'error', { event: 'anti-fingerprint.elements-failed', stage: 'install', error: dumped })
     return
   }
+
   const surface = call.value
   const own = []
   const take = (target, key) => {
@@ -334,36 +327,31 @@ function brandElements(bridge) {
     return handle
   }
 
-  // Adopt every constructor and the prototype accessors so `toString()` and
-  // `get [Symbol.toStringTag]` report native code, exactly like the shim does.
-  const adoptList = (handle, name) => {
-    if (!handle) return
-    bridge.adopt(handle, name)
+  const customElements = ctx.getProp(surface, 'customElements')
+  try {
+    for (const name of ['define', 'get', 'whenDefined', 'upgrade']) {
+      const method = ctx.getProp(customElements, name)
+      bridge.adopt(method, name)
+      method.dispose()
+    }
+    // `install` reads the value handle and does not take ownership of the
+    // lifetime, so the handle is disposed here.
+    bridge.install(bridge.global, 'customElements', customElements, {
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    })
+  } finally {
+    customElements.dispose()
   }
-  const interfaceTable = take(surface, 'interfaces')
-  for (const name of Object.keys(tagTable)) {
-    const ctor = ctx.getProp(interfaceTable, name)
-    adoptList(ctor, name)
-    ctor.dispose()
-  }
-  const htmlElement = take(surface, 'HTMLElement')
-  adoptList(htmlElement, 'HTMLElement')
-  const tagGetter = take(surface, 'tagGetter')
-  adoptList(tagGetter, 'get [Symbol.toStringTag]')
-  const ctorGetter = take(surface, 'ctorGetter')
-  adoptList(ctorGetter, 'get constructor')
 
-  const customElements = take(surface, 'customElements')
-  for (const name of ['define', 'get', 'whenDefined', 'upgrade']) {
-    const method = ctx.getProp(customElements, name)
-    adoptList(method, name)
-    method.dispose()
+  let grafted = []
+  try {
+    const report = take(surface, 'grafted')
+    grafted = JSON.parse(ctx.getString(report)) ?? []
+  } catch {
+    grafted = []
   }
-  bridge.install(bridge.global, 'customElements', customElements, {
-    enumerable: false,
-    configurable: true,
-    writable: true,
-  })
 
   bridge.onDispose(() => {
     for (const handle of own) {
@@ -376,96 +364,92 @@ function brandElements(bridge) {
     own.length = 0
   })
   surface.dispose()
-  bridge.emit('sandbox', 'emit', { event: 'anti-fingerprint.elements-branded' })
+  bridge.emit('sandbox', 'emit', { event: 'anti-fingerprint.elements-branded', grafted })
 }
 
 /**
- * Guest half of `brandElements`: builds the interface constructors, the
- * `Symbol.toStringTag`/`constructor` accessors and the `CustomElementRegistry`.
+ * Guest half of `reconcileDomInterfaces` plus the `CustomElementRegistry`.
+ *
  * Everything is guest code so the closures live in the guest realm and no host
- * state can be reached from a prototype.
+ * state is reachable from a prototype. The hierarchy prototypes are used, never
+ * copied: an idempotent `Object.setPrototypeOf` on a foreign class prototype is
+ * the only mutation.
  */
-const ELEMENT_INTERFACES_SOURCE = `(function (elementProto, nodeProto, tagTable) {
+const DOM_INTERFACES_SOURCE = `(function (interfaces, htmlElementProto, htmlDocumentProto, styleProto) {
   var GLOBAL = globalThis;
-  var interfaces = {};
-  var TAG_INTERFACES = Object.create(null);
-  var name;
-  for (name in tagTable) {
-    var tags = tagTable[name];
-    for (var index = 0; index < tags.length; index += 1) TAG_INTERFACES[tags[index]] = name;
-  }
+  var grafted = [];
 
-  function illegal(name) {
-    var ctor = function () { throw new TypeError('Illegal constructor'); };
-    Object.defineProperty(ctor, 'name', { value: name, configurable: true });
-    return ctor;
-  }
-  // The DOM shim builds every element from one shared prototype, and the canvas
-  // module builds its own tag objects, so instanceof for the interfaces is
-  // answered structurally (nodeType plus tagName) instead of by prototype
-  // identity. HTMLElement.prototype is the shim prototype, so the prototype
-  // chain still answers Object.getPrototypeOf(div) correctly.
-  var DEFAULT_HAS_INSTANCE = Function.prototype[Symbol.hasInstance];
-  function installInterface(name, matches, prototype) {
-    // A module that already owns a tag (canvas installs HTMLCanvasElement,
-    // HTMLImageElement, HTMLAudioElement and HTMLVideoElement with real
-    // prototypes) keeps it: replacing it would break its prototype chain.
-    var existing = GLOBAL[name];
-    if (typeof existing === 'function' && name !== 'HTMLElement') {
-      interfaces[name] = existing;
-      return existing;
+  function chainHas(proto, target) {
+    var current = proto;
+    while (current) {
+      if (current === target) return true;
+      current = Object.getPrototypeOf(current);
     }
-    var ctor = illegal(name);
-    var proto = prototype || Object.create(elementProto);
-    ctor.prototype = proto;
-    Object.defineProperty(proto, 'constructor', { value: ctor, writable: true, enumerable: false, configurable: true });
-    // Derived classes inherit the static side of their parent, so an
-    // unconditional hook would make every element an instance of every user
-    // subclass. Only the interface constructor itself answers structurally;
-    // subclasses fall back to the spec algorithm.
-    Object.defineProperty(ctor, Symbol.hasInstance, {
-      value: function (value) {
-        if (this !== ctor) return DEFAULT_HAS_INSTANCE.call(this, value);
-        return matches(value);
-      },
-      configurable: true
-    });
-    Object.defineProperty(GLOBAL, name, { value: ctor, writable: true, enumerable: false, configurable: true });
-    interfaces[name] = ctor;
-    return ctor;
+    return false;
   }
-  function isElementLike(value) {
-    return value !== null && typeof value === 'object' && value.nodeType === 1 && typeof value.tagName === 'string';
+  function defineHidden(target, key, value) {
+    Object.defineProperty(target, key, { value: value, writable: true, enumerable: false, configurable: true });
   }
-  function tagMatcher(tags) {
-    return function (value) {
-      return isElementLike(value) && tags.indexOf(value.tagName.toLowerCase()) >= 0;
-    };
+  /**
+   * Put the hierarchy prototype into the chain of a class another module owns,
+   * without disturbing the members that module installed on its own prototype.
+   */
+  function graft(proto, parent, label) {
+    if (!proto || typeof proto !== 'object' || !parent) return false;
+    if (chainHas(proto, parent)) return false;
+    try {
+      Object.setPrototypeOf(proto, parent);
+      grafted.push(label);
+      return true;
+    } catch (error) {
+      return false;
+    }
   }
 
-  var HTMLElement = installInterface('HTMLElement', isElementLike, elementProto);
-  for (name in tagTable) installInterface(name, tagMatcher(tagTable[name]), null);
+  // ---- element interfaces owned by another module (canvas) --------------
+  // The class identity stays: its constructor carries the real behaviour and
+  // its prototype already holds the interface brand. Only the parent link is
+  // added, so the chain is HTMLCanvasElement -> HTMLElement -> Element -> Node
+  // -> EventTarget, exactly as the platform builds it.
+  var names = Object.keys(interfaces);
+  for (var index = 0; index < names.length; index += 1) {
+    var name = names[index];
+    if (name.slice(0, 4) !== 'HTML' || name.slice(-7) !== 'Element') continue;
+    var existing = GLOBAL[name];
+    if (typeof existing !== 'function' || existing === interfaces[name]) continue;
+    graft(existing.prototype, htmlElementProto, name);
+  }
 
-  function interfaceNameFor(node) {
-    if (!node || typeof node !== 'object') return 'HTMLElement';
-    var type = node.nodeType;
-    if (type === 3) return 'Text';
-    if (type === 8) return 'Comment';
-    if (type === 9) return 'HTMLDocument';
-    var tag = typeof node.tagName === 'string' ? node.tagName.toLowerCase() : 'div';
-    return TAG_INTERFACES[tag] || 'HTMLElement';
+  // ---- Document / HTMLDocument (dom-parser) -----------------------------
+  var parsedDocument = typeof GLOBAL.Document === 'function' ? GLOBAL.Document : null;
+  var parsedHTMLDocument = typeof GLOBAL.HTMLDocument === 'function' ? GLOBAL.HTMLDocument : null;
+  var parsedBase = parsedDocument && parsedDocument !== interfaces.Document ? parsedDocument.prototype : null;
+  var parsedHTMLProto = parsedHTMLDocument && parsedHTMLDocument !== interfaces.HTMLDocument
+    ? parsedHTMLDocument.prototype
+    : null;
+  if (parsedBase && typeof parsedBase === 'object' && parsedBase !== Object.prototype) {
+    // Parsed documents reach the hierarchy through their shared base prototype.
+    // The parser's own members stay nearest to the instance, so tree building
+    // keeps working unchanged.
+    graft(parsedBase, htmlDocumentProto, 'Document.prototype');
+    defineHidden(parsedBase, 'constructor', interfaces.Document);
+    if (parsedHTMLProto) defineHidden(parsedHTMLProto, 'constructor', interfaces.HTMLDocument);
+    defineHidden(GLOBAL, 'Document', interfaces.Document);
+    defineHidden(GLOBAL, 'HTMLDocument', interfaces.HTMLDocument);
   }
-  function tagGetter() {
-    return interfaceNameFor(this);
-  }
-  function ctorGetter() {
-    if (this === elementProto) return HTMLElement;
-    return interfaces[interfaceNameFor(this)] || HTMLElement;
-  }
-  var protos = [elementProto, nodeProto];
-  for (var protoIndex = 0; protoIndex < protos.length; protoIndex += 1) {
-    Object.defineProperty(protos[protoIndex], Symbol.toStringTag, { get: tagGetter, enumerable: false, configurable: true });
-    Object.defineProperty(protos[protoIndex], 'constructor', { get: ctorGetter, enumerable: false, configurable: true });
+
+  // ---- canvas element styles -------------------------------------------
+  // Canvas builds its elements (and their style objects) itself; an instance
+  // must still answer instanceof CSSStyleDeclaration.
+  try {
+    var probe = GLOBAL.document && typeof GLOBAL.document.createElement === 'function'
+      ? GLOBAL.document.createElement('canvas')
+      : null;
+    var canvasStyleProto = probe && probe.style ? Object.getPrototypeOf(probe.style) : null;
+    if (canvasStyleProto) graft(canvasStyleProto, styleProto, 'CSSStyleDeclaration');
+  } catch (canvasError) {
+    // A canvas element factory is optional; the shim element path already
+    // carries the interface.
   }
 
   // ---- CustomElementRegistry -------------------------------------------
@@ -551,11 +535,8 @@ const ELEMENT_INTERFACES_SOURCE = `(function (elementProto, nodeProto, tagTable)
   });
 
   return {
-    HTMLElement: HTMLElement,
-    interfaces: interfaces,
     customElements: customElements,
-    tagGetter: tagGetter,
-    ctorGetter: ctorGetter
+    grafted: JSON.stringify(grafted)
   };
 })`
 
@@ -728,7 +709,7 @@ export function install(bridge) {
   prototypifySurfaces(bridge)
   hideChannelSymbols(bridge)
   brandObjects(bridge)
-  brandElements(bridge)
+  reconcileDomInterfaces(bridge)
 
   bridge.antiFingerprint = {
     removed,

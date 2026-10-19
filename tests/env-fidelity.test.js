@@ -399,7 +399,13 @@ test('document.createElement results are HTMLElement and per-tag interfaces', as
           scriptIsScript: script instanceof HTMLScriptElement,
           inputIsInput: input instanceof HTMLInputElement,
           notAnElement: 'x' instanceof HTMLElement,
-          prototypeChain: Object.getPrototypeOf(div) === HTMLElement.prototype,
+          // The platform puts the tag interface directly above the instance:
+          // div -> HTMLDivElement.prototype -> HTMLElement.prototype -> ...
+          prototypeChain: Object.getPrototypeOf(div) === HTMLDivElement.prototype,
+          parentChain: Object.getPrototypeOf(HTMLDivElement.prototype) === HTMLElement.prototype &&
+            Object.getPrototypeOf(HTMLElement.prototype) === Element.prototype &&
+            Object.getPrototypeOf(Element.prototype) === Node.prototype &&
+            Object.getPrototypeOf(Node.prototype) === EventTarget.prototype,
           prototypeCtor: HTMLElement.prototype.constructor === HTMLElement,
           brand: Object.prototype.toString.call(div),
           bodyBrand: Object.prototype.toString.call(document.body),
@@ -425,7 +431,8 @@ test('document.createElement results are HTMLElement and per-tag interfaces', as
     assert.equal(value.scriptIsScript, true)
     assert.equal(value.inputIsInput, true)
     assert.equal(value.notAnElement, false)
-    assert.equal(value.prototypeChain, true)
+    assert.equal(value.prototypeChain, true, 'the instance prototype must be the tag interface')
+    assert.equal(value.parentChain, true, 'each interface must sit on its specified parent interface')
     assert.equal(value.prototypeCtor, true)
     assert.equal(value.brand, '[object HTMLDivElement]', 'the D6 probe brand must not change')
     assert.equal(value.bodyBrand, '[object HTMLBodyElement]')
@@ -434,6 +441,266 @@ test('document.createElement results are HTMLElement and per-tag interfaces', as
     assert.equal(value.nativeSource, true)
     assert.equal(value.illegal, 'TypeError:Illegal constructor')
     assert.equal(value.interfaceIllegal, 'TypeError')
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('the DOM interface hierarchy is a real prototype chain', async () => {
+  const sb = await sandbox()
+  try {
+    const { value } = await probe(
+      sb,
+      `(function () {
+        var REQUIRED = ['EventTarget', 'Node', 'Element', 'CharacterData', 'Text', 'Comment',
+          'DocumentFragment', 'DocumentType', 'Document', 'NodeList', 'HTMLCollection',
+          'DOMTokenList', 'CSSStyleDeclaration', 'HTMLElement'];
+        var out = { missing: REQUIRED.filter(function (name) { return typeof globalThis[name] !== 'function' }) };
+
+        // Every interface sits directly on its specified parent, and the root
+        // of every chain is Object.prototype: the chain, not a
+        // Symbol.hasInstance hook, answers instanceof.
+        function linked(list) {
+          for (var index = 0; index < list.length - 1; index += 1) {
+            if (Object.getPrototypeOf(list[index].prototype) !== list[index + 1].prototype) return false;
+          }
+          return Object.getPrototypeOf(list[list.length - 1].prototype) === Object.prototype;
+        }
+        out.chains = {
+          element: linked([HTMLDivElement, HTMLElement, Element, Node, EventTarget]),
+          body: linked([HTMLBodyElement, HTMLElement, Element, Node, EventTarget]),
+          text: linked([Text, CharacterData, Node, EventTarget]),
+          comment: linked([Comment, CharacterData, Node, EventTarget]),
+          fragment: linked([DocumentFragment, Node, EventTarget]),
+          document: linked([HTMLDocument, Document, Node, EventTarget]),
+          nodeList: linked([NodeList]),
+          htmlCollection: linked([HTMLCollection]),
+          tokenList: linked([DOMTokenList]),
+          style: linked([CSSStyleDeclaration])
+        };
+
+        var div = document.createElement('div');
+        var text = document.createTextNode('x');
+        var comment = document.createComment('c');
+        var fragment = document.createDocumentFragment();
+        var nodeList = document.querySelectorAll('div');
+        var collection = document.getElementsByTagName('div');
+        var canvas = document.createElement('canvas');
+        out.instances = {
+          divElement: div instanceof Element,
+          divNode: div instanceof Node,
+          divEventTarget: div instanceof EventTarget,
+          divHTMLElement: div instanceof HTMLElement,
+          divDiv: div instanceof HTMLDivElement,
+          spanNotDiv: !(document.createElement('span') instanceof HTMLDivElement),
+          divNotText: !(div instanceof Text),
+          documentDocument: document instanceof Document,
+          documentHTMLDocument: document instanceof HTMLDocument,
+          documentNode: document instanceof Node,
+          documentEventTarget: document instanceof EventTarget,
+          bodyHTMLElement: document.body instanceof HTMLElement,
+          bodyBody: document.body instanceof HTMLBodyElement,
+          textText: text instanceof Text,
+          textCharacterData: text instanceof CharacterData,
+          textNode: text instanceof Node,
+          commentComment: comment instanceof Comment,
+          commentCharacterData: comment instanceof CharacterData,
+          fragmentFragment: fragment instanceof DocumentFragment,
+          fragmentNode: fragment instanceof Node,
+          nodeList: nodeList instanceof NodeList,
+          collection: collection instanceof HTMLCollection,
+          tokenList: div.classList instanceof DOMTokenList,
+          style: div.style instanceof CSSStyleDeclaration,
+          computedStyle: getComputedStyle(div) instanceof CSSStyleDeclaration,
+          canvasHTMLElement: canvas instanceof HTMLElement,
+          canvasNode: canvas instanceof Node,
+          canvasImageHTMLElement: document.createElement('img') instanceof HTMLElement,
+          canvasStyle: canvas.style instanceof CSSStyleDeclaration
+        };
+
+        // childNodes/children are live collection instances, not host Arrays:
+        // Array.isArray(document.body.childNodes) is a classic sandbox tell.
+        var body = document.body;
+        var paragraph = document.createElement('p');
+        body.appendChild(paragraph);
+        out.live = {
+          childNodesIsNodeList: body.childNodes instanceof NodeList,
+          childrenIsCollection: body.children instanceof HTMLCollection,
+          childNodesLength: body.childNodes.length,
+          childNodesIndex: body.childNodes[0] === paragraph,
+          childrenIndex: body.children[0] === paragraph,
+          childNodesNotArray: !Array.isArray(body.childNodes) && !Array.isArray(body.children),
+          childNodesItem: body.childNodes.item(0) === paragraph,
+          liveAfterInsert: (function () {
+            var extra = document.createElement('span');
+            body.appendChild(extra);
+            var ok = body.childNodes.length === 2 && body.childNodes[1] === extra;
+            body.removeChild(extra);
+            return ok;
+          })(),
+          indexRemoved: body.childNodes[1] === undefined && body.childNodes.length === 1
+        };
+
+        // Array-like shape of the two collection interfaces.
+        out.collections = {
+          nodeListLength: typeof nodeList.length,
+          nodeListItem: typeof nodeList.item,
+          nodeListForEach: typeof nodeList.forEach,
+          nodeListIterable: typeof nodeList[Symbol.iterator] === 'function' &&
+            Array.from(nodeList).length === nodeList.length,
+          collectionItem: typeof collection.item,
+          collectionNamedItem: typeof collection.namedItem,
+          notArray: !Array.isArray(nodeList) && !Array.isArray(collection)
+        };
+
+        out.brands = {
+          div: Object.prototype.toString.call(div),
+          body: Object.prototype.toString.call(document.body),
+          text: Object.prototype.toString.call(text),
+          comment: Object.prototype.toString.call(comment),
+          fragment: Object.prototype.toString.call(fragment),
+          document: Object.prototype.toString.call(document),
+          nodeList: Object.prototype.toString.call(nodeList),
+          collection: Object.prototype.toString.call(collection),
+          tokenList: Object.prototype.toString.call(div.classList),
+          style: Object.prototype.toString.call(div.style)
+        };
+        out.constructors = {
+          div: div.constructor.name,
+          text: text.constructor.name,
+          document: document.constructor.name,
+          nodeList: nodeList.constructor.name,
+          style: div.style.constructor.name,
+          htmlElement: HTMLElement.prototype.constructor === HTMLElement
+        };
+
+        // A structural hook would answer instanceof from nodeType/tagName; the
+        // interfaces must not define one.
+        out.structuralHooks = [EventTarget, Node, Element, HTMLElement, HTMLDivElement, Text,
+          Comment, CharacterData, Document, DocumentFragment, NodeList, HTMLCollection]
+          .filter(function (ctor) { return Object.getOwnPropertyDescriptor(ctor, Symbol.hasInstance) !== undefined }).length;
+        out.illegal = (function () { try { new Element() } catch (error) { return error.name } return 'constructed' })();
+
+        // Instances own nothing; per-instance state stays per instance.
+        out.owns = {
+          divKeys: Object.keys(div).length,
+          divNames: Object.getOwnPropertyNames(div).length,
+          divSymbols: Object.getOwnPropertySymbols(div).length,
+          textKeys: Object.keys(text).length,
+          textSymbols: Object.getOwnPropertySymbols(text).length,
+          nodeListKeys: nodeList.length,
+          classListKeys: Object.keys(div.classList).length,
+          styleKeys: Object.keys(div.style).length
+        };
+        var first = document.createElement('div');
+        var second = document.createElement('div');
+        first.id = 'only-first';
+        first.style.color = 'red';
+        first.classList.add('alpha');
+        out.state = {
+          idsDiffer: first.id !== second.id,
+          stylePerInstance: first.style !== second.style,
+          classListPerInstance: first.classList !== second.classList,
+          childNodesPerInstance: first.childNodes !== second.childNodes,
+          secondClean: second.id === '' && second.classList.length === 0 && second.childNodes.length === 0,
+          firstKept: first.id === 'only-first' && first.classList.contains('alpha'),
+          prototypeShared: Object.getPrototypeOf(first.style) === Object.getPrototypeOf(second.style)
+        };
+
+        // CharacterData/Text operations live on the interfaces, not the nodes.
+        var data = document.createTextNode('hello');
+        data.appendData('!');
+        var tail = data.splitText(2);
+        out.characterData = {
+          data: data.data,
+          length: data.length,
+          nodeValue: data.nodeValue,
+          tail: tail.data,
+          tailIsText: tail instanceof Text,
+          appendNative: String(CharacterData.prototype.appendData).includes('native code'),
+          splitNative: String(Text.prototype.splitText).includes('native code')
+        };
+        out.nativeSources = [EventTarget, Node, Element, HTMLElement, HTMLDivElement, Text, Comment,
+          CharacterData, Document, DocumentFragment, NodeList, HTMLCollection, DOMTokenList,
+          CSSStyleDeclaration]
+          .filter(function (ctor) { return !String(ctor).includes('native code') });
+        return JSON.stringify(out);
+      })()`,
+    )
+    assert.deepEqual(value.missing, [], 'every DOM interface must be a global')
+    for (const [name, ok] of Object.entries(value.chains)) {
+      assert.equal(ok, true, `${name}: the interface must sit on its specified parent interface`)
+    }
+    for (const [name, ok] of Object.entries(value.instances)) {
+      assert.equal(ok, true, `${name}: instanceof must hold through the prototype chain`)
+    }
+    assert.deepEqual(value.live, {
+      childNodesIsNodeList: true,
+      childrenIsCollection: true,
+      childNodesLength: 1,
+      childNodesIndex: true,
+      childrenIndex: true,
+      childNodesNotArray: true,
+      childNodesItem: true,
+      liveAfterInsert: true,
+      indexRemoved: true,
+    })
+    assert.equal(value.collections.nodeListLength, 'number')
+    assert.equal(value.collections.nodeListItem, 'function')
+    assert.equal(value.collections.nodeListForEach, 'function')
+    assert.equal(value.collections.nodeListIterable, true)
+    assert.equal(value.collections.collectionItem, 'function')
+    assert.equal(value.collections.collectionNamedItem, 'function')
+    assert.equal(value.collections.notArray, true, 'a collection must not be a plain Array')
+    assert.deepEqual(value.brands, {
+      div: '[object HTMLDivElement]',
+      body: '[object HTMLBodyElement]',
+      text: '[object Text]',
+      comment: '[object Comment]',
+      fragment: '[object DocumentFragment]',
+      document: '[object HTMLDocument]',
+      nodeList: '[object NodeList]',
+      collection: '[object HTMLCollection]',
+      tokenList: '[object DOMTokenList]',
+      style: '[object CSSStyleDeclaration]',
+    })
+    assert.equal(value.constructors.div, 'HTMLDivElement')
+    assert.equal(value.constructors.text, 'Text')
+    assert.equal(value.constructors.document, 'HTMLDocument')
+    assert.equal(value.constructors.nodeList, 'NodeList')
+    assert.equal(value.constructors.style, 'CSSStyleDeclaration')
+    assert.equal(value.constructors.htmlElement, true)
+    assert.equal(value.structuralHooks, 0, 'instanceof must come from the chain, not a structural hook')
+    assert.equal(value.illegal, 'TypeError')
+    assert.deepEqual(value.owns, {
+      divKeys: 0,
+      divNames: 0,
+      divSymbols: 0,
+      textKeys: 0,
+      textSymbols: 0,
+      nodeListKeys: 0,
+      classListKeys: 0,
+      styleKeys: 0,
+    })
+    assert.deepEqual(value.state, {
+      idsDiffer: true,
+      stylePerInstance: true,
+      classListPerInstance: true,
+      childNodesPerInstance: true,
+      secondClean: true,
+      firstKept: true,
+      prototypeShared: true,
+    })
+    assert.deepEqual(value.characterData, {
+      data: 'he',
+      length: 2,
+      nodeValue: 'he',
+      tail: 'llo!',
+      tailIsText: true,
+      appendNative: true,
+      splitNative: true,
+    })
+    assert.deepEqual(value.nativeSources, [], 'interfaces must stringify as native code')
   } finally {
     sb.dispose()
   }

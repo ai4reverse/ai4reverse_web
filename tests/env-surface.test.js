@@ -295,9 +295,13 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
   try {
     const run = await sb.run(`
       (function () {
+        // Every DOM interface the sandbox publishes. A Chromium profile exposes
+        // all of them, so a missing name is a detectable gap.
         var names = ['HTMLElement','HTMLDivElement','HTMLBodyElement','HTMLCanvasElement','HTMLScriptElement',
           'HTMLInputElement','HTMLImageElement','HTMLAnchorElement','customElements','DOMParser','XMLSerializer',
-          'EventSource','WebAssembly','Atomics','SharedArrayBuffer'];
+          'EventSource','WebAssembly','Atomics','SharedArrayBuffer',
+          'EventTarget','Node','Element','CharacterData','Text','Comment','DocumentFragment','DocumentType',
+          'Document','NodeList','HTMLCollection','DOMTokenList','CSSStyleDeclaration'];
         var element = document.createElement('div');
         return {
           types: {
@@ -313,6 +317,11 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
           missingTypes: names.filter(function (name) { return typeof globalThis[name] === 'undefined' }),
           crossOriginIsolated: crossOriginIsolated,
           elementIsHTMLElement: element instanceof HTMLElement,
+          elementInHierarchy: element instanceof Element && element instanceof Node &&
+            element instanceof EventTarget && document instanceof Document &&
+            document.createTextNode('x') instanceof Text &&
+            document.querySelectorAll('div') instanceof NodeList &&
+            element.classList instanceof DOMTokenList && element.style instanceof CSSStyleDeclaration,
           bodyIsBody: document.body instanceof HTMLBodyElement,
           elementBrand: Object.prototype.toString.call(element),
           customElementsBrand: Object.prototype.toString.call(customElements),
@@ -344,6 +353,7 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
     assert.deepEqual(value.missingTypes, ['Atomics', 'SharedArrayBuffer'])
     assert.equal(value.crossOriginIsolated, false)
     assert.equal(value.elementIsHTMLElement, true)
+    assert.equal(value.elementInHierarchy, true, 'the DOM interfaces must form one prototype chain')
     assert.equal(value.bodyIsBody, true)
     assert.equal(value.elementBrand, '[object HTMLDivElement]')
     assert.equal(value.customElementsBrand, '[object CustomElementRegistry]')

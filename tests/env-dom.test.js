@@ -585,3 +585,135 @@ test('geometry and URLs are deterministic for a fixed profile and seed', async (
     second.dispose()
   }
 })
+
+test('the DOM module alone installs the interface hierarchy', async () => {
+  const harness = await createHarness({ modules: MODULES })
+  try {
+    const [
+      missing,
+      chains,
+      instances,
+      brands,
+      owns,
+      structuralHooks,
+      constructed,
+      perInstance,
+      nativeSources,
+    ] = run(
+      harness,
+      `(function () {
+        var REQUIRED = ['EventTarget', 'Node', 'Element', 'CharacterData', 'Text', 'Comment',
+          'DocumentFragment', 'DocumentType', 'Document', 'NodeList', 'HTMLCollection',
+          'DOMTokenList', 'CSSStyleDeclaration', 'HTMLElement', 'HTMLDivElement'];
+        function linked(list) {
+          for (var index = 0; index < list.length - 1; index += 1) {
+            if (Object.getPrototypeOf(list[index].prototype) !== list[index + 1].prototype) return false;
+          }
+          return Object.getPrototypeOf(list[list.length - 1].prototype) === Object.prototype;
+        }
+        var div = document.createElement('div');
+        var text = document.createTextNode('x');
+        var fragment = document.createDocumentFragment();
+        var list = document.querySelectorAll('div');
+        var first = document.createElement('div');
+        var second = document.createElement('div');
+        first.id = 'first';
+        first.classList.add('a');
+        return [
+          REQUIRED.filter(function (name) { return typeof globalThis[name] !== 'function' }),
+          {
+            element: linked([HTMLDivElement, HTMLElement, Element, Node, EventTarget]),
+            text: linked([Text, CharacterData, Node, EventTarget]),
+            fragment: linked([DocumentFragment, Node, EventTarget]),
+            document: linked([HTMLDocument, Document, Node, EventTarget]),
+            nodeList: linked([NodeList]),
+            tokenList: linked([DOMTokenList]),
+            style: linked([CSSStyleDeclaration]),
+          },
+          {
+            divElement: div instanceof Element,
+            divNode: div instanceof Node,
+            divEventTarget: div instanceof EventTarget,
+            divHTMLElement: div instanceof HTMLElement,
+            divIsDiv: div instanceof HTMLDivElement,
+            spanNotDiv: !(document.createElement('span') instanceof HTMLDivElement),
+            bodyBody: document.body instanceof HTMLBodyElement,
+            documentDocument: document instanceof Document,
+            documentNode: document instanceof Node,
+            textText: text instanceof Text,
+            textCharacterData: text instanceof CharacterData,
+            fragmentFragment: fragment instanceof DocumentFragment,
+            nodeList: list instanceof NodeList,
+            collection: document.getElementsByTagName('div') instanceof HTMLCollection,
+            tokenList: div.classList instanceof DOMTokenList,
+            style: div.style instanceof CSSStyleDeclaration,
+            shimCanvas: document.createElement('canvas') instanceof HTMLCanvasElement,
+          },
+          {
+            div: Object.prototype.toString.call(div),
+            text: Object.prototype.toString.call(text),
+            document: Object.prototype.toString.call(document),
+            list: Object.prototype.toString.call(list),
+            style: Object.prototype.toString.call(div.style)
+          },
+          {
+            keys: Object.keys(div).length,
+            names: Object.getOwnPropertyNames(div).length,
+            symbols: Object.getOwnPropertySymbols(div).length,
+            textKeys: Object.keys(text).length
+          },
+          [Element, Node, HTMLElement, HTMLDivElement, Text, Document, NodeList]
+            .filter(function (ctor) { return Object.getOwnPropertyDescriptor(ctor, Symbol.hasInstance) !== undefined }).length,
+          (function () { try { new Node() } catch (error) { return error.name } return 'constructed' })(),
+          {
+            ids: first.id !== second.id,
+            classes: first.classList.length === 1 && second.classList.length === 0,
+            style: first.style !== second.style,
+            children: first.childNodes !== second.childNodes,
+            childNodesIsNodeList: first.childNodes instanceof NodeList,
+            childrenIsCollection: first.children instanceof HTMLCollection,
+            liveIndex: (function () {
+              first.appendChild(document.createElement('b'));
+              var ok = first.childNodes.length === 1 && first.childNodes[0] === first.firstChild;
+              first.removeChild(first.firstChild);
+              return ok && first.childNodes.length === 0 && first.childNodes[0] === undefined;
+            })(),
+            notArray: !Array.isArray(first.childNodes) && !Array.isArray(first.children)
+          },
+          [Node, Element, HTMLElement, Text, Document, NodeList, CSSStyleDeclaration]
+            .filter(function (ctor) { return !String(ctor).includes('native code') })
+        ]
+      })()`,
+    )
+    assert.deepEqual(missing, [], 'the DOM module must publish every interface')
+    for (const [name, ok] of Object.entries(chains)) {
+      assert.equal(ok, true, `${name}: interface prototypes must form the specified chain`)
+    }
+    for (const [name, ok] of Object.entries(instances)) {
+      assert.equal(ok, true, `${name}: instanceof must hold`)
+    }
+    assert.deepEqual(brands, {
+      div: '[object HTMLDivElement]',
+      text: '[object Text]',
+      document: '[object HTMLDocument]',
+      list: '[object NodeList]',
+      style: '[object CSSStyleDeclaration]',
+    })
+    assert.deepEqual(owns, { keys: 0, names: 0, symbols: 0, textKeys: 0 })
+    assert.equal(structuralHooks, 0, 'instanceof comes from the prototype chain only')
+    assert.equal(constructed, 'TypeError')
+    assert.deepEqual(perInstance, {
+      ids: true,
+      classes: true,
+      style: true,
+      children: true,
+      childNodesIsNodeList: true,
+      childrenIsCollection: true,
+      liveIndex: true,
+      notArray: true,
+    })
+    assert.deepEqual(nativeSources, [], 'interface constructors must stringify as native code')
+  } finally {
+    harness.dispose()
+  }
+})
