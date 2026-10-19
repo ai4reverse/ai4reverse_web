@@ -1,0 +1,52 @@
+{
+  "name": "ai4reverse-web",
+  "version": "1.0.0",
+  "description": "Traceless malicious JavaScript analysis platform built on quickjs-emscripten and Babel",
+  "type": "module",
+  "main": "tools/index.js",
+  "exports": {
+    ".": "./tools/index.js",
+    "./sandbox": "./tools/sandbox/index.js",
+    "./instrumentation": "./tools/instrumentation/index.js",
+    "./hook": "./tools/hook/index.js",
+    "./restore": "./tools/restore/index.js",
+    "./analysis": "./tools/analysis/index.js",
+    "./jsvmp": "./tools/jsvmp/index.js"
+  },
+  "bin": {
+    "ai4reverse": "./tools/cli.js"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "test:verbose": "node --test --test-reporter=spec $(ls tests/*.test.js | tr '\\n' ' ')",
+    "analyze": "node tools/cli.js analyze",
+    "restore": "node tools/cli.js restore",
+    "run": "node tools/cli.js run",
+    "test:watch": "node --test --watch tests/*.test.js"
+  },
+  "keywords": [
+    "malware-analysis",
+    "javascript",
+    "deobfuscation",
+    "sandbox",
+    "quickjs",
+    "babel",
+    "jsvmp"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "dependencies": {
+    "@babel/generator": "^8.0.6",
+    "@babel/parser": "^8.0.7",
+    "@babel/template": "^8.0.0",
+    "@babel/traverse": "^8.0.7",
+    "@babel/types": "^8.0.6",
+    "pino": "^10.4.0",
+    "pino-pretty": "^13.2.0",
+    "quickjs-emscripten": "^0.32.0",
+    "z3-solver": "^5.3.1"
+  }
+}
