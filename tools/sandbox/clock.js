@@ -1,0 +1,181 @@
+import { createSeededRandom } from '../util/random.js'
+
+/**
+ * Virtual clock for the sandbox.
+ *
+ * Malware measures time: `Date.now()` deltas around busy loops, `performance.now()`
+ * around feature probes, long `setTimeout` chains used as execution delays. A
+ * sandbox that runs on the real clock leaks its own speed and makes analysis
+ * non-reproducible. This clock is the only time source the guest sees.
+ *
+ * Resolution emulates a browser timer clamp and provides a small non-zero
+ * quantum so instrumentation overhead never manifests as suspiciously fast or
+ * suspiciously slow wall-clock deltas.
+ */
+
+/** @param {object} [options] */
+export function createVirtualClock(options = {}) {
+  const {
+    epoch = 1792394400000,
+    resolutionMs = 0.1,
+    maxTimerDelay = 2_147_483_647,
+    seed = 'clock',
+    logger = null,
+  } = options
+
+  const rng = createSeededRandom(seed)
+  const timeOriginOffset = Math.floor(rng.next() * 2000) + 100
+  let elapsed = 0
+  let timerSeq = 0
+  /** @type {Map<number, {id:number, due:number, fn:Function, interval:number|null, args:unknown[]}>} */
+  const timers = new Map()
+  const errors = []
+
+  const clock = {
+    epoch,
+    timeOrigin: epoch - timeOriginOffset,
+
+    /** Wall-clock milliseconds as the guest sees them. */
+    now() {
+      return Math.floor(epoch + elapsed)
+    },
+
+    /** Sub-millisecond clock for performance.now(). */
+    nowFloat() {
+      return epoch + elapsed
+    },
+
+    /** performance.now() value. */
+    performanceNow() {
+      return timeOriginOffset + elapsed
+    },
+
+    get elapsedMs() {
+      return elapsed
+    },
+
+    /** Advance virtual time. */
+    advance(ms) {
+      const delta = Number(ms)
+      if (!Number.isFinite(delta) || delta <= 0) return clock.now()
+      elapsed += delta
+      return clock.now()
+    },
+
+    /**
+     * Advance by one resolution quantum. Called by instrumentation so that a
+     * traced run still reports plausible elapsed time.
+     */
+    tick(units = 1) {
+      elapsed += resolutionMs * units
+      return clock.now()
+    },
+
+    /**
+     * Schedule a virtual timer.
+     * @param {{fn: Function, delay?: number, interval?: boolean, args?: unknown[]}} timer
+     * @returns {number} timer id
+     */
+    schedule(timer) {
+      timerSeq += 1
+      const delay = clampDelay(timer.delay, maxTimerDelay)
+      const entry = {
+        id: timerSeq,
+        due: elapsed + delay,
+        fn: timer.fn,
+        interval: timer.interval ? Math.max(delay, 4) : null,
+        args: timer.args ?? [],
+      }
+      timers.set(entry.id, entry)
+      return entry.id
+    },
+
+    cancel(id) {
+      return timers.delete(Number(id))
+    },
+
+    pending() {
+      return timers.size
+    },
+
+    /** Milliseconds until the next timer is due (Infinity when idle). */
+    nextDueIn() {
+      let min = Infinity
+      for (const timer of timers.values()) min = Math.min(min, timer.due - elapsed)
+      return min
+    },
+
+    /**
+     * Run due timers, advancing virtual time to each due point.
+     * @param {{maxCallbacks?: number, maxVirtualMs?: number}} [options]
+     * @returns {{executed:number, advancedMs:number, errors:object[], exhausted:boolean}}
+     */
+    runDue(options = {}) {
+      const { maxCallbacks = 1000, maxVirtualMs = 60_000 } = options
+      let executed = 0
+      let advanced = 0
+      let exhausted = false
+
+      while (executed < maxCallbacks) {
+        let next = null
+        for (const timer of timers.values()) {
+          if (!next || timer.due < next.due) next = timer
+        }
+        if (!next) break
+        // Advance virtual time to the earliest timer. `runDue` is the sandbox
+        // event loop, so "run the next turn" implies moving the clock.
+        const step = Math.max(0, next.due - elapsed)
+        if (advanced + step > maxVirtualMs) {
+          exhausted = true
+          break
+        }
+        elapsed += step
+        advanced += step
+        executed += 1
+        if (next.interval !== null) {
+          next.due = elapsed + next.interval
+        } else {
+          timers.delete(next.id)
+        }
+        try {
+          next.fn(...next.args)
+        } catch (error) {
+          errors.push({ timerId: next.id, message: error?.message ?? String(error) })
+          logger?.debug?.({ timerId: next.id, err: error?.message }, 'timer callback threw')
+        }
+      }
+
+      return { executed, advancedMs: advanced, errors, exhausted }
+    },
+
+    /** Advance to the next pending timer even if it is far in the future, then run it. */
+    advanceToNextTimer(capMs = 60_000) {
+      const due = clock.nextDueIn()
+      if (!Number.isFinite(due)) return 0
+      const step = Math.min(Math.max(0, due), capMs)
+      elapsed += step
+      return step
+    },
+
+    stats() {
+      return {
+        epoch,
+        elapsedMs: Number(elapsed.toFixed(3)),
+        pendingTimers: timers.size,
+        timerErrors: errors.length,
+      }
+    },
+
+    dispose() {
+      timers.clear()
+    },
+  }
+
+  return clock
+}
+
+function clampDelay(value, max) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return 4
+  return Math.min(Math.trunc(parsed), max)
+}
