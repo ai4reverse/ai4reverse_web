@@ -28,15 +28,25 @@ export const TRACE_KINDS = Object.freeze([
   'restore',
 ])
 
+/**
+ * Every phase the platform emits. Kept complete on purpose: a strict recorder
+ * rejects exactly the phases that do not exist, so an omission here would
+ * turn a real event into a crash and a stale entry would bless a typo.
+ */
 export const TRACE_PHASES = Object.freeze([
   'emit',
   'before',
   'after',
+  'invoke',
   'enter',
   'exit',
   'step',
-  'error',
+  'transform',
   'skip',
+  'error',
+  'throw',
+  'catch',
+  'uncaught',
 ])
 
 /**
@@ -93,8 +103,11 @@ export function createTraceRecorder(options = {}) {
      * @returns {TraceEvent|null}
      */
     emit(kind, phase, payload = {}) {
-      if (!TRACE_KINDS.includes(kind)) {
-        if (strict) throw new Error(`unknown trace kind: ${kind}`)
+      if (strict) {
+        // Validate before mutating anything: a rejected event must not advance
+        // the sequence or pollute the counters.
+        if (!TRACE_KINDS.includes(kind)) throw new Error(`unknown trace kind: ${kind}`)
+        if (!TRACE_PHASES.includes(phase)) throw new Error(`unknown trace phase: ${phase}`)
       }
       seq += 1
       /** @type {TraceEvent} */
@@ -236,35 +249,5 @@ function safeJson(value) {
     return value
   } catch {
     return '[unserialisable]'
-  }
-}
-
-/**
- * Summarise a guest value for a trace event without disposing anything.
- * @param {unknown} value
- * @param {{maxLength?: number}} [options]
- */
-export function summarizeValue(value, options = {}) {
-  const maxLength = options.maxLength ?? 200
-  if (value === null) return { type: 'null' }
-  const type = typeof value
-  if (type === 'string') {
-    return { type, value: value.length > maxLength ? `${value.slice(0, maxLength)}…` : value, length: value.length }
-  }
-  if (type === 'number' || type === 'boolean' || type === 'bigint') return { type, value: String(value) }
-  if (type === 'undefined') return { type }
-  if (type === 'function') return { type, name: value.name, length: value.length }
-  if (type === 'object') {
-    if (Array.isArray(value)) return { type: 'array', length: value.length }
-    return { type: 'object', keys: safeKeys(value).slice(0, 20) }
-  }
-  return { type }
-}
-
-function safeKeys(value) {
-  try {
-    return Object.keys(value)
-  } catch {
-    return []
   }
 }
