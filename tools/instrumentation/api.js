@@ -46,6 +46,78 @@ export function createApiInstrumenter(options) {
     throw new Error('api instrumentation: owner lookup unavailable')
   }
   const ownerFactory = ownerFactoryResult.value
+
+  // The descriptor of the *original* member drives the shape of the wrapper.
+  // Wrapping a non-enumerable platform member (every WebIDL static method, e.g.
+  // `WebAssembly.validate`) as an enumerable own property adds a key Chromium
+  // never reports, so `Object.keys(WebAssembly).length` would go 0 -> 3.
+  const descriptorFactoryResult = ctx.evalCode(
+    '(function (owner, key) { var d = Object.getOwnPropertyDescriptor(owner, key); if (!d) return null; return { hasValue: Object.prototype.hasOwnProperty.call(d, "value"), value: d.value, get: d.get, set: d.set, enumerable: !!d.enumerable, configurable: !!d.configurable, writable: !!d.writable }; })',
+    'ai4r-internal:descriptor',
+  )
+  if (descriptorFactoryResult.error) {
+    descriptorFactoryResult.error.dispose()
+    throw new Error('api instrumentation: descriptor lookup unavailable')
+  }
+  const descriptorFactory = descriptorFactoryResult.value
+
+  /** Read a boolean field of a guest object without leaking the handle. */
+  const boolField = (target, key) => {
+    const handle = ctx.getProp(target, key)
+    const value = Boolean(ctx.dump(handle))
+    handle.dispose()
+    return value
+  }
+
+  /**
+   * Read `Object.getOwnPropertyDescriptor(owner, key)` as a host record.
+   * `value`/`get`/`set` are owned handles the caller must dispose.
+   * @param {object} owner
+   * @param {string} key
+   */
+  function readDescriptor(owner, key) {
+    const keyHandle = ctx.newString(key)
+    const result = ctx.callFunction(descriptorFactory, ctx.undefined, [owner, keyHandle])
+    keyHandle.dispose()
+    if (result.error) {
+      result.error.dispose()
+      return null
+    }
+    const descriptor = result.value
+    if (ctx.dump(descriptor) === null) {
+      descriptor.dispose()
+      return null
+    }
+    const record = {
+      hasValue: boolField(descriptor, 'hasValue'),
+      enumerable: boolField(descriptor, 'enumerable'),
+      configurable: boolField(descriptor, 'configurable'),
+      writable: boolField(descriptor, 'writable'),
+      value: ctx.getProp(descriptor, 'value'),
+      get: ctx.getProp(descriptor, 'get'),
+      set: ctx.getProp(descriptor, 'set'),
+    }
+    descriptor.dispose()
+    return record
+  }
+
+  /** Release the handles a `readDescriptor` record owns. */
+  function releaseDescriptor(descriptor) {
+    for (const handle of [descriptor?.value, descriptor?.get, descriptor?.set]) {
+      try {
+        handle?.dispose?.()
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+
+  /**
+   * A property can only be replaced when it is configurable, or when it is a
+   * writable data property (defineProperty allows changing its value).
+   */
+  const replaceable = (descriptor) =>
+    Boolean(descriptor) && (descriptor.configurable || (descriptor.hasValue && descriptor.writable))
   const findOwner = (targetHandle, key) => {
     const keyHandle = ctx.newString(key)
     const result = ctx.callFunction(ownerFactory, ctx.undefined, [targetHandle, keyHandle])
@@ -102,12 +174,31 @@ export function createApiInstrumenter(options) {
   function wrapMethod(targetHandle, key, spec) {
     const owner = findOwner(targetHandle, key)
     if (!owner) return false
-    const original = ctx.getProp(owner, key)
-    if (ctx.typeof(original) !== 'function') {
-      original.dispose()
+    const descriptor = readDescriptor(owner, key)
+    if (!replaceable(descriptor)) {
+      releaseDescriptor(descriptor)
       owner.dispose()
       return false
     }
+    // A data property yields its value directly; an accessor has to be invoked
+    // (the old behaviour) because the descriptor carries only the getter.
+    const original = descriptor.hasValue ? descriptor.value : ctx.getProp(owner, key)
+    if (descriptor.hasValue) descriptor.value = null
+    if (ctx.typeof(original) !== 'function') {
+      original.dispose()
+      releaseDescriptor(descriptor)
+      owner.dispose()
+      return false
+    }
+    // Mirror the original flags so the wrapper is invisible to
+    // `Object.keys`/`for...in` and stays replaceable. An accessor has no
+    // `writable` flag; a data replacement there stays writable.
+    const flags = {
+      enumerable: descriptor.enumerable,
+      configurable: descriptor.configurable,
+      writable: descriptor.hasValue ? descriptor.writable : true,
+    }
+    releaseDescriptor(descriptor)
     const arity = spec.arity ?? 0
     const label = spec.label ?? key
     const wrapper = bridge.fn(key, arity, ({ args, thisHandle }) => {
@@ -153,9 +244,9 @@ export function createApiInstrumenter(options) {
       hooks?.emit('api:after', { api: label, result: bridge.fromGuest(result.value), args: truncate(argsPlain) })
       return result.value
     })
-    // Wrap on the prototype that owns the property (WebIDL shape): instances
-    // keep zero own enumerable properties.
-    bridge.install(owner, key, wrapper, { enumerable: true, configurable: true, writable: true })
+    // Wrap on the object that owns the property (WebIDL shape): instances keep
+    // zero own enumerable properties.
+    bridge.install(owner, key, wrapper, flags)
     owner.dispose()
     wrapped.push({ label, arity, kind: 'method' })
     stats.targets += 1
@@ -174,36 +265,21 @@ export function createApiInstrumenter(options) {
     const label = spec.label ?? key
     const owner = findOwner(targetHandle, key)
     if (!owner) return false
-    const descriptorFactory = ctx.evalCode(
-      '(function(o,k){var d=Object.getOwnPropertyDescriptor(o,k);return d?{get:d.get,set:d.set,enumerable:d.enumerable,configurable:d.configurable}:null})',
-      'ai4r-internal:descriptor',
-    )
-    if (descriptorFactory.error) {
-      descriptorFactory.error.dispose()
+    const descriptor = readDescriptor(owner, key)
+    if (!replaceable(descriptor) || descriptor.hasValue) {
+      // A data property has no getter/setter pair to instrument; converting it
+      // to an accessor would delete its value.
+      releaseDescriptor(descriptor)
+      owner.dispose()
       return false
     }
-    const descriptorKey = ctx.newString(key)
-    const descriptorResult = ctx.callFunction(descriptorFactory.value, ctx.undefined, [
-      owner,
-      descriptorKey,
-    ])
-    descriptorKey.dispose()
-    descriptorFactory.value.dispose()
-    if (descriptorResult.error) {
-      descriptorResult.error.dispose()
-      return false
-    }
-    if (ctx.dump(descriptorResult.value) === null) {
-      descriptorResult.value.dispose()
-      return false
-    }
-    const descriptor = descriptorResult.value
-    const getter = ctx.getProp(descriptor, 'get')
-    const setter = ctx.getProp(descriptor, 'set')
-    const enumerable = ctx.getProp(descriptor, 'enumerable')
-    const enumerableValue = Boolean(ctx.dump(enumerable))
-    enumerable.dispose()
-    descriptor.dispose()
+    const getter = descriptor.get
+    const setter = descriptor.set
+    descriptor.get = null
+    descriptor.set = null
+    const enumerableValue = descriptor.enumerable
+    const configurableValue = descriptor.configurable
+    releaseDescriptor(descriptor)
 
     const getIsFunction = ctx.typeof(getter) === 'function'
     const setIsFunction = ctx.typeof(setter) === 'function'
@@ -259,7 +335,7 @@ export function createApiInstrumenter(options) {
       newGetter ?? ctx.undefined,
       newSetter ?? ctx.undefined,
       enumerableValue ? ctx.true : ctx.false,
-      ctx.true,
+      configurableValue ? ctx.true : ctx.false,
     ])
     keyHandle.dispose()
     owner.dispose()
@@ -431,6 +507,7 @@ export function createApiInstrumenter(options) {
       try {
         accessorFactory.dispose()
         ownerFactory.dispose()
+        descriptorFactory.dispose()
       } catch {
         /* already gone */
       }
