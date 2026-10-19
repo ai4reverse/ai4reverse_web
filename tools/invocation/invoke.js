@@ -1,7 +1,6 @@
 import { shortHash } from '../util/hash.js'
 import { limitMessage } from '../sandbox/limits.js'
 import {
-  isEngineStackMessage,
   isGuestStackExhaustion,
   isHostStackExhaustion,
 } from '../sandbox/runtime.js'
@@ -323,9 +322,10 @@ export function createInvoker(options) {
     /**
      * Record an engine stack signal once; later callback failures are noise.
      *
-     * `value` is host evidence only: the host exception thrown out of the WASM
-     * trampoline, or the `{timerId, message}` entry the virtual clock flattens
-     * such a throw into (see `isEngineStackMessage`).
+     * `value` is host evidence only: either the host exception thrown out of the
+     * WASM trampoline, or the record the virtual clock returns for a timer
+     * callback that did (`stackExhaustion: true`) — the clock inspects the host
+     * throw itself, so no caller has to match a message.
      *
      * @param {string} origin
      * @param {unknown} value
@@ -334,7 +334,10 @@ export function createInvoker(options) {
     const noteStack = (origin, value) => {
       if (stackExhaustion) return false
       const fromClock = Boolean(value) && typeof value === 'object' && typeof value.timerId === 'number'
-      if (!isHostStackExhaustion(value) && !(fromClock && isEngineStackMessage(value))) return false
+      const isStackSignal = fromClock
+        ? value.stackExhaustion === true
+        : isHostStackExhaustion(value)
+      if (!isStackSignal) return false
       stackExhaustion = true
       stackError = { origin, ...stackLimitError() }
       trace?.emit('sandbox', 'error', { event: 'settle.stack-overflow', origin })
@@ -395,8 +398,8 @@ export function createInvoker(options) {
       const run = clock.runDue({ maxCallbacks: remaining, maxVirtualMs })
       timerCallbacks += run.executed
       for (const error of run.errors) {
-        // A callback that exhausted the stack is classified, not retried: any
-        // further turn would run on the same unrecoverable runtime.
+        // A callback that exhausted the stack is classified, not retried: the
+        // clock stops the batch at that throw and the runtime is unrecoverable.
         if (noteStack('timer', error)) break
         instrumentation?.exceptions?.reportUncaught(
           { name: 'Error', message: error.message },
@@ -405,6 +408,7 @@ export function createInvoker(options) {
         )
       }
       if (stackError) break
+      if (run.stackExhaustion) break
       if (run.executed === 0) break
     }
 

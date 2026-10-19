@@ -240,10 +240,8 @@ const EVENT_LOOP_DEFORMATIONS = [
     label: 'interval callback',
     source: 'setInterval(function f(){ return f() }, 1)',
     origin: 'timer',
-    // The clock runs a whole timer batch before its errors are inspected, and an
-    // interval keeps firing on the already-unrecoverable runtime: one callback
-    // is enough to prove the path and keeps the suite fast.
-    runOptions: { settle: { maxTimerCallbacks: 1 } },
+    // The interval reschedules itself; the clock's stack marker stops the batch
+    // at the first host throw, so no further turn runs on a dead runtime.
   },
   {
     label: 'string timer callback',
@@ -365,3 +363,94 @@ for (const forgery of CALLBACK_FORGERIES) {
     }
   })
 }
+
+/**
+ * Batch stop (residual): the virtual clock used to flatten a host stack throw
+ * into `{timerId, message}` and keep running the rest of the batch — up to
+ * `maxTimerCallbacks` more guest calls on a runtime whose heap is already
+ * unrecoverable. The clock now records an explicit marker and stops the batch;
+ * the run therefore stays on the abandon path instead of aborting the engine on
+ * `dispose()`.
+ */
+test('a timer batch stops at the first host stack throw (no unrecoverable callbacks)', async () => {
+  const sb = await sandbox()
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    const run = await sb.run(`
+      globalThis.__witness = [];
+      setTimeout(function f() { return f() }, 0);
+      setTimeout(function () { __witness.push('one') }, 1);
+      setTimeout(function () { __witness.push('two') }, 2);
+    `)
+
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.deepEqual(run.limitsHit, ['stack'])
+    assert.equal(run.stackExhaustion, true)
+    // Exactly the recursing callback ran: before the fix all three due timers
+    // were executed (`timerCallbacks === 3`) on the poisoned runtime.
+    assert.equal(run.settle.timerCallbacks, 1, JSON.stringify(run.settle))
+    // The two witnesses were never invoked, so they stay scheduled.
+    assert.equal(run.settle.pendingTimers, 2, JSON.stringify(run.settle))
+    assert.equal(run.settle.stackExhaustion, true)
+    assert.equal(run.settle.error?.origin, 'timer')
+    // The engine aborted on disposal before the fix; abandonment must stay silent.
+    assert.equal(run.disposal.skipped, true)
+    assert.equal(run.disposal.leaked, true)
+
+    const followUp = await sb.run('1+1')
+    assert.equal(followUp.ok, true, JSON.stringify(followUp.error))
+    assert.equal(followUp.result.value, 2)
+  } finally {
+    restoreEngine()
+    sb.dispose()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted\(/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+})
+
+/**
+ * Reduced-surface forgery (residual): `InternalError` is the name the engine
+ * gives its own stack overflow, so a guest-constructible `InternalError` is a
+ * classification forge. `stack` deletes it only for Chromium profiles and is not
+ * part of a reduced environment; `globals` therefore removes the engine's own
+ * constructor for every non-Firefox profile.
+ */
+test('a reduced environment cannot construct the engine stack error', async () => {
+  const sb = await sandbox() // CORE_ENV deliberately has no `stack` module
+  try {
+    const surface = await sb.run(`
+      var out = { type: typeof InternalError, construct: null, ownName: null };
+      try {
+        var forged = new InternalError('Maximum call stack size exceeded');
+        out.construct = 'constructed';
+        out.ownName = Object.prototype.toString.call(forged);
+      } catch (error) {
+        out.construct = error.name;
+      }
+      JSON.stringify(out);
+    `)
+    assert.equal(surface.ok, true, JSON.stringify(surface.error))
+    const value = JSON.parse(surface.result.value)
+    assert.equal(value.type, 'undefined', 'reduced env still exposes InternalError')
+    assert.equal(value.construct, 'ReferenceError')
+    assert.equal(value.ownName, null)
+
+    // The engine's name is not a stack signal once the constructor is gone: the
+    // run stays a normal guest failure with a healthy runtime.
+    const forged = await sb.run(`
+      var error = new Error('Maximum call stack size exceeded');
+      error.name = 'InternalError';
+      throw error;
+    `)
+    assert.equal(forged.ok, false)
+
+    const followUp = await sb.run('1+1')
+    assert.equal(followUp.ok, true, JSON.stringify(followUp.error))
+    assert.equal(followUp.result.value, 2)
+    assert.deepEqual(followUp.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
+})

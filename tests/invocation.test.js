@@ -153,3 +153,34 @@ test('entry-point stacks contain no host frames', async () => {
     sb.dispose()
   }
 })
+
+/**
+ * The settle timer branch classifies from the clock's explicit host-throw marker
+ * (residual): message text is guest data, so a callback that only *says*
+ * "stack overflow" must neither be reported as a stack limit nor stop the
+ * batch.
+ */
+test('a guest stack message in a timer callback does not stop the batch', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(`
+      setTimeout(function () { throw new Error('Maximum call stack size exceeded') }, 0);
+      setTimeout(function () { throw new RangeError('stack overflow') }, 1);
+      setTimeout(function () { return 'third' }, 2);
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.deepEqual(run.limitsHit, [])
+    assert.equal(run.stackExhaustion, false)
+    assert.equal(run.settle.stackExhaustion, false)
+    assert.equal(run.settle.error, null)
+    // Every callback ran: a forged message is an ordinary timer error.
+    assert.equal(run.settle.timerCallbacks, 3, JSON.stringify(run.settle))
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+
+    const followUp = await sb.run('2 + 2')
+    assert.equal(followUp.ok, true, JSON.stringify(followUp.error))
+    assert.equal(followUp.result.value, 4)
+  } finally {
+    sb.dispose()
+  }
+})

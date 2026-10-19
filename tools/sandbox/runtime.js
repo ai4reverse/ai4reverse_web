@@ -21,9 +21,9 @@ import { getQuickJS, newQuickJSWASMModule } from 'quickjs-emscripten'
  * `Aborted(Assertion failed: ...)` to the host's stderr before the assertion
  * throws, which pollutes CI logs and any operator watching the process. A run
  * that already knows the stack limit was breached abandons the runtime instead
- * — see `abandon()`. That knowledge comes only from the engine: a guest throw
- * whose message mentions the stack is an ordinary error (see
- * `isHostStackExhaustion` and `isGuestStackExhaustion`).
+ * — see `abandon()`. A host throw out of a WASM call is the only unforgeable
+ * evidence (`isHostStackExhaustion`); a guest error is at best classified from
+ * its engine-assigned name (`isGuestStackExhaustion`).
  */
 
 let modulePromise = null
@@ -223,10 +223,13 @@ const ENGINE_STACK_NAME = 'InternalError'
  * Matching a *message* is only meaningful for host evidence. Never call this
  * with a dumped guest error, whose message the sample controls.
  *
+ * Internal: `isHostStackExhaustion` is the only sanctioned entry point, so no
+ * caller can accidentally apply the wording test to guest data.
+ *
  * @param {string|{message?: unknown}|null|undefined} value
  * @returns {boolean}
  */
-export function isEngineStackMessage(value) {
+function isEngineStackMessage(value) {
   const message = typeof value === 'string' ? value : String(value?.message ?? '')
   return ENGINE_STACK_MESSAGE.test(message)
 }
@@ -253,12 +256,18 @@ export function isHostStackExhaustion(thrown) {
 /**
  * Is this *dumped guest* error QuickJS' own stack overflow?
  *
- * A dump is attacker-controlled data, so the only dump-based exception allowed
- * is the name the engine itself assigns: QuickJS raises
- * `InternalError: stack overflow` when unbounded work happens inside the
- * interpreter (deep intrinsic recursion) rather than through a host call. A
- * script that constructs `RangeError('Maximum call stack size exceeded')` — or
- * even a fake `InternalError` — remains a normal guest error.
+ * QuickJS raises `InternalError: stack overflow` when unbounded work happens
+ * inside the interpreter (deep intrinsic recursion) rather than through a host
+ * call, and that reaches the host as a *guest* error.
+ *
+ * A dump is attacker-controlled data and carries no provenance, so this test is
+ * weaker than `isHostStackExhaustion`: a guest that renames its own error to
+ * `InternalError` with the engine's wording is indistinguishable from the
+ * engine's own throw here. The environment narrows the surface (`globals`
+ * removes the engine's `InternalError` constructor for every non-Firefox
+ * profile, `stack` deletes it for Chromium), but only the host-throw predicate
+ * is proof. Callers must therefore treat a match as a classification, never as
+ * a reason to trust guest data.
  *
  * @param {unknown} dumped plain value produced by `ctx.dump(handle)`
  * @returns {boolean}
@@ -266,27 +275,4 @@ export function isHostStackExhaustion(thrown) {
 export function isGuestStackExhaustion(dumped) {
   if (!dumped || typeof dumped !== 'object') return false
   return dumped.name === ENGINE_STACK_NAME && isEngineStackMessage(dumped)
-}
-
-/**
- * Classify a guest error as a limit breach when applicable.
- *
- * Stack exhaustion is *not* inferred from the guest message: a sample that
- * throws `Error('stack overflow')` is a normal failure. Only the engine's own
- * `InternalError` counts here; the host-throw path is classified at the call
- * site that caught it (see `isHostStackExhaustion`).
- *
- * @param {object|null} dumpedError
- * @param {object} runtimeState
- */
-export function classifyLimit(dumpedError, runtimeState) {
-  if (runtimeState.reason) {
-    if (runtimeState.reason === 'timeout') return 'timeout'
-    if (runtimeState.reason === 'virtual-time') return 'virtual-time'
-  }
-  const message = String(dumpedError?.message ?? '')
-  if (/interrupted/i.test(message)) return 'timeout'
-  if (/out of memory/i.test(message)) return 'memory'
-  if (isGuestStackExhaustion(dumpedError)) return 'stack'
-  return null
 }

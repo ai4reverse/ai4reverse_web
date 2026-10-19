@@ -26,6 +26,19 @@ export function install(bridge) {
 
   bridge.install(global, 'globalThis', global, hidden)
 
+  // Chrome and Edge have no `InternalError`; only Firefox (and old SpiderMonkey)
+  // ships one. QuickJS does, so it must be removed for a Chromium profile even
+  // when the `stack` module is not installed: `InternalError` is the name the
+  // engine uses for its own stack overflow (see `runtime.js`), so leaving the
+  // guest constructor in place would let a sample forge that classification
+  // from a reduced environment. A Firefox profile keeps it, because there it is
+  // a real part of the surface.
+  if (profile.browser !== 'firefox') {
+    const removedInternalError = ctx.evalCode('delete globalThis.InternalError', 'ai4r-internal:globals')
+    if (removedInternalError.error) removedInternalError.error.dispose()
+    else removedInternalError.value.dispose()
+  }
+
   // Window state.
   bridge.install(global, 'name', '', { enumerable: true, configurable: true, writable: true })
   bridge.install(global, 'closed', false, hidden)
