@@ -4,7 +4,7 @@ Five independent read-only reviews were run against the finished tree. The
 reviewers had no shell tool, so their findings were derived from source reading
 and each carried a reproducer; every reproducer below was executed by the
 supervisor, fixed where needed, and turned into a regression test. After all
-dispositions the full suite is green: **348 tests, 0 failures**.
+dispositions the full suite is green: **361 tests, 0 failures**.
 
 Legend: **Fixed** = code changed and a regression test covers it; **Accepted** =
 documented limitation in README ("Known limitations") with the reason recorded.
@@ -119,8 +119,8 @@ evidence was missing at review time. Its material findings were addressed:
 
 ```
 $ pnpm test
-ℹ tests 348
-ℹ pass 348
+ℹ tests 361
+ℹ pass 361
 ℹ fail 0
 ```
 

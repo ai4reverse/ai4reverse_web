@@ -17,13 +17,13 @@ history.
 
 ```
 $ pnpm test
-ℹ tests 348
-ℹ pass 348
+ℹ tests 361
+ℹ pass 361
 ℹ fail 0
-ℹ duration_ms 4587
+ℹ duration_ms 43550
 ```
 
-Test files (29) cover: sandbox core, traceless detection corpus, invocation,
+Test files (30) cover: sandbox core, traceless detection corpus, invocation,
 instrumentation, hooks, logging, 11 restoration passes + pipeline, JSVMP
 builder/analyzer/trace, IOC/report, analysis end-to-end, CLI, every environment
 module (time/dom/intl/network/misc/canvas) and a strict full-surface integration
@@ -43,9 +43,10 @@ test.
 | Babel code restoration (unified parse/transform/generate) | `tools/restore/{parse,generate,pass-context,index}.js`, `passes/` (11 passes) | `node --test tests/restore-*.test.js tests/restore-pipeline.test.js` — 14 files/32+ tests, semantics-preservation by execution |
 | Logging with pino / pino-pretty | `tools/logging/logger.js` | `node --test tests/logging.test.js` — 6/6; `node tools/cli.js passes --pretty` renders via pino-pretty |
 | Final implementation under `tools/` | 83 JS modules | `find tools -name '*.js' | wc -l` = 83 |
-| Tests under `tests/` | 29 test files + harness | `find tests -name '*.test.js' | wc -l` = 29 |
+| Tests under `tests/` | 30 test files + harness | `find tests -name '*.test.js' | wc -l` = 30 |
 | Composable auxiliary analysis | `tools/analysis/*` (IOC, report, behaviour, artifacts, stages, orchestrator), CLI, hooks, passes | `node --test tests/analysis-e2e.test.js tests/cli.test.js` — 11/11 |
 | Runnable examples / ecosystem docs | `examples/*.js` (11 samples), `examples/*.mjs` (4 demos), `examples/build-jsvmp-sample.mjs`, `examples/cli-usage.sh`, `examples/README.md` | `node --test tests/examples.test.js` — 10/10 (all samples execute; all demos and the CLI cookbook run) |
+| Hardened national JS-SDK | `examples/national-sdk/` (signing, fingerprint, white-box crypto, JSVMP, zero-trust guard, build pipeline, server verifier, docs) | `node --test tests/national-sdk.test.js` — 13/13; `node examples/national-sdk/verify.mjs` — 37/37 |
 | Many subagents used | Parallel workers for env modules, restoration passes, JSVMP, IOC/report, plus research + review + audit agents | session history; artefacts summarised in "Review" below |
 
 ## CLI evidence
@@ -125,8 +126,8 @@ Executed after all review dispositions, on the authoritative tree:
 
 ```
 $ pnpm test
-ℹ tests 348
-ℹ pass 348
+ℹ tests 361
+ℹ pass 361
 ℹ fail 0
 ```
 
