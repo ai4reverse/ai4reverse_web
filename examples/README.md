@@ -43,6 +43,30 @@ for sample in examples/*.js; do
 done
 ```
 
+## Hardened SDK specimen (`national-sdk/`)
+
+A self-contained SDK project — not a malicious sample — for **request signing**
+and **device-fingerprint collection**, built to exercise every analysis
+capability at maximum strength:
+
+| Area | What it contains | Expected platform behaviour |
+| --- | --- | --- |
+| Crypto | SM2/SM3/SM4 + AES/ChaCha20, 12 dynamic implicit white-box suites, mutated/custom ciphers, SM2-ECDH hybrid envelopes | primitives verify against OpenSSL/GM/T vectors; white-box tables are generated at runtime, not present statically |
+| Code protection | 7-pass polymorphic obfuscator, encrypted 48-opcode JSVMP container, per-build opcode permutation, per-invocation remap, 3 dispatchers | statement-level instrumentation of the full bundle is expensive (~1 min); run with `code.level: 'off'` for integration, JSVMP/API tracing still works |
+| Environment detection | 45 signals in 6 zero-trust layers, `document.all` proof, rendering/consistency cross-checks | inside the QuickJS sandbox the SDK correctly reports `hostile` because `document.all` cannot be emulated; this is an expected finding, documented in the SDK |
+| Verification | `verify.mjs` (37 checks), reference server verifier, host + sandbox signing round-trips | `node examples/national-sdk/verify.mjs` exits 0 only when the whole matrix passes |
+
+```bash
+node examples/national-sdk/build/build-sdk.mjs --seeds 1001-1003
+node examples/national-sdk/demo.mjs
+node examples/national-sdk/verify.mjs
+node --test tests/national-sdk.test.js
+```
+
+See `examples/national-sdk/README.md`, `docs/THREAT-MODEL.md`,
+`docs/ALGORITHMS.md`, `docs/ENVIRONMENT-DETECTION.md`,
+`docs/VERIFICATION.md` and `docs/DESIGN-REVIEW.md` inside that directory.
+
 ## Programmatic demos (run with Node)
 
 | File | Demonstrates |
