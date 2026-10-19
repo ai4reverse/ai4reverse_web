@@ -5,7 +5,6 @@ import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { createLogger } from './logging/logger.js'
 import { analyzeSample } from './analysis/orchestrator.js'
-import { renderMarkdown } from './analysis/report.js'
 import { restore, listPasses } from './restore/index.js'
 import { TracelessSandbox } from './sandbox/sandbox.js'
 
