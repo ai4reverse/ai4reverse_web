@@ -11,8 +11,18 @@
     "./hook": "./tools/hook/index.js",
     "./restore": "./tools/restore/index.js",
     "./analysis": "./tools/analysis/index.js",
-    "./jsvmp": "./tools/jsvmp/index.js"
+    "./jsvmp": "./tools/jsvmp/index.js",
+    "./logging": "./tools/logging/index.js",
+    "./invocation": "./tools/invocation/index.js",
+    "./util": "./tools/util/index.js",
+    "./cli": "./tools/cli.js"
   },
+  "files": [
+    "tools",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "ai4reverse": "./tools/cli.js"
   },
@@ -36,7 +46,7 @@
     "babel",
     "jsvmp"
   ],
-  "author": "",
+  "author": "ai4reverse-web contributors",
   "license": "ISC",
   "engines": {
     "node": ">=24.18.0"
