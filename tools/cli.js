@@ -327,6 +327,7 @@ export async function main(argv = process.argv.slice(2)) {
         integrity: run.integrity,
         instrumentation: run.instrumentation?.stats,
         vm: run.vm ? { detected: true, opcodes: run.vm.opcodes, cases: run.vm.cases } : { detected: false },
+        settle: settleSummary(run.settle),
         disposal: run.disposal,
       }
       await emitResult(`${JSON.stringify(summary, null, 2)}\n`, values)
@@ -372,6 +373,37 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   throw new UsageError(`unknown command: ${command}`)
+}
+
+/**
+ * Project the event-loop settle record onto the `run` summary.
+ *
+ * `settle` is the only place a stack breach inside a timer or promise callback
+ * is attributed: the entry script itself succeeded, so `ok`/`error` stay clean
+ * while `limitsHit` gains `'stack'` and the runtime is abandoned
+ * (`disposal.skipped`). Dropping it from the summary left the analyst with an
+ * unexplained limit hit and a failed teardown.
+ *
+ * `null` when the run never reached the event loop (init failure, interrupted
+ * runtime), matching how `vm` reports "not observed" instead of omitting the
+ * key: a consumer must not have to distinguish absent from empty.
+ * Optional keys are left as `undefined` so `JSON.stringify` omits them, which
+ * keeps `skipped`/`reason` present only when they mean something.
+ *
+ * @param {object|null|undefined} settle settle record from `run.settle`
+ * @returns {object|null} JSON-safe summary, or `null`
+ */
+function settleSummary(settle) {
+  if (!settle) return null
+  return {
+    virtualMs: settle.virtualMs,
+    pendingTimers: settle.pendingTimers,
+    jobs: settle.jobs,
+    skipped: settle.skipped,
+    reason: settle.reason,
+    limitsHit: settle.limitsHit,
+    error: settle.error ?? null,
+  }
 }
 
 function buildLimits(values) {

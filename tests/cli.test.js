@@ -362,3 +362,61 @@ test('cli rejects malformed numeric limits', async () => {
     }
   }
 })
+
+/**
+ * Settle visibility: the event loop is the only place a stack breach inside a
+ * timer or promise callback is attributed. The script itself succeeds, so the
+ * summary keeps `ok: true` while `limitsHit` gains `'stack'` and the runtime is
+ * abandoned (`disposal.skipped`). Before this contract the summary dropped
+ * `settle` entirely, which left the analyst with an unexplained limit hit and a
+ * failed teardown; each case used to print an `Aborted(...)` line to stderr.
+ */
+test('cli run --json exposes the event-loop stack breach that abandoned the runtime', async () => {
+  const path = await sampleFile('timer-stack.js', 'setTimeout(function f(){ return f() }, 0)')
+  const result = await runCli(['run', path, '--json'])
+  // The evaluated script returned normally, so the run itself is a success.
+  assert.equal(result.code, 0, result.stderr)
+  const summary = JSON.parse(result.stdout)
+
+  assert.equal(summary.ok, true)
+  assert.equal(summary.error, null)
+  assert.ok(summary.limitsHit.includes('stack'), `expected stack in limitsHit, got ${JSON.stringify(summary.limitsHit)}`)
+
+  assert.ok(summary.settle && typeof summary.settle === 'object', 'the run summary must carry settle')
+  assert.equal(summary.settle.error?.origin, 'timer')
+  assert.equal(summary.settle.error?.name, 'RangeError')
+  assert.match(String(summary.settle.error?.message), /maximum call stack/i)
+  assert.ok(summary.settle.limitsHit.includes('stack'), JSON.stringify(summary.settle.limitsHit))
+  assert.equal(typeof summary.settle.virtualMs, 'number')
+  assert.equal(typeof summary.settle.pendingTimers, 'number')
+  assert.equal(typeof summary.settle.jobs, 'number')
+
+  // The heap is unrecoverable: abandoned, not disposed, and no engine abort.
+  assert.equal(summary.disposal.ok, false)
+  assert.equal(summary.disposal.skipped, true)
+  assert.doesNotMatch(result.stderr, /Aborted\(/)
+})
+
+test('cli run --json shows a clean settle for a run that hits no limit', async () => {
+  const path = await sampleFile('no-limits.js', 'globalThis.out = 6 * 7; out')
+  const result = await runCli(['run', path, '--json'])
+  assert.equal(result.code, 0, result.stderr)
+  const summary = JSON.parse(result.stdout)
+
+  assert.equal(summary.ok, true)
+  assert.equal(summary.disposal.ok, true)
+  assert.ok(summary.settle && typeof summary.settle === 'object', 'the run summary must carry settle')
+  // Tolerate both spellings of "nothing hit": an empty list or an absent key.
+  assert.deepEqual(summary.settle.limitsHit ?? [], [])
+  assert.equal(summary.settle.error, null)
+  assert.equal('skipped' in summary.settle, false)
+})
+
+test('cli run --json emits settle: null when the run never reached the event loop', async () => {
+  const path = await sampleFile('throws.js', "throw new Error('boom')")
+  const result = await runCli(['run', path, '--json'])
+  assert.equal(result.code, 1, result.stderr)
+  const summary = JSON.parse(result.stdout)
+  assert.equal(summary.ok, false)
+  assert.equal(summary.settle, null)
+})
