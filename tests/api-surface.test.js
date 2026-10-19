@@ -36,11 +36,15 @@ test('every exports subpath resolves to an importable module', async () => {
   const entries = Object.entries(pkg.exports)
   assert.ok(entries.length >= 11, `expected the documented subpaths, saw ${entries.length}`)
 
-  for (const [subpath, target] of entries) {
-    assert.equal(typeof target, 'string', `exports["${subpath}"] must be a plain path`)
-    const file = resolve(ROOT, target)
+  for (const [subpath, entry] of entries) {
+    // D9.4 added declarations: each entry is now a conditions object whose
+    // runtime target is the `import` condition (the `types` condition is a
+    // `.d.ts` and is checked by tests/types.test.js).
+    assert.equal(typeof entry, 'object', `exports["${subpath}"] must be a conditions object`)
+    assert.equal(typeof entry.import, 'string', `exports["${subpath}"] must keep an import path`)
+    const file = resolve(ROOT, entry.import)
     const loaded = await import(file)
-    assert.ok(Object.keys(loaded).length > 0, `exports["${subpath}"] (${target}) exports nothing`)
+    assert.ok(Object.keys(loaded).length > 0, `exports["${subpath}"] (${entry.import}) exports nothing`)
   }
 
   // The subpath name must match the file it points at, otherwise the map is a
@@ -53,7 +57,8 @@ test('every exports subpath resolves to an importable module', async () => {
 
 test('the published file set is whitelisted', async () => {
   const pkg = JSON.parse(await readFile(resolve(ROOT, 'package.json'), 'utf8'))
-  assert.deepEqual(pkg.files, ['tools', 'docs', 'README.md', 'LICENSE'])
+  // `types` ships with the package: the declarations are the D9.4 contract.
+  assert.deepEqual(pkg.files, ['tools', 'docs', 'types', 'README.md', 'LICENSE'])
   assert.equal(pkg.license, 'ISC')
   assert.match(pkg.author, /\S/)
   const licence = await readFile(resolve(ROOT, 'LICENSE'), 'utf8')

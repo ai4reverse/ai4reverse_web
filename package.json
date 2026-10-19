@@ -5,21 +5,67 @@
   "type": "module",
   "main": "tools/index.js",
   "exports": {
-    ".": "./tools/index.js",
-    "./sandbox": "./tools/sandbox/index.js",
-    "./instrumentation": "./tools/instrumentation/index.js",
-    "./hook": "./tools/hook/index.js",
-    "./restore": "./tools/restore/index.js",
-    "./analysis": "./tools/analysis/index.js",
-    "./jsvmp": "./tools/jsvmp/index.js",
-    "./logging": "./tools/logging/index.js",
-    "./invocation": "./tools/invocation/index.js",
-    "./util": "./tools/util/index.js",
-    "./cli": "./tools/cli.js"
+    ".": {
+      "types": "./types/ai4reverse.d.ts",
+      "import": "./tools/index.js",
+      "default": "./tools/index.js"
+    },
+    "./sandbox": {
+      "types": "./types/sandbox.d.ts",
+      "import": "./tools/sandbox/index.js",
+      "default": "./tools/sandbox/index.js"
+    },
+    "./instrumentation": {
+      "types": "./types/instrumentation.d.ts",
+      "import": "./tools/instrumentation/index.js",
+      "default": "./tools/instrumentation/index.js"
+    },
+    "./hook": {
+      "types": "./types/hook.d.ts",
+      "import": "./tools/hook/index.js",
+      "default": "./tools/hook/index.js"
+    },
+    "./restore": {
+      "types": "./types/restore.d.ts",
+      "import": "./tools/restore/index.js",
+      "default": "./tools/restore/index.js"
+    },
+    "./analysis": {
+      "types": "./types/analysis.d.ts",
+      "import": "./tools/analysis/index.js",
+      "default": "./tools/analysis/index.js"
+    },
+    "./jsvmp": {
+      "types": "./types/jsvmp.d.ts",
+      "import": "./tools/jsvmp/index.js",
+      "default": "./tools/jsvmp/index.js"
+    },
+    "./logging": {
+      "types": "./types/logging.d.ts",
+      "import": "./tools/logging/index.js",
+      "default": "./tools/logging/index.js"
+    },
+    "./invocation": {
+      "types": "./types/invocation.d.ts",
+      "import": "./tools/invocation/index.js",
+      "default": "./tools/invocation/index.js"
+    },
+    "./util": {
+      "types": "./types/util.d.ts",
+      "import": "./tools/util/index.js",
+      "default": "./tools/util/index.js"
+    },
+    "./cli": {
+      "types": "./types/cli.d.ts",
+      "import": "./tools/cli.js",
+      "default": "./tools/cli.js"
+    }
   },
+  "types": "./types/ai4reverse.d.ts",
   "files": [
     "tools",
     "docs",
+    "types",
     "README.md",
     "LICENSE"
   ],
