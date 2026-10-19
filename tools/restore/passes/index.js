@@ -36,8 +36,6 @@ export const PASSES = MODULES.map((module) => ({
   run: module.run,
 })).sort((a, b) => (a.meta.order ?? 500) - (b.meta.order ?? 500))
 
-export const PASS_BY_ID = new Map(PASSES.map((pass) => [pass.meta.id, pass]))
-
 /**
  * True when a pass is deferred to the final round. `meta.deferred` is the pass
  * contract (see docs/EVALUATION-TOOLS.md D12); the `rename` id is the fallback

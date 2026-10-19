@@ -98,35 +98,3 @@ export function parse(code, options = {}) {
     details: { attempts: errors },
   })
 }
-
-/**
- * Parse an expression fragment (used by decoders that evaluate a literal
- * expression to a concrete string).
- * @param {string} code
- * @param {object} [options]
- */
-export function parseExpression(code, options = {}) {
-  return babelParse(String(code), {
-    sourceType: 'script',
-    plugins: BASE_PLUGINS,
-    errorRecovery: false,
-    ...options,
-  }).program.body[0].expression
-}
-
-/**
- * Try several candidates and return the first that parses.
- * @param {string[]} candidates
- * @param {object} [options]
- */
-export function parseFirstSuccessful(candidates, options = {}) {
-  const failures = []
-  for (const candidate of candidates) {
-    try {
-      return { ...parse(candidate, options), code: candidate }
-    } catch (error) {
-      failures.push(error.message)
-    }
-  }
-  throw new ParseError(`no candidate parsed: ${failures.join(' | ')}`, { details: { failures } })
-}
