@@ -59,6 +59,8 @@ test(`${OVERFLOW_RUNS} consecutive stack overflows do not disable the sandbox (D
         run.limitsHit.includes('stack'),
         `run ${i}: expected stack in limitsHit, got ${JSON.stringify(run.limitsHit)}`,
       )
+      // The limit comes from the engine marker, not from the message.
+      assert.equal(run.stackExhaustion, true, `run ${i}: engine marker missing`)
       assert.match(`${run.error?.name}: ${run.error?.message}`, /stack|overflow|too deep/i)
     }
 
@@ -235,6 +237,20 @@ const EVENT_LOOP_DEFORMATIONS = [
     origin: 'timer',
   },
   {
+    label: 'interval callback',
+    source: 'setInterval(function f(){ return f() }, 1)',
+    origin: 'timer',
+    // The clock runs a whole timer batch before its errors are inspected, and an
+    // interval keeps firing on the already-unrecoverable runtime: one callback
+    // is enough to prove the path and keeps the suite fast.
+    runOptions: { settle: { maxTimerCallbacks: 1 } },
+  },
+  {
+    label: 'string timer callback',
+    source: 'setTimeout("function f(){ return f() } f()", 0)',
+    origin: 'timer',
+  },
+  {
     label: 'promise job',
     source: 'Promise.resolve().then(function f(){ return f() })',
     origin: 'promise-job',
@@ -249,7 +265,7 @@ for (const deformation of EVENT_LOOP_DEFORMATIONS) {
     try {
       // `run()` itself must resolve: a host RangeError escaping the WASM
       // trampoline used to turn the promise-job case into a SANDBOX_RUN throw.
-      const run = await sb.run(deformation.source)
+      const run = await sb.run(deformation.source, deformation.runOptions)
 
       // The evaluated script never threw; only the event loop did.
       assert.equal(run.ok, true, `unexpected failure: ${JSON.stringify(run.error)}`)
@@ -259,6 +275,10 @@ for (const deformation of EVENT_LOOP_DEFORMATIONS) {
       // The error is structured and attributable to the callback that recursed.
       assert.ok(run.settle && !run.settle.skipped, `settle missing: ${JSON.stringify(run.settle)}`)
       assert.deepEqual(run.settle.limitsHit, ['stack'], JSON.stringify(run.settle))
+      // Belt and braces: the abandon decision is keyed off these markers, so a
+      // guest message can never reach the disposal path.
+      assert.equal(run.stackExhaustion, true)
+      assert.equal(run.settle.stackExhaustion, true)
       assert.equal(run.settle.error?.origin, deformation.origin)
       assert.equal(run.settle.error?.name, 'RangeError')
       assert.match(String(run.settle.error?.message), /maximum call stack/i)
@@ -293,11 +313,55 @@ test('a non-stack settle error stays a non-stack outcome (no stack quarantine)',
     const run = await sb.run('setTimeout(function () { throw new RangeError("unrelated range error") }, 0)')
     assert.equal(run.ok, true)
     assert.deepEqual(run.limitsHit, [])
+    assert.equal(run.stackExhaustion, false)
     // `settle.error` is the structured stack slot; a non-stack failure leaves it
     // empty (tolerating the pre-fix record that has no such key at all).
     assert.equal(run.settle?.error ?? null, null)
+    assert.equal(run.settle?.stackExhaustion ?? false, false)
     assert.deepEqual(run.disposal, { ok: true, errors: [] })
   } finally {
     sb.dispose()
   }
 })
+
+/**
+ * Forgery (audit N1): a *guest* that throws the engine's stack wording inside a
+ * callback is an ordinary uncaught exception. Before the fix the settle path
+ * classified it by message, abandoned the runtime and recorded a false leak.
+ */
+const CALLBACK_FORGERIES = [
+  {
+    label: 'timer callback',
+    source: 'setTimeout(function () { throw new RangeError("Maximum call stack size exceeded") }, 0)',
+  },
+  {
+    label: 'promise job',
+    source: 'Promise.resolve().then(function () { throw new Error("stack overflow") })',
+  },
+  {
+    label: 'string timer callback',
+    source: 'setTimeout("throw new Error(\'stack overflow\')", 0)',
+  },
+]
+
+for (const forgery of CALLBACK_FORGERIES) {
+  test(`a guest-thrown stack message in a ${forgery.label} is not a stack limit`, async () => {
+    const sb = await sandbox()
+    try {
+      const run = await sb.run(forgery.source)
+      assert.equal(run.ok, true, `unexpected failure: ${JSON.stringify(run.error)}`)
+      assert.deepEqual(run.limitsHit, [])
+      assert.equal(run.stackExhaustion, false)
+      assert.equal(run.settle?.stackExhaustion ?? false, false)
+      assert.equal(run.settle?.error ?? null, null)
+      // Healthy runtime: no leak marker, no quarantine, no recompile needed.
+      assert.deepEqual(run.disposal, { ok: true, errors: [] })
+
+      const followUp = await sb.run('1+1')
+      assert.equal(followUp.ok, true, JSON.stringify(followUp.error))
+      assert.deepEqual(followUp.disposal, { ok: true, errors: [] })
+    } finally {
+      sb.dispose()
+    }
+  })
+}

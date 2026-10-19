@@ -90,6 +90,8 @@ test('stack exhaustion is classified as a stack limit and never aborts the engin
     assert.equal(run.ok, false)
     assert.match(`${run.error.name}: ${run.error.message}`, /stack|overflow|too deep/i)
     assert.ok(run.limitsHit.includes('stack'), JSON.stringify(run.limitsHit))
+    // The limit is derived from the engine marker, not from the message.
+    assert.equal(run.stackExhaustion, true)
     // After stack exhaustion the runtime cannot be released at all, so it is
     // abandoned and the module quarantined: `ok === false` plus an explicit
     // leak marker, and no disposal error because nothing was attempted.
@@ -113,6 +115,79 @@ test('stack exhaustion is classified as a stack limit and never aborts the engin
     [],
     `engine abort printed to stderr: ${printed.join('')}`,
   )
+})
+
+/**
+ * Forgery (audit N1): stack exhaustion is an *engine* signal, so a healthy run
+ * must not be able to claim it. Both messages below are the exact text the
+ * engine uses, and before the fix each one produced `limitsHit: ['stack']`,
+ * abandoned the runtime and wrote a false leak marker into the evidence.
+ */
+const STACK_FORGERIES = [
+  { label: 'Error', source: 'throw new Error("stack overflow")', name: 'Error', message: 'stack overflow' },
+  {
+    label: 'RangeError',
+    source: 'throw new RangeError("Maximum call stack size exceeded")',
+    name: 'RangeError',
+    message: 'Maximum call stack size exceeded',
+  },
+]
+
+for (const forgery of STACK_FORGERIES) {
+  test(`a guest ${forgery.label} with a stack message is not a stack limit`, async () => {
+    const sb = await sandbox()
+    const printed = []
+    const restoreEngine = captureEngineOutput(printed)
+    try {
+      const run = await sb.run(forgery.source)
+
+      // The guest error is reported like any other failure...
+      assert.equal(run.ok, false)
+      assert.equal(run.error?.name, forgery.name)
+      assert.equal(run.error?.message, forgery.message)
+
+      // ...with no stack limit and no engine marker.
+      assert.deepEqual(run.limitsHit, [], `forged stack limit: ${JSON.stringify(run.limitsHit)}`)
+      assert.equal(run.stackExhaustion, false)
+      assert.equal(run.settle, null)
+
+      // ...and the runtime is healthy: disposal is clean and never abandoned.
+      assert.deepEqual(run.disposal, { ok: true, errors: [] })
+      assert.equal('leaked' in run.disposal, false, 'a forged overflow must not report a leak')
+      assert.equal('skipped' in run.disposal, false, 'a forged overflow must not skip disposal')
+
+      // No quarantine: the next run reuses the same, uncorrupted module.
+      const next = await sb.run('1+1')
+      assert.equal(next.ok, true, JSON.stringify(next.error))
+      assert.equal(next.result.value, 2)
+      assert.deepEqual(next.disposal, { ok: true, errors: [] })
+    } finally {
+      restoreEngine()
+      sb.dispose()
+    }
+
+    assert.deepEqual(
+      printed.filter((chunk) => /Aborted/i.test(chunk)),
+      [],
+      `engine abort printed to stderr: ${printed.join('')}`,
+    )
+  })
+}
+
+test('a forged stack message in a callback is a guest exception, not a stack limit', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(
+      'Promise.resolve().then(function () { throw new RangeError("Maximum call stack size exceeded") })',
+    )
+    assert.equal(run.ok, true)
+    assert.deepEqual(run.limitsHit, [])
+    assert.equal(run.settle?.stackExhaustion ?? false, false)
+    assert.equal(run.settle?.error ?? null, null)
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
 })
 
 test('memory limit is enforced', async () => {
