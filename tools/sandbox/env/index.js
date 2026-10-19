@@ -9,6 +9,12 @@ import { SandboxError } from '../../util/errors.js'
  *
  * Each module owns one platform surface and exports
  * `meta = { id, order, requires }` plus `install(bridge)`.
+ *
+ * The list is in install order (`meta.order`), which is also dependency order:
+ * a module's `requires` always names modules that appear earlier. `navigator`
+ * augments the object it installs and publishes `navigator.storage`, so it
+ * runs after `storage`; `url` and `blob` are separate surfaces rather than
+ * sections of `misc`.
  */
 
 export const ENV_MODULE_IDS = Object.freeze([
@@ -18,23 +24,25 @@ export const ENV_MODULE_IDS = Object.freeze([
   'stack',
   'random',
   'dom',
-  'navigator',
   'screen',
   'location',
   'storage',
+  'navigator',
   'timers',
   'encoding',
   'performance',
   'crypto',
-  'network',
   'xhr',
+  'network',
   'fetch',
   'websocket',
-  'observers',
+  'url',
+  'blob',
   'misc',
+  'canvas',
+  'observers',
   'intl',
   'chrome',
-  'canvas',
   'anti-fingerprint',
 ])
 

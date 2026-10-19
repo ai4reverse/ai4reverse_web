@@ -8,6 +8,7 @@ import * as api from '../tools/index.js'
 import * as logging from '../tools/logging/index.js'
 import * as invocation from '../tools/invocation/index.js'
 import * as util from '../tools/util/index.js'
+import { ENV_MODULE_IDS, loadEnvModule } from '../tools/sandbox/env/index.js'
 import * as trace from '../tools/instrumentation/trace.js'
 import * as parseModule from '../tools/restore/parse.js'
 import * as passes from '../tools/restore/passes/index.js'
@@ -150,4 +151,33 @@ test('TRACE_PHASES documents exactly the phases the platform emits', () => {
   assert.throws(() => recorder.emit('bogus', 'emit', {}), /unknown trace kind: bogus/)
   // A rejected emit must not advance the sequence.
   assert.equal(recorder.seq, trace.TRACE_PHASES.length)
+})
+
+test('the environment module graph is ordered, closed and one-surface-per-module', async () => {
+  // D11: ENV_MODULE_IDS and every meta.requires must describe the real
+  // dependency graph. `installEnvironment` installs in `meta.order` order, so a
+  // `requires` that names a later module fails in strict mode; the id list is
+  // kept in that same order so a reader can see the graph.
+  const orders = []
+  const seen = new Set()
+  for (const id of ENV_MODULE_IDS) {
+    const entry = await loadEnvModule(id)
+    assert.equal(entry.meta.id, id)
+    assert.ok(entry.meta.order >= (orders.at(-1) ?? -Infinity), `${id} is out of install order`)
+    orders.push(entry.meta.order)
+    for (const requirement of entry.meta.requires ?? []) {
+      assert.ok(seen.has(requirement), `${id} requires ${requirement}, which is not installed before it`)
+      assert.ok(ENV_MODULE_IDS.includes(requirement), `${id} requires undeclared module ${requirement}`)
+    }
+    seen.add(id)
+  }
+
+  // The surfaces that used to hide inside misc.js are their own modules now,
+  // and the support kit is not a module.
+  for (const id of ['url', 'blob', 'navigator', 'misc']) assert.ok(ENV_MODULE_IDS.includes(id))
+  assert.equal(ENV_MODULE_IDS.includes('platform-kit'), false)
+  const misc = await loadEnvModule('misc')
+  assert.deepEqual([...misc.meta.requires], ['globals', 'navigator'])
+  const navigator = await loadEnvModule('navigator')
+  assert.deepEqual([...navigator.meta.requires], ['globals', 'storage'])
 })

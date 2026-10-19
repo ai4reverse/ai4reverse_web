@@ -4,15 +4,17 @@ import assert from 'node:assert/strict'
 import { createHarness } from './helpers/harness.js'
 
 /**
- * Environment tests for `tools/sandbox/env/misc.js` and `env/chrome.js`.
+ * Environment tests for the modern platform modules: `env/misc.js`,
+ * `env/url.js`, `env/blob.js` and `env/chrome.js`.
  *
  * The harness installs the real bridge, stealth masker and virtual clock, so
- * these tests exercise the same code path an analysis run does. `navigator` is
- * installed explicitly because `misc` augments the already-installed surface
- * rather than creating a second one.
+ * these tests exercise the same code path an analysis run does. `navigator`,
+ * `storage`, `url` and `blob` are installed explicitly because these modules
+ * augment or extend the surfaces those modules own rather than re-declaring
+ * them.
  */
 
-const MODULES = ['globals', 'console', 'timers', 'storage', 'navigator', 'misc', 'chrome']
+const MODULES = ['globals', 'console', 'timers', 'storage', 'navigator', 'url', 'blob', 'misc', 'chrome']
 
 /** @type {object} */
 let chromium
