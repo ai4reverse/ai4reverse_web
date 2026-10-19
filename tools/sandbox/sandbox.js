@@ -25,9 +25,10 @@ import { shortHash } from '../util/hash.js'
  *  - a trace channel reachable only through a run-unique registered symbol;
  *  - integrity snapshots before/after to prove nothing leaked in or out;
  *  - full handle disposal, verified by the WASM runtime's leak assertion;
- *  - the exception is the stack-limit path, where the runtime cannot be
- *    released at all: it is abandoned, the WASM module is quarantined and the
- *    next run recompiles it (reported as `disposal.skipped`).
+ *  - the exception is the stack-limit path (a breach in the main script *or* in
+ *    a timer/promise callback), where the runtime cannot be released at all: it
+ *    is abandoned, the WASM module is quarantined and the next run recompiles it
+ *    (reported as `disposal.skipped`).
  */
 export class TracelessSandbox {
   /**
@@ -155,6 +156,7 @@ export class TracelessSandbox {
     let leaked = false
     // Set when the runtime is abandoned instead of disposed (stack breach).
     let skippedRuntime = false
+    let stackBreach = false
     let phase = 'init'
 
     try {
@@ -254,17 +256,23 @@ export class TracelessSandbox {
         settle = { skipped: true, reason: runtimeHandle.state.reason }
       }
 
+      // `record.limitsHit` is the union of both phases: a stack breach inside a
+      // timer or promise callback leaves the *script* successful while the
+      // runtime is just as unrecoverable as after a main-script overflow.
+      const limitsHit = mergeLimits(invocation.limitsHit, settle?.limitsHit)
+      stackBreach = limitsHit.includes('stack')
+
       const integrityAfter = captureIntegrity(ctx, { stealth, trace })
       const integrity = diffIntegrity(integrityBefore, integrityAfter)
 
-      hooks.emit('lifecycle:run', { runId, ok: invocation.ok, limitsHit: invocation.limitsHit })
+      hooks.emit('lifecycle:run', { runId, ok: invocation.ok, limitsHit })
 
       record = {
         runId,
         ok: invocation.ok,
         result: invocation.result ?? null,
         error: invocation.error ?? null,
-        limitsHit: invocation.limitsHit ?? [],
+        limitsHit,
         timedOut: Boolean(invocation.timedOut),
         filename: invocation.filename,
         durationMs: invocation.durationMs ?? 0,
@@ -317,7 +325,10 @@ export class TracelessSandbox {
         runId,
         ok: false,
         error: sanitized,
-        limitsHit: [],
+        // A stack breach detected during settle survives into the failure record:
+        // the finally block keys the quarantine off it, and the analyst must
+        // still learn why the runtime could not be released.
+        limitsHit: stackBreach ? ['stack'] : [],
         durationMs: 0,
         virtualMs: Math.round(clock.elapsedMs),
         events: runOptions.keepTrace === false ? null : trace.events.slice(),
@@ -348,8 +359,11 @@ export class TracelessSandbox {
       // `runtime.dispose()` would abort the WASM engine and print
       // `Aborted(Assertion failed: list_empty(&rt->gc_obj_list))` to stderr (see
       // `runtime.js`). Abandon the runtime and quarantine the module instead;
-      // the run record still states the leak (`disposal.skipped`).
-      const stackBreach = Boolean(record?.limitsHit?.includes('stack'))
+      // the run record still states the leak (`disposal.skipped`). The breach
+      // may have been detected in the main script (`invocation`) or in the
+      // event loop (`settle`); both leave the same unrecoverable heap.
+      const abandonRuntime =
+        stackBreach || Boolean(record?.limitsHit?.includes('stack')) || Boolean(failure?.limitsHit?.includes('stack'))
       // Reverse acquisition order; every step is independent, so one failing
       // disposal never skips the next one.
       for (const [label, fn] of [
@@ -358,7 +372,7 @@ export class TracelessSandbox {
         ['stealth', () => stealth?.dispose()],
         ['context', () => ctx?.dispose()],
         ['runtime', () => {
-          if (stackBreach && runtimeHandle) {
+          if (abandonRuntime && runtimeHandle) {
             runtimeHandle.abandon()
             skippedRuntime = true
             return
@@ -430,6 +444,20 @@ export class TracelessSandbox {
     this.disposed = true
     this.module = null
   }
+}
+
+/**
+ * Union of two limit lists, in first-seen order.
+ * @param {string[]|undefined|null} left
+ * @param {string[]|undefined|null} right
+ * @returns {string[]}
+ */
+function mergeLimits(left, right) {
+  const merged = []
+  for (const value of [...(left ?? []), ...(right ?? [])]) {
+    if (typeof value === 'string' && !merged.includes(value)) merged.push(value)
+  }
+  return merged
 }
 
 /**

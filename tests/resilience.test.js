@@ -216,3 +216,88 @@ test('a failure after acquisition is wrapped as SANDBOX_RUN (D2)', async () => {
   assert.equal(recovered.result.value, 2)
   sb.dispose()
 })
+
+/**
+ * Event-loop stack exhaustion: the entry script returns normally, then a
+ * callback recurses past the stack limit. The script did succeed, so `ok` stays
+ * true, but the runtime's heap is as unrecoverable as after a main-script
+ * overflow — so the breach must be classified (`limitsHit: ['stack']`), carried
+ * on `settle.error`, and the runtime abandoned instead of disposed.
+ *
+ * Before the fix each case printed one `Aborted(Assertion failed:
+ * list_empty(&rt->gc_obj_list))` line to stderr; the promise-job case also threw
+ * `SANDBOX_RUN: sandbox run failed: Maximum call stack size exceeded`.
+ */
+const EVENT_LOOP_DEFORMATIONS = [
+  {
+    label: 'timer callback',
+    source: 'setTimeout(function f(){ return f() }, 0)',
+    origin: 'timer',
+  },
+  {
+    label: 'promise job',
+    source: 'Promise.resolve().then(function f(){ return f() })',
+    origin: 'promise-job',
+  },
+]
+
+for (const deformation of EVENT_LOOP_DEFORMATIONS) {
+  test(`stack exhaustion in a ${deformation.label} is a classified limit, not an engine abort`, async () => {
+    const sb = await sandbox()
+    const printed = []
+    const restoreEngine = captureEngineOutput(printed)
+    try {
+      // `run()` itself must resolve: a host RangeError escaping the WASM
+      // trampoline used to turn the promise-job case into a SANDBOX_RUN throw.
+      const run = await sb.run(deformation.source)
+
+      // The evaluated script never threw; only the event loop did.
+      assert.equal(run.ok, true, `unexpected failure: ${JSON.stringify(run.error)}`)
+      assert.equal(run.error, null)
+      assert.deepEqual(run.limitsHit, ['stack'], JSON.stringify(run.limitsHit))
+
+      // The error is structured and attributable to the callback that recursed.
+      assert.ok(run.settle && !run.settle.skipped, `settle missing: ${JSON.stringify(run.settle)}`)
+      assert.deepEqual(run.settle.limitsHit, ['stack'], JSON.stringify(run.settle))
+      assert.equal(run.settle.error?.origin, deformation.origin)
+      assert.equal(run.settle.error?.name, 'RangeError')
+      assert.match(String(run.settle.error?.message), /maximum call stack/i)
+
+      // The heap cannot be released, so the runtime is abandoned (no dispose
+      // attempt, therefore no abort) and the module is quarantined.
+      assert.deepEqual(
+        { ...run.disposal, errors: run.disposal.errors.length },
+        { ok: false, errors: 0, leaked: true, stage: 'runtime', skipped: true },
+      )
+
+      // Quarantining must hand the analysis capability back immediately.
+      const followUp = await sb.run('1+1')
+      assert.equal(followUp.ok, true, JSON.stringify(followUp.error))
+      assert.equal(followUp.result.value, 2)
+      assert.deepEqual(followUp.disposal, { ok: true, errors: [] })
+      assert.deepEqual(followUp.limitsHit, [])
+      assert.equal(followUp.settle?.error, null)
+    } finally {
+      restoreEngine()
+      sb.dispose()
+    }
+
+    const aborts = printed.filter((chunk) => /Aborted\(/.test(chunk))
+    assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+  })
+}
+
+test('a non-stack settle error stays a non-stack outcome (no stack quarantine)', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run('setTimeout(function () { throw new RangeError("unrelated range error") }, 0)')
+    assert.equal(run.ok, true)
+    assert.deepEqual(run.limitsHit, [])
+    // `settle.error` is the structured stack slot; a non-stack failure leaves it
+    // empty (tolerating the pre-fix record that has no such key at all).
+    assert.equal(run.settle?.error ?? null, null)
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
+})
