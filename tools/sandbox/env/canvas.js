@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createSeededRandom, hashSeed } from '../../util/random.js'
 import { isHandle } from '../bridge.js'
+import { elementPrototypifier } from './dom.js'
 
 /**
  * Canvas 2D, WebGL/WebGL2, Web Audio and font-metrics surfaces.
@@ -1409,6 +1410,25 @@ export function install(bridge) {
     dataset.dispose()
   }
 
+  /**
+   * Give an element instance the WebIDL own-property surface: `style`,
+   * `dataset` and `ownerDocument` move onto an inserted per-instance prototype
+   * layer, so `Object.keys(element)` is 0 like Chromium and reads/writes keep
+   * working. Canvas builds its own element classes, so it applies the same
+   * transform the DOM shim's element prototypes get (`elementPrototypifier`),
+   * which keeps `document.createElement('canvas')` indistinguishable from the
+   * shim's own tags.
+   * @param {object} elementHandle
+   */
+  const applyWebidlShape = (elementHandle) => {
+    const transform = elementPrototypifier(bridge)
+    if (!transform) return elementHandle
+    const result = ctx.callFunction(transform, ctx.undefined, [elementHandle])
+    if (result.error) result.error.dispose()
+    else result.value.dispose()
+    return elementHandle
+  }
+
   const elementAccessors = {
     width: {
       get: (state) => state.width,
@@ -2073,6 +2093,7 @@ export function install(bridge) {
   const initCanvasElement = bridge.fn('initialize', 1, ({ args }) => {
     attachState(args[0], createCanvasState(bridge.value(args, 1)))
     attachElementChrome(args[0])
+    applyWebidlShape(args[0])
     return ctx.undefined
   })
 
@@ -2092,6 +2113,7 @@ export function install(bridge) {
       listeners: new Map(),
     })
     attachElementChrome(args[0])
+    applyWebidlShape(args[0])
     return ctx.undefined
   })
 
@@ -2114,6 +2136,7 @@ export function install(bridge) {
       listeners: new Map(),
     })
     attachElementChrome(args[0])
+    applyWebidlShape(args[0])
     return ctx.undefined
   })
 
@@ -2725,7 +2748,9 @@ export function install(bridge) {
       ctx.setProp(element, 'ownerDocument', documentHandle)
     }
     documentHandle?.dispose()
-    return element
+    // `ownerDocument` is attached after the constructor ran, so re-apply the
+    // layer to keep the new property off the instance.
+    return applyWebidlShape(element)
   }
 
   const factories = bridge.elementFactories ?? new Map()

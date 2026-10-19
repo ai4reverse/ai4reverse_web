@@ -235,6 +235,8 @@ export function install(bridge) {
   // `on<type>` accessors are JS closures; register their sources as native so
   // `Function.prototype.toString` does not reveal an interpreted environment.
   adoptHandlerAccessors(bridge, shim)
+  // IDL attribute accessors are closures for the same reason.
+  adoptHandlerAccessors(bridge, shim, 'listAttributeAccessors')
 
   bridge.install(bridge.global, 'document', document, {
     enumerable: true,
@@ -527,13 +529,14 @@ function createCookieJar({ bridge, clockNow, pageUrl, secureContext }) {
 }
 
 /**
- * Adopt `on<type>` accessor closures as native sources.
+ * Adopt guest accessor closures as native sources.
  * @param {object} bridge
  * @param {object} shim namespace handle
+ * @param {string} [listName] shim member returning the accessor array
  */
-function adoptHandlerAccessors(bridge, shim) {
+function adoptHandlerAccessors(bridge, shim, listName = 'listHandlerAccessors') {
   const { ctx } = bridge
-  const listAccessors = ctx.getProp(shim, 'listHandlerAccessors')
+  const listAccessors = ctx.getProp(shim, listName)
   try {
     const call = ctx.callFunction(listAccessors, ctx.undefined, [])
     if (call.error) {
@@ -574,6 +577,67 @@ function adoptTable(bridge, listKeysHandle, tableHandle) {
     bridge.adopt(method, name)
     method.dispose()
   }
+}
+
+/**
+ * Guest source of the WebIDL own-property transform.
+ *
+ * Chromium keeps IDL attributes on the interface prototype and the instance
+ * owns nothing, which is what a fingerprint probe reads:
+ * `Object.keys(document.createElement('div')).length === 0`. The DOM shim gets
+ * that shape with attribute accessors on its own prototypes (see
+ * `installAttributeTable`), but the canvas module builds its element classes
+ * separately and hangs three expandos (`style`, `dataset`, `ownerDocument`) on
+ * the instance. This transform gives those instances the same shape: it inserts
+ * one prototype layer **per object** (the descriptors keep their values, so
+ * per-instance state survives), moves every configurable own property there and
+ * re-parents the object onto it. Reads, writes, `instanceof`, brands and
+ * `for...in` are unchanged; only `Object.keys`/`hasOwnProperty`
+ * /`getOwnPropertyNames` start matching the platform. Non-configurable own
+ * properties stay put, which is the `Object.getOwnPropertyNames` contract the
+ * D6 probe checks.
+ */
+const WEBIDL_SHAPE_SOURCE = `(function (target) {
+  if (!target || typeof target !== 'object') return target;
+  var names = Object.getOwnPropertyNames(target);
+  if (names.length === 0) return target;
+  var holder = Object.create(Object.getPrototypeOf(target));
+  for (var index = 0; index < names.length; index += 1) {
+    var descriptor = Object.getOwnPropertyDescriptor(target, names[index]);
+    if (!descriptor || !descriptor.configurable) continue;
+    Object.defineProperty(holder, names[index], descriptor);
+    delete target[names[index]];
+  }
+  Object.setPrototypeOf(target, holder);
+  return target;
+})`
+
+/**
+ * Compile (once per bridge) the WebIDL own-property transform and return the
+ * guest function handle. Used by the canvas element factory so canvas/media
+ * instances match the DOM shim's elements.
+ *
+ * @param {object} bridge
+ * @returns {object|null} guest function handle, or null when it cannot compile
+ */
+export function elementPrototypifier(bridge) {
+  if (bridge.elementPrototypifier) return bridge.elementPrototypifier
+  const { ctx } = bridge
+  const compiled = ctx.evalCode(WEBIDL_SHAPE_SOURCE, 'ai4r-internal:webidl-shape')
+  if (compiled.error) {
+    compiled.error.dispose()
+    return null
+  }
+  const handle = compiled.value
+  bridge.elementPrototypifier = handle
+  bridge.onDispose?.(() => {
+    try {
+      handle.dispose()
+    } catch {
+      /* already released with the context */
+    }
+  })
+  return handle
 }
 
 /**
@@ -831,6 +895,77 @@ function domShim(host) {
     for (var i = 0; i < keys.length; i += 1) {
       var entry = table[keys[i]]
       defineAccessor(prototype, keys[i], entry.get, entry.set)
+    }
+  }
+
+  // -------------------------------------------------------- IDL attributes
+  // Chromium keeps every IDL attribute on the interface prototype and the data
+  // in an internal slot, so `Object.keys(document.createElement('div'))` is 0,
+  // `hasOwnProperty('style')` is false and a write never adds an own property
+  // (a detector differentiates a data-property shim exactly that way). The shim
+  // therefore installs attribute accessors on `nodeProto`/`elementProto` and
+  // keeps the values in the per-node state bag (`state.values`). The bag is
+  // keyed by the instance, so `Object.setPrototypeOf` (custom-element upgrade)
+  // cannot drop the values and `Object.getOwnPropertyNames(node)` stays empty.
+  var NODE_ATTRIBUTE_NAMES = [
+    'nodeType', 'nodeName', 'nodeValue', 'ownerDocument',
+    'parentNode', 'parentElement', 'childNodes', 'children',
+    'firstChild', 'lastChild', 'nextSibling', 'previousSibling',
+    'textContent',
+  ]
+  var ELEMENT_ATTRIBUTE_NAMES = [
+    'localName', 'namespaceURI', 'tagName',
+    'id', 'className', 'title', 'lang', 'dir', 'hidden',
+    'src', 'href', 'rel', 'type', 'name', 'value', 'alt', 'target', 'placeholder',
+    'width', 'height',
+    'innerText', 'innerHTML', 'outerHTML', 'outerText',
+    'dataset', 'style', 'classList',
+    'offsetWidth', 'offsetHeight', 'offsetTop', 'offsetLeft', 'offsetParent',
+    'clientWidth', 'clientHeight', 'clientTop', 'clientLeft',
+    'scrollWidth', 'scrollHeight', 'scrollTop', 'scrollLeft',
+  ]
+  var CHARACTER_DATA_ATTRIBUTE_NAMES = ['data', 'length']
+  var attributeAccessors = []
+
+  /** Internal-slot bag of the nearest node in the receiver's prototype chain. */
+  function bagFor(receiver) {
+    var current = receiver
+    while (current !== null && (typeof current === 'object' || typeof current === 'function')) {
+      var state = nodeStates.get(current)
+      if (state) {
+        if (!state.values) state.values = Object.create(null)
+        return state.values
+      }
+      current = Object.getPrototypeOf(current)
+    }
+    return null
+  }
+
+  /**
+   * One accessor pair per attribute. The generated source embeds the key
+   * literal: the stealth masker keys native text by source text, so a shared
+   * closure would make every getter stringify with the same name.
+   */
+  function makeAttributeAccessor(key, kind) {
+    var source =
+      kind === 'get'
+        ? 'return function () { var bag = bagFor(this); return bag ? bag["' + key + '"] : undefined }'
+        : 'return function (value) { var bag = bagFor(this); if (bag) bag["' + key + '"] = value }'
+    var accessor = new Function('bagFor', source)(bagFor)
+    Object.defineProperty(accessor, 'name', {
+      value: (kind === 'get' ? 'get ' : 'set ') + key,
+      configurable: true,
+    })
+    return accessor
+  }
+
+  function installAttributeTable(prototype, names) {
+    for (var index = 0; index < names.length; index += 1) {
+      var key = names[index]
+      var getter = makeAttributeAccessor(key, 'get')
+      var setter = makeAttributeAccessor(key, 'set')
+      Object.defineProperty(prototype, key, { get: getter, set: setter, enumerable: true, configurable: true })
+      attributeAccessors.push(getter, setter)
     }
   }
 
@@ -1333,59 +1468,63 @@ function domShim(host) {
     var state = createNodeState(tag)
     nodeStates.set(element, state)
     var box = boxForElement({ localName: tag })
-    defineValue(element, 'nodeType', 1)
-    defineValue(element, 'tagName', tag.toUpperCase())
-    defineValue(element, 'nodeName', tag.toUpperCase())
-    defineValue(element, 'localName', tag)
-    defineValue(element, 'namespaceURI', 'http://www.w3.org/1999/xhtml')
-    defineValue(element, 'nodeValue', null)
-    defineValue(element, 'ownerDocument', ownerDocument)
-    defineValue(element, 'parentNode', null)
-    defineValue(element, 'parentElement', null)
-    defineValue(element, 'childNodes', state.childNodes)
-    defineValue(element, 'children', state.children)
-    defineValue(element, 'firstChild', null)
-    defineValue(element, 'lastChild', null)
-    defineValue(element, 'nextSibling', null)
-    defineValue(element, 'previousSibling', null)
-    defineValue(element, 'id', '')
-    defineValue(element, 'className', '')
-    defineValue(element, 'title', '')
-    defineValue(element, 'lang', '')
-    defineValue(element, 'dir', '')
-    defineValue(element, 'hidden', false)
-    defineValue(element, 'src', '')
-    defineValue(element, 'href', '')
-    defineValue(element, 'rel', '')
-    defineValue(element, 'type', '')
-    defineValue(element, 'name', '')
-    defineValue(element, 'value', '')
-    defineValue(element, 'alt', '')
-    defineValue(element, 'target', '')
-    defineValue(element, 'placeholder', '')
-    defineValue(element, 'width', 0)
-    defineValue(element, 'height', 0)
-    defineValue(element, 'textContent', '')
-    defineValue(element, 'innerText', '')
-    defineValue(element, 'innerHTML', '')
-    defineValue(element, 'outerHTML', '')
-    defineValue(element, 'outerText', '')
-    defineValue(element, 'dataset', {})
-    defineValue(element, 'style', makeStyle(element, null))
-    defineValue(element, 'classList', makeClassList(element))
-    defineValue(element, 'offsetWidth', box.width)
-    defineValue(element, 'offsetHeight', box.height)
-    defineValue(element, 'offsetTop', box.top)
-    defineValue(element, 'offsetLeft', box.left)
-    defineValue(element, 'offsetParent', null)
-    defineValue(element, 'clientWidth', box.width - 2)
-    defineValue(element, 'clientHeight', box.height - 2)
-    defineValue(element, 'clientTop', 0)
-    defineValue(element, 'clientLeft', 0)
-    defineValue(element, 'scrollWidth', box.width)
-    defineValue(element, 'scrollHeight', box.height)
-    defineValue(element, 'scrollTop', 0)
-    defineValue(element, 'scrollLeft', 0)
+    // Initial attribute values live in the internal slot; see `bagFor` for why
+    // the instance itself owns nothing.
+    state.values = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      nodeName: tag.toUpperCase(),
+      localName: tag,
+      namespaceURI: 'http://www.w3.org/1999/xhtml',
+      nodeValue: null,
+      ownerDocument: ownerDocument,
+      parentNode: null,
+      parentElement: null,
+      childNodes: state.childNodes,
+      children: state.children,
+      firstChild: null,
+      lastChild: null,
+      nextSibling: null,
+      previousSibling: null,
+      id: '',
+      className: '',
+      title: '',
+      lang: '',
+      dir: '',
+      hidden: false,
+      src: '',
+      href: '',
+      rel: '',
+      type: '',
+      name: '',
+      value: '',
+      alt: '',
+      target: '',
+      placeholder: '',
+      width: 0,
+      height: 0,
+      textContent: '',
+      innerText: '',
+      innerHTML: '',
+      outerHTML: '',
+      outerText: '',
+      dataset: {},
+      style: makeStyle(element, null),
+      classList: makeClassList(element),
+      offsetWidth: box.width,
+      offsetHeight: box.height,
+      offsetTop: box.top,
+      offsetLeft: box.left,
+      offsetParent: null,
+      clientWidth: box.width - 2,
+      clientHeight: box.height - 2,
+      clientTop: 0,
+      clientLeft: 0,
+      scrollWidth: box.width,
+      scrollHeight: box.height,
+      scrollTop: 0,
+      scrollLeft: 0,
+    }
     return element
   }
 
@@ -1993,21 +2132,23 @@ function domShim(host) {
     var state = createNodeState(nodeName)
     nodeStates.set(node, state)
     var text = stringOf(data)
-    defineValue(node, 'nodeType', nodeType)
-    defineValue(node, 'nodeName', nodeName)
-    defineValue(node, 'nodeValue', text)
-    defineValue(node, 'data', text)
-    defineValue(node, 'length', text.length)
-    defineValue(node, 'textContent', text)
-    defineValue(node, 'ownerDocument', ownerDocument)
-    defineValue(node, 'parentNode', null)
-    defineValue(node, 'parentElement', null)
-    defineValue(node, 'childNodes', state.childNodes)
-    defineValue(node, 'children', state.children)
-    defineValue(node, 'firstChild', null)
-    defineValue(node, 'lastChild', null)
-    defineValue(node, 'nextSibling', null)
-    defineValue(node, 'previousSibling', null)
+    state.values = {
+      nodeType: nodeType,
+      nodeName: nodeName,
+      nodeValue: text,
+      data: text,
+      length: text.length,
+      textContent: text,
+      ownerDocument: ownerDocument,
+      parentNode: null,
+      parentElement: null,
+      childNodes: state.childNodes,
+      children: state.children,
+      firstChild: null,
+      lastChild: null,
+      nextSibling: null,
+      previousSibling: null,
+    }
     return node
   }
 
@@ -2023,18 +2164,21 @@ function domShim(host) {
     var node = Object.create(nodeProto)
     var state = createNodeState('#document-fragment')
     nodeStates.set(node, state)
-    defineValue(node, 'nodeType', 11)
-    defineValue(node, 'nodeName', '#document-fragment')
-    defineValue(node, 'nodeValue', null)
-    defineValue(node, 'ownerDocument', ownerDocument)
-    defineValue(node, 'parentNode', null)
-    defineValue(node, 'parentElement', null)
-    defineValue(node, 'childNodes', state.childNodes)
-    defineValue(node, 'children', state.children)
-    defineValue(node, 'firstChild', null)
-    defineValue(node, 'lastChild', null)
-    defineValue(node, 'nextSibling', null)
-    defineValue(node, 'previousSibling', null)
+    state.values = {
+      nodeType: 11,
+      nodeName: '#document-fragment',
+      nodeValue: null,
+      ownerDocument: ownerDocument,
+      parentNode: null,
+      parentElement: null,
+      childNodes: state.childNodes,
+      children: state.children,
+      firstChild: null,
+      lastChild: null,
+      nextSibling: null,
+      previousSibling: null,
+      textContent: '',
+    }
     return node
   }
 
@@ -2042,9 +2186,12 @@ function domShim(host) {
   var nodeProto = {}
   installMethodTable(nodeProto, eventTargetMethods)
   installMethodTable(nodeProto, nodeMethods)
+  installAttributeTable(nodeProto, NODE_ATTRIBUTE_NAMES)
+  installAttributeTable(nodeProto, CHARACTER_DATA_ATTRIBUTE_NAMES)
 
   var elementProto = Object.create(nodeProto)
   installMethodTable(elementProto, elementMethods)
+  installAttributeTable(elementProto, ELEMENT_ATTRIBUTE_NAMES)
 
   var documentProto = Object.create(nodeProto)
   installMethodTable(documentProto, documentMethods)
@@ -2078,6 +2225,9 @@ function domShim(host) {
     installHandlerProperties: installHandlerProperties,
     listHandlerAccessors: function listHandlerAccessors() {
       return handlerAccessors
+    },
+    listAttributeAccessors: function listAttributeAccessors() {
+      return attributeAccessors
     },
     listTableKeys: function listTableKeys(table) {
       return Object.keys(table)

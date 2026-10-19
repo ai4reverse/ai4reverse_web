@@ -255,6 +255,122 @@ test('WebAssembly compile, instantiate and instantiateStreaming fail like a brow
   }
 })
 
+test('element instances expose a WebIDL own-property surface', async () => {
+  const sb = await sandbox()
+  try {
+    const { value } = await probe(
+      sb,
+      `(function () {
+        var BRANDS = {
+          div: '[object HTMLDivElement]', span: '[object HTMLSpanElement]', p: '[object HTMLParagraphElement]',
+          a: '[object HTMLAnchorElement]', img: '[object HTMLImageElement]', input: '[object HTMLInputElement]',
+          canvas: '[object HTMLCanvasElement]', video: '[object HTMLVideoElement]',
+          audio: '[object HTMLAudioElement]', script: '[object HTMLScriptElement]', body: '[object HTMLBodyElement]'
+        };
+        var SHIM_TAGS = ['div', 'span', 'p', 'a', 'input', 'script', 'body'];
+        var out = { keys: {}, ownNames: {}, ownSymbols: {}, brands: {}, interfaceInstance: {}, hasOwnStyle: {}, inStyle: {}, accessor: {} };
+        var tags = Object.keys(BRANDS);
+        for (var index = 0; index < tags.length; index += 1) {
+          var tag = tags[index];
+          var element = document.createElement(tag);
+          out.keys[tag] = Object.keys(element).length;
+          out.ownNames[tag] = Object.getOwnPropertyNames(element).length;
+          out.ownSymbols[tag] = Object.getOwnPropertySymbols(element).length;
+          out.brands[tag] = Object.prototype.toString.call(element);
+          out.interfaceInstance[tag] = element instanceof HTMLElement && element instanceof globalThis[BRANDS[tag].slice(8, -1)];
+          out.hasOwnStyle[tag] = Object.prototype.hasOwnProperty.call(element, 'style');
+          out.inStyle[tag] = 'style' in element && typeof element.style === 'object';
+        }
+        // IDL attributes are accessors on the interface prototype, not data
+        // properties the shim happens to hang on the instance.
+        for (var shimIndex = 0; shimIndex < SHIM_TAGS.length; shimIndex += 1) {
+          var shimElement = document.createElement(SHIM_TAGS[shimIndex]);
+          var current = Object.getPrototypeOf(shimElement);
+          var descriptor = null;
+          while (current && !descriptor) {
+            descriptor = Object.getOwnPropertyDescriptor(current, 'id');
+            current = Object.getPrototypeOf(current);
+          }
+          out.accessor[SHIM_TAGS[shimIndex]] = Boolean(descriptor && descriptor.get && descriptor.set && descriptor.enumerable);
+        }
+        // Writes must not resurrect an own property (the tell a data-property
+        // shim leaves behind) and reads must see them.
+        var probeEl = document.createElement('div');
+        probeEl.id = 'written';
+        probeEl.className = 'alpha beta';
+        probeEl.textContent = 'text';
+        probeEl.style.cssText = 'color: red';
+        probeEl.setAttribute('data-stage', '2');
+        var child = document.createElement('span');
+        probeEl.appendChild(child);
+        var other = document.createElement('div');
+        other.style.cssText = 'color: blue';
+        out.afterWrite = {
+          keys: Object.keys(probeEl).length,
+          ownNames: Object.getOwnPropertyNames(probeEl).length,
+          ownSymbols: Object.getOwnPropertySymbols(probeEl).length,
+          id: probeEl.id,
+          className: probeEl.className,
+          classListLength: probeEl.classList.length,
+          textContent: probeEl.textContent,
+          cssText: probeEl.style.cssText,
+          attribute: probeEl.getAttribute('data-stage'),
+          childTag: probeEl.firstChild.tagName,
+          childParent: probeEl.firstChild.parentNode === probeEl,
+          noLeakBetweenInstances: other.style.cssText.indexOf('blue') >= 0 && other.style.cssText !== probeEl.style.cssText && other.id === '',
+          styleObjectIsPerInstance: probeEl.style !== other.style && probeEl.dataset !== other.dataset,
+          rectHasNumbers: (function () {
+            var rect = probeEl.getBoundingClientRect();
+            return typeof rect.width === 'number' && typeof rect.height === 'number';
+          })(),
+          brandStillCorrect: Object.prototype.toString.call(probeEl)
+        };
+        // A text node keeps its own surface out of the element path (Chromium
+        // reports zero own keys there too).
+        var text = document.createTextNode('hello');
+        out.textNode = { keys: Object.keys(text).length, ownNames: Object.getOwnPropertyNames(text).length, data: text.data };
+        return JSON.stringify(out);
+      })()`,
+    )
+    const tags = [
+      'div', 'span', 'p', 'a', 'img', 'input', 'canvas', 'video', 'audio', 'script', 'body',
+    ]
+    for (const tag of tags) {
+      assert.equal(value.keys[tag], 0, `${tag}: Object.keys(element) must be empty`)
+      assert.equal(value.ownNames[tag], 0, `${tag}: the instance must own no configurable properties`)
+      assert.equal(value.ownSymbols[tag], 0, `${tag}: the instance must own no symbols`)
+      assert.equal(value.hasOwnStyle[tag], false, `${tag}: hasOwnProperty('style') must be false`)
+      assert.equal(value.inStyle[tag], true, `${tag}: 'style' in element must still be true`)
+      assert.equal(value.interfaceInstance[tag], true, `${tag}: instanceof HTMLElement/host interface must hold`)
+    }
+    assert.equal(value.brands.div, '[object HTMLDivElement]')
+    assert.equal(value.brands.canvas, '[object HTMLCanvasElement]')
+    assert.equal(value.brands.audio, '[object HTMLAudioElement]')
+    assert.equal(value.brands.body, '[object HTMLBodyElement]')
+    for (const tag of ['div', 'span', 'p', 'a', 'input', 'script', 'body']) {
+      assert.equal(value.accessor[tag], true, `${tag}: 'id' must be an enumerable accessor on a prototype`)
+    }
+    assert.equal(value.afterWrite.keys, 0, 'a write must not create an own property')
+    assert.equal(value.afterWrite.ownNames, 0)
+    assert.equal(value.afterWrite.ownSymbols, 0)
+    assert.equal(value.afterWrite.id, 'written')
+    assert.equal(value.afterWrite.className, 'alpha beta')
+    assert.equal(value.afterWrite.classListLength, 2)
+    assert.equal(value.afterWrite.textContent, 'text')
+    assert.equal(value.afterWrite.cssText, 'color: red;')
+    assert.equal(value.afterWrite.attribute, '2')
+    assert.equal(value.afterWrite.childTag, 'SPAN')
+    assert.equal(value.afterWrite.childParent, true)
+    assert.equal(value.afterWrite.noLeakBetweenInstances, true, 'elements must not share state')
+    assert.equal(value.afterWrite.styleObjectIsPerInstance, true)
+    assert.equal(value.afterWrite.rectHasNumbers, true)
+    assert.equal(value.afterWrite.brandStillCorrect, '[object HTMLDivElement]')
+    assert.deepEqual(value.textNode, { keys: 0, ownNames: 0, data: 'hello' })
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('document.createElement results are HTMLElement and per-tag interfaces', async () => {
   const sb = await sandbox()
   try {
