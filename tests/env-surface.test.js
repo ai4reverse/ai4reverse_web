@@ -290,6 +290,76 @@ test('profile coherence holds under strict mode and no host leak survives', asyn
   }
 })
 
+test('D6 surfaces exist, are branded and the isolation triple is coherent', async () => {
+  const sb = await fullSandbox()
+  try {
+    const run = await sb.run(`
+      (function () {
+        var names = ['HTMLElement','HTMLDivElement','HTMLBodyElement','HTMLCanvasElement','HTMLScriptElement',
+          'HTMLInputElement','HTMLImageElement','HTMLAnchorElement','customElements','DOMParser','XMLSerializer',
+          'EventSource','WebAssembly','Atomics','SharedArrayBuffer'];
+        var element = document.createElement('div');
+        return {
+          types: {
+            HTMLElement: typeof HTMLElement,
+            customElements: typeof customElements,
+            DOMParser: typeof DOMParser,
+            XMLSerializer: typeof XMLSerializer,
+            EventSource: typeof EventSource,
+            WebAssembly: typeof WebAssembly,
+            Atomics: typeof Atomics,
+            SharedArrayBuffer: typeof SharedArrayBuffer
+          },
+          missingTypes: names.filter(function (name) { return typeof globalThis[name] === 'undefined' }),
+          crossOriginIsolated: crossOriginIsolated,
+          elementIsHTMLElement: element instanceof HTMLElement,
+          bodyIsBody: document.body instanceof HTMLBodyElement,
+          elementBrand: Object.prototype.toString.call(element),
+          customElementsBrand: Object.prototype.toString.call(customElements),
+          webAssemblyBrand: Object.prototype.toString.call(WebAssembly),
+          registryIsObject: customElements.get('never-defined') === undefined,
+          sources: {
+            HTMLElement: String(HTMLElement),
+            customElementsDefine: String(customElements.define),
+            DOMParser: String(DOMParser),
+            XMLSerializer: String(new XMLSerializer().serializeToString),
+            EventSource: String(EventSource),
+            WebAssembly: String(WebAssembly.compile)
+          }
+        };
+      })()
+    `, { level: 'off' })
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    const value = JSON.parse(run.result.preview)
+    assert.deepEqual(value.types, {
+      HTMLElement: 'function',
+      customElements: 'object',
+      DOMParser: 'function',
+      XMLSerializer: 'function',
+      EventSource: 'function',
+      WebAssembly: 'object',
+      Atomics: 'undefined',
+      SharedArrayBuffer: 'undefined'
+    })
+    assert.deepEqual(value.missingTypes, ['Atomics', 'SharedArrayBuffer'])
+    assert.equal(value.crossOriginIsolated, false)
+    assert.equal(value.elementIsHTMLElement, true)
+    assert.equal(value.bodyIsBody, true)
+    assert.equal(value.elementBrand, '[object HTMLDivElement]')
+    assert.equal(value.customElementsBrand, '[object CustomElementRegistry]')
+    assert.equal(value.webAssemblyBrand, '[object WebAssembly]')
+    assert.equal(value.registryIsObject, true)
+    for (const [key, source] of Object.entries(value.sources)) {
+      assert.match(source, /native code/, `${key} shim leaks source: ${source}`)
+    }
+    // The coherence invariant is part of the run's profile report.
+    assert.equal(run.profile.consistency.ok, true, JSON.stringify(run.profile.consistency.problems))
+    assert.ok(run.profile.consistency.checked >= 15)
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('declarative network routes make fetch/XHR resolve like a real endpoint', async () => {
   const sb = await fullSandbox()
   try {
