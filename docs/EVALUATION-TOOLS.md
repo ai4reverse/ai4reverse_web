@@ -332,6 +332,24 @@ section is the outcome and does not rewrite the findings.
   `docs/DESIGN-REVIEW.md` → "Review 6"; the commands and counts live in
   `docs/VERIFICATION.md`.
 
+## Where the review's proposal and the code differ
+
+The review proposed contract names; the alignment followed the code, not the
+proposal. Differences to know when reading `docs/CONTRACTS.md`:
+
+- The bridge does **not** have `call(...)` (it was dead surface, removed under
+  D10) or `define(handle, props)`; use `install(target, key, value, flags)` or
+  `obj(properties)`. Its reader helpers are `str(args, i)`, `num(args, i)`,
+  `int`, `bool`, `value`, `list(handle, limit)` — argument-indexed, not
+  value-taking — plus the `undefined`/`null` getters.
+- The trace recorder also accepts `actor` and `strict`, and exposes `clear()`,
+  `dropped` and `seq`.
+- `HOOK_PHASES` has 21 entries (including `code:step`, `ast:node` and
+  `lifecycle:*`); `code:step` is dispatchable but never traced, and `ast:*` /
+  `jsvmp:*` hook phases are not re-traced because they own trace kinds.
+- The env graph has 28 modules, not 24, and `platform-kit` is not a module.
+- `rename` is deferred through `meta.deferred`, not through a hard-coded id.
+
 ## Per-`Dn` status
 
 | Id | Severity | Status | Acceptance evidence |
