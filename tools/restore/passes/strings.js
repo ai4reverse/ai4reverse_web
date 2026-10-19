@@ -28,6 +28,8 @@
  * @see docs/CONTRACTS.md — "Restoration pass contract"
  */
 
+import { compareGeneratedText } from '../pass-context.js'
+
 /** Longest string this pass will materialise (guards hostile inputs). */
 const MAX_STRING_LENGTH = 100_000
 
@@ -86,7 +88,7 @@ export function run(ast, context) {
   context.traverse(ast, {
     StringLiteral: (path) => {
       try {
-        normaliseEscapes(path, note, report, () => {
+        normaliseEscapes(path, t, note, report, () => {
           changed = true
         })
       } catch (error) {
@@ -151,12 +153,19 @@ export function run(ast, context) {
  * Replace a literal's original raw text (which encodes the escapes) with the
  * plain cooked value so the shared generator applies its own escaping.
  *
+ * A re-parse re-attaches `extra.raw` to every literal that still needs a
+ * backslash (`'a\nb'` keeps one), so the guard has to be the generated text and
+ * not the presence of an escape: clearing `extra.raw` is only a change when the
+ * generator writes something different (D5 — a fixed point must report
+ * `changed: false`).
+ *
  * @param {object} path - StringLiteral path
+ * @param {object} t - @babel/types
  * @param {(message: string) => void} note
  * @param {(rule: string, from: string, to: string) => void} report
  * @param {() => void} markChanged
  */
-function normaliseEscapes(path, note, report, markChanged) {
+function normaliseEscapes(path, t, note, report, markChanged) {
   const node = path.node
   const raw = node.extra?.raw
   if (typeof raw !== 'string' || !raw.includes('\\')) return
@@ -172,6 +181,9 @@ function normaliseEscapes(path, note, report, markChanged) {
     note('string literal too large to decode, left untouched')
     return
   }
+  // Dropping the raw text makes the generator emit exactly `t.stringLiteral`,
+  // so comparing against that node is the text-change test.
+  if (!compareGeneratedText(node, t.stringLiteral(node.value)).changed) return
   node.extra = { rawValue: node.value }
   markChanged()
   report('string-escape', raw, node.value)

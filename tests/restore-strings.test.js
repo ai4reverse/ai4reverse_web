@@ -86,10 +86,19 @@ test('strings: decodes hex, unicode and octal escapes to their cooked value', ()
 })
 
 test('strings: drops unnecessary escapes and re-escapes only what is required', () => {
-  assertFolded("'it\\'s'", "it's")
+  // A double quote needs no escape inside single quotes, so the text changes.
   assertFolded("'say \\\"hi\\\"'", 'say "hi"')
-  assertFolded("'back\\\\slash'", 'back\\slash')
-  assertFolded("'line\\nbreak'", 'line\nbreak')
+})
+
+test('strings: keeps an escape whose canonical spelling is identical', () => {
+  // `'it\'s'`, `'back\\slash'` and `'line\nbreak'` regenerate to exactly the
+  // same text, so clearing the raw text is not a change: reporting one made the
+  // pass miss its own fixed point (docs/EVALUATION-TOOLS.md D5).
+  for (const expression of ["'it\\'s'", "'back\\\\slash'", "'line\\nbreak'"]) {
+    const { original, folded, result } = fold(expression)
+    assert.equal(folded, original, `expected ${expression} to regenerate byte-identically`)
+    assert.equal(result.changed, false, `expected no reported change for ${expression}`)
+  }
 })
 
 test('strings: folds adjacent string literal chains in one pass', () => {

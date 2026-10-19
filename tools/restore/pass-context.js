@@ -1,6 +1,7 @@
 import * as t from '@babel/types'
 import traverseModule from '@babel/traverse'
 import * as templateModule from '@babel/template'
+import { generateExpression } from './generate.js'
 
 export const traverse = traverseModule.default ?? traverseModule.traverse ?? traverseModule
 export const template = templateModule.default ?? templateModule
@@ -129,6 +130,27 @@ export function isPrimitiveLiteral(node) {
     t.isNullLiteral(node) ||
     (t.isIdentifier(node) && node.name === 'undefined')
   )
+}
+
+/**
+ * Compare the source text a node generates with the text its replacement would
+ * generate.
+ *
+ * `changed` feeds the `STATIC_RESTORATION` verdict weight and
+ * `stopOnNoChange`, and every pass declares `idempotent: true`. A pass may
+ * therefore only claim a change when the generated text actually differs:
+ * rewriting a node into textually identical output is not a change, and
+ * reporting one makes the pipeline miss its own fixed point (see
+ * docs/EVALUATION-TOOLS.md D5).
+ *
+ * @param {object} node - node currently in the AST
+ * @param {object} replacement - node that would replace it
+ * @returns {{from: string, to: string, changed: boolean}}
+ */
+export function compareGeneratedText(node, replacement) {
+  const from = generateExpression(node)
+  const to = generateExpression(replacement)
+  return { from, to, changed: from !== to }
 }
 
 /** Convert a Babel literal node to its JS value. */

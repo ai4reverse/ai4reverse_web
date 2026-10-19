@@ -15,8 +15,7 @@
  *   replaced by its own copy.
  */
 
-import { valueToNode, isDirectiveSlot } from '../pass-context.js'
-import { generateExpression } from '../generate.js'
+import { valueToNode, isDirectiveSlot, compareGeneratedText } from '../pass-context.js'
 
 export const meta = {
   id: 'jsfuck',
@@ -332,11 +331,12 @@ export function run(ast, context) {
       const replacement = literalNode(t, value)
       if (!replacement) return
       if (referencesShadowedGlobal(t, replacement, path.scope)) return
-      report({
-        rule: 'jsfuck',
-        from: generateExpression(path.node),
-        to: generateExpression(replacement),
-      })
+      // A candidate may evaluate to a node that prints exactly like it already
+      // does (`-1` folds to `-1`): writing that back is not a change, and
+      // reporting one would miss the pass's own fixed point (D5).
+      const { from, to, changed } = compareGeneratedText(path.node, replacement)
+      if (!changed) return
+      report({ rule: 'jsfuck', from, to })
       path.replaceWith(replacement)
       path.skip()
       folded += 1
