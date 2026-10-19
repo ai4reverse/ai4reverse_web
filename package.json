@@ -22,7 +22,10 @@
     "analyze": "node tools/cli.js analyze",
     "restore": "node tools/cli.js restore",
     "run": "node tools/cli.js run",
-    "test:watch": "node --test --watch tests/*.test.js"
+    "test:watch": "node --test --watch tests/*.test.js",
+    "build:sdk": "node examples/national-sdk/build/build-sdk.mjs --seeds 1001-1003",
+    "verify:sdk": "node examples/national-sdk/verify.mjs",
+    "demo:sdk": "node examples/national-sdk/demo.mjs"
   },
   "keywords": [
     "malware-analysis",
