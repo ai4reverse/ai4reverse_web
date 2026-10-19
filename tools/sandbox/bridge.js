@@ -150,14 +150,14 @@ export function createHostBridge(options) {
       const arity = Number.isFinite(length) ? Math.max(0, Math.min(8, Math.trunc(length))) : 0
       const implementation = function guestFunction(...args) {
         const bag = new HandleBag()
-          bags.push(bag)
-          stats.calls += 1
-          try {
-            const result = impl({ args, thisHandle: this, bag, bridge })
-            return normalizeReturn(result, bag)
-          } catch (error) {
-            stats.errors += 1
-            throw toGuestError(error)
+        bags.push(bag)
+        stats.calls += 1
+        try {
+          const result = impl({ args, thisHandle: this, bag, bridge })
+          return normalizeReturn(result, bag)
+        } catch (error) {
+          stats.errors += 1
+          throw toGuestError(error)
         } finally {
           bags.pop()
           bag.dispose()
@@ -217,11 +217,9 @@ export function createHostBridge(options) {
       }
       const ctor = own(callResult.value)
       bridge.adopt(ctor, name)
-      // The prototype object itself must also be adopted so that methods added
-      // later can be adopted individually.
-      const prototype = ctx.getProp(ctor, 'prototype')
-      adoptPrototype(prototype, name)
-      prototype.dispose()
+      // Methods are adopted individually by their owners; the prototype itself
+      // must exist with a correct constructor link, which the generated body
+      // already creates.
       return ctor
     },
 
@@ -230,7 +228,7 @@ export function createHostBridge(options) {
       if (!stealth || !handle) return handle
       try {
         const source = stealth.readSource(handle)
-        if (source) stealth.registerShim(source, nativeTextForFor(nativeName ?? readName(ctx, handle)))
+        if (source) stealth.registerShim(source, nativeTextFor(nativeName ?? readName(ctx, handle)))
       } catch {
         /* adoption is best-effort */
       }
@@ -467,25 +465,6 @@ export function createHostBridge(options) {
       return array
     },
 
-    /** Call a guest function with plain JavaScript arguments. */
-    call(fnHandle, thisHandle, jsArgs = []) {
-      const argHandles = []
-      try {
-        for (const arg of jsArgs) argHandles.push(bridge.toGuest(arg))
-        const result = ctx.callFunction(fnHandle, thisHandle ?? ctx.undefined, argHandles)
-        if (result.error) {
-          const error = bridge.fromGuest(result.error)
-          result.error.dispose()
-          return { ok: false, error }
-        }
-        return { ok: true, value: result.value, handle: result.value }
-      } finally {
-        for (const handle of argHandles) {
-          if (isHandle(handle)) handle.dispose()
-        }
-      }
-    },
-
     /** Evaluate a short snippet inside the guest and return a plain value. */
     evalInGuest(source, filename = '') {
       const result = ctx.evalCode(String(source), filename)
@@ -597,13 +576,6 @@ export function createHostBridge(options) {
   return bridge
 }
 
-function adoptPrototype(prototype, name) {
-  // Methods are adopted individually by their owners; the prototype only needs
-  // to exist with a correct constructor link, which the generated body creates.
-  void prototype
-  void name
-}
-
 /**
  * Give a host callback a specific `.length` (quickjs-emscripten reads it from
  * Function#length when creating the guest function).
@@ -686,7 +658,7 @@ function readName(ctx, handle) {
   }
 }
 
-function nativeTextForFor(name) {
+function nativeTextFor(name) {
   return name ? `function ${name}() { [native code] }` : 'function () { [native code] }'
 }
 
