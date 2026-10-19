@@ -270,8 +270,11 @@ function brandObjects(bridge) {
  *    accessors so the per-instance brand stays correct,
  *  - exposes `customElements` (registry, `whenDefined`, `upgrade`).
  *
- * Element instances keep zero own symbols; the `Object.keys(element)` surface is
- * still the DOM module's own-property layout (see `_w6-fidelity-notes.md`).
+ * Element instances keep zero own symbols and zero own properties: since the
+ * WebIDL own-property transform (`dom.js` `elementPrototypifier`), attributes
+ * and expandos live on an inserted prototype layer, so `Object.keys(element)`,
+ * `Object.getOwnPropertyNames(element)` and `Object.getOwnPropertySymbols
+ * (element)` are all empty like Chromium.
  * @param {object} bridge
  */
 const ELEMENT_INTERFACES = {
