@@ -121,17 +121,6 @@ export function inWithScope(path) {
   return Boolean(path.findParent((parent) => parent.isWithStatement?.()))
 }
 
-/** True when a node is a string/number/boolean/null literal we can fold. */
-export function isPrimitiveLiteral(node) {
-  return (
-    t.isStringLiteral(node) ||
-    t.isNumericLiteral(node) ||
-    t.isBooleanLiteral(node) ||
-    t.isNullLiteral(node) ||
-    (t.isIdentifier(node) && node.name === 'undefined')
-  )
-}
-
 /**
  * Compare the source text a node generates with the text its replacement would
  * generate.
@@ -151,20 +140,6 @@ export function compareGeneratedText(node, replacement) {
   const from = generateExpression(node)
   const to = generateExpression(replacement)
   return { from, to, changed: from !== to }
-}
-
-/** Convert a Babel literal node to its JS value. */
-export function literalValue(node) {
-  if (t.isStringLiteral(node) || t.isNumericLiteral(node) || t.isBooleanLiteral(node)) return node.value
-  if (t.isNullLiteral(node)) return null
-  if (t.isIdentifier(node) && node.name === 'undefined') return undefined
-  if (t.isTemplateLiteral(node) && node.expressions.length === 0) {
-    return node.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw).join('')
-  }
-  if (t.isUnaryExpression(node) && node.operator === '-' && t.isNumericLiteral(node.argument)) {
-    return -node.argument.value
-  }
-  return Symbol.for('not-a-literal')
 }
 
 /** Convert a JS value to a Babel expression node. */
