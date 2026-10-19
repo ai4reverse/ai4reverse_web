@@ -136,39 +136,58 @@ export class TracelessSandbox {
     registerHooks(hooks, runOptions.hooks ?? [])
     hookStats.registered = hooks.describe().length
 
-    const runtimeHandle = createRuntime({
-      module: this.module,
-      limits: this.limits,
-      clock,
-      logger: this.logger,
-      trace,
-    })
-    const ctx = runtimeHandle.runtime.newContext()
-    const stealth = createStealth(ctx, {
-      nonce: shortHash(`${runId}:stealth`, 10),
-      trace,
-      logger: this.logger,
-    })
-    stealth.install()
-
-    const bridge = createHostBridge({
-      ctx,
-      runtime: runtimeHandle.runtime,
-      sandbox: this,
-      profile: this.profile,
-      clock,
-      trace,
-      logger: this.logger,
-      stealth,
-    })
-
+    // Every resource acquired for this run lives here so the `finally` block can
+    // dispose whatever actually exists, in reverse order, even when the
+    // acquisition itself throws half-way through (see D2).
+    let runtimeHandle = null
+    let ctx = null
+    let stealth = null
+    let bridge = null
     let environment = null
     let instrumentation = null
     let invoker = null
     let record = null
-    let disposalErrors = []
+    let failure = null
+    const disposalErrors = []
+    let leaked = false
+    let phase = 'init'
 
     try {
+      // Acquisition is inside the guarded region: a failure here must still
+      // dispose the runtime/context it created before it threw.
+      //
+      // The module is re-acquired every run because a failed disposal
+      // quarantines it (`runtime.js`); `loadQuickJS()` returns the memoised
+      // module while it is healthy and compiles a fresh WASM instance after a
+      // stack-exhaustion abort.
+      this.module = await loadQuickJS()
+      runtimeHandle = createRuntime({
+        module: this.module,
+        limits: this.limits,
+        clock,
+        logger: this.logger,
+        trace,
+      })
+      ctx = runtimeHandle.runtime.newContext()
+      stealth = createStealth(ctx, {
+        nonce: shortHash(`${runId}:stealth`, 10),
+        trace,
+        logger: this.logger,
+      })
+      stealth.install()
+
+      bridge = createHostBridge({
+        ctx,
+        runtime: runtimeHandle.runtime,
+        sandbox: this,
+        profile: this.profile,
+        clock,
+        trace,
+        logger: this.logger,
+        stealth,
+      })
+      phase = 'run'
+
       hooks.emit('lifecycle:init', { runId, profile: this.profileSummary() })
       environment = await installEnvironment(bridge, {
         strict: runOptions.env?.strict ?? this.envOptions.strict,
@@ -278,9 +297,18 @@ export class TracelessSandbox {
       }
       return record
     } catch (error) {
-      const sanitized = stealth.sanitizeError({ name: error?.name, message: error?.message, stack: error?.stack })
-      trace.emit('sandbox', 'error', { event: 'sandbox.run.failed', error: sanitized })
-      const failure = {
+      const sanitized = stealth
+        ? stealth.sanitizeError({ name: error?.name, message: error?.message, stack: error?.stack })
+        : { name: error?.name ?? 'Error', message: describeError(error), stack: error?.stack ?? '' }
+      trace.emit('sandbox', 'error', { event: 'sandbox.run.failed', phase, error: sanitized })
+      // Reporting a failure must never mask it: the snapshot is best-effort.
+      let profileSnapshot = null
+      try {
+        profileSnapshot = this.profileSummary()
+      } catch {
+        profileSnapshot = null
+      }
+      failure = {
         runId,
         ok: false,
         error: sanitized,
@@ -289,41 +317,67 @@ export class TracelessSandbox {
         virtualMs: Math.round(clock.elapsedMs),
         events: runOptions.keepTrace === false ? null : trace.events.slice(),
         traceStats: trace.stats(),
-        profile: this.profileSummary(),
+        profile: profileSnapshot,
         environment,
         instrumentation: instrumentation ? { describe: instrumentation.describe() } : null,
         hooks: { registered: hookStats.registered, describe: hooks.describe() },
         integrity: { intact: false, drift: [{ kind: 'not-captured', detail: 'run failed before integrity check' }] },
-        runtime: runtimeHandle.stats(),
+        runtime: runtimeHandle ? runtimeHandle.stats() : null,
       }
       this.lastRun = failure
-      if (error instanceof SandboxError) throw error
-      throw new SandboxError(`sandbox run failed: ${error?.message ?? error}`, {
+      // Every escaping failure is a typed error: an empty message (the shape a
+      // poisoned WASM module throws) must never reach an analyst.
+      const code = phase === 'init' ? 'SANDBOX_INIT' : 'SANDBOX_RUN'
+      const message =
+        error instanceof SandboxError && describeError(error)
+          ? describeError(error)
+          : `${phase === 'init' ? 'sandbox init failed' : 'sandbox run failed'}: ${describeError(error) || 'unknown error'}`
+      throw new SandboxError(message, {
+        code,
         cause: error,
-        details: { runId, environment: environment?.missing },
+        details: { runId, phase, environment: environment?.missing },
       })
     } finally {
       hooks.emit('lifecycle:dispose', { runId })
+      // Reverse acquisition order; every step is independent, so one failing
+      // disposal never skips the next one.
       for (const [label, fn] of [
         ['instrumentation', () => instrumentation?.dispose()],
-        ['bridge', () => bridge.disposeAll()],
-        ['stealth', () => stealth.dispose()],
-        ['context', () => ctx.dispose()],
+        ['bridge', () => bridge?.disposeAll()],
+        ['stealth', () => stealth?.dispose()],
+        ['context', () => ctx?.dispose()],
         ['runtime', () => {
-          const result = runtimeHandle.dispose()
-          if (result && result.ok === false) throw result.error ?? new Error('runtime disposal failed (handle leak)')
+          const result = runtimeHandle?.dispose()
+          if (result && result.ok === false) {
+            // `runtime.dispose()` returning not-ok means the WASM heap is
+            // corrupted (handle leak / stack exhaustion): the module has been
+            // quarantined and the guaranteed clean teardown did not hold.
+            leaked = true
+            throw result.error ?? new Error('runtime disposal failed (handle leak)')
+          }
         }],
         ['clock', () => clock.dispose()],
       ]) {
         try {
           fn()
         } catch (error) {
-          disposalErrors.push({ stage: label, message: error?.message ?? String(error) })
-          this.logger?.error?.({ stage: label, err: error?.message }, 'sandbox disposal failed')
+          if (label === 'runtime') leaked = true
+          disposalErrors.push({ stage: label, message: describeError(error) })
+          this.logger?.error?.({ stage: label, err: describeError(error) }, 'sandbox disposal failed')
         }
       }
+      // Failure shape is additive: successful disposals keep the existing
+      // `{ ok: true, errors: [] }` contract, while a failed one also states
+      // whether the WASM heap was corrupted (`leaked`) and at which stage.
+      const disposal = { ok: disposalErrors.length === 0, errors: disposalErrors }
+      if (!disposal.ok) {
+        disposal.leaked = leaked
+        disposal.stage = disposalErrors[0]?.stage ?? null
+      }
+      for (const target of [record, failure]) {
+        if (target) target.disposal = disposal
+      }
       if (record) {
-        record.disposal = { ok: disposalErrors.length === 0, errors: disposalErrors }
         this.lastRun = record
         this.runHistory.push({
           runId,
@@ -353,6 +407,25 @@ export class TracelessSandbox {
   dispose() {
     this.disposed = true
     this.module = null
+  }
+}
+
+/**
+ * Non-empty textual description of anything that can be thrown.
+ * @param {unknown} error
+ * @returns {string}
+ */
+function describeError(error) {
+  if (error === null || error === undefined) return ''
+  if (typeof error === 'string') return error
+  const message = typeof error.message === 'string' ? error.message.trim() : ''
+  if (message) return message
+  const name = typeof error.name === 'string' ? error.name.trim() : ''
+  if (name) return name
+  try {
+    return String(error)
+  } catch {
+    return 'unknown error'
   }
 }
 
