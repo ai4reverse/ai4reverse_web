@@ -1,0 +1,13 @@
+# Development-only material. The published package is described by the
+# `files` whitelist in package.json; this file keeps `npm pack` honest for
+# tooling that ignores `files`.
+tests/
+examples/
+coverage/
+.nyc_output/
+.cache/
+.github/
+.pi/
+*.log
+*.tsbuildinfo
+.DS_Store
