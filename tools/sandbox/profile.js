@@ -210,6 +210,7 @@ export const DEFAULT_EPOCH = 1792394400000
  * @param {string} [options.userAgent] override UA
  * @param {string} [options.host] page host used by location/document
  * @param {boolean} [options.mobile]
+ * @param {boolean} [options.crossOriginIsolated] opt into COOP/COEP isolation
  */
 export function createProfile(options = {}) {
   const seed = options.seed ?? 0x5eed
@@ -229,6 +230,10 @@ export function createProfile(options = {}) {
   const osToken = os.names[Math.floor(rng.next() * os.names.length)]
   const gpu = os.gpus[Math.floor(rng.next() * os.gpus.length)]
   const mobile = mobileRequested || device.touch > 0
+  // `SharedArrayBuffer` and `Atomics` only exist behind cross-origin isolation in
+  // every current engine. The flags are one switch on purpose: the sandbox must
+  // never expose a combination a browser cannot produce (D6).
+  const crossOriginIsolated = options.crossOriginIsolated === true
 
   const chromeLike = browserKey === 'chrome' || browserKey === 'edge'
   const firefoxLike = browserKey === 'firefox'
@@ -449,6 +454,10 @@ export function createProfile(options = {}) {
     offscreenCanvasSupported: chromeLike,
     sharedArrayBufferSupported: chromeLike,
     resizableArrayBufferSupported: chromeLike,
+    crossOriginIsolated,
+    // Derived, never set independently: see the invariant in consistencyReport.
+    sharedArrayBuffer: crossOriginIsolated,
+    atomics: crossOriginIsolated,
   }
 }
 
@@ -493,5 +502,18 @@ export function consistencyReport(profile) {
   if (profile.timezoneOffsetMinutes > 840 || profile.timezoneOffsetMinutes < -840) {
     problems.push('timezone offset out of range')
   }
-  return { ok: problems.length === 0, problems, checked: 12 }
+
+  // D6: the isolation triple has exactly two legal states. A buffer that exists
+  // without isolation, or an isolation flag with no buffer, is impossible in a
+  // browser and is a one-line detection tell.
+  if (Boolean(profile.sharedArrayBuffer) !== Boolean(profile.crossOriginIsolated)) {
+    problems.push('SharedArrayBuffer must exist exactly when crossOriginIsolated is true')
+  }
+  if (Boolean(profile.atomics) !== Boolean(profile.crossOriginIsolated)) {
+    problems.push('Atomics must exist exactly when crossOriginIsolated is true')
+  }
+  if (profile.crossOriginIsolated && !String(profile.origin).startsWith('https://')) {
+    problems.push('crossOriginIsolated requires a secure context')
+  }
+  return { ok: problems.length === 0, problems, checked: 15 }
 }
