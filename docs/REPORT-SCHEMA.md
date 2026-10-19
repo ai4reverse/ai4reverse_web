@@ -302,10 +302,66 @@ The schema is append-only. The following optional fields are emitted by
 | `dynamic.restored` | Result of the optional second run of restored code (`ok`, `error`, `counts`, `result`). |
 | `dynamic.behavior.killChain` | Inferred stages (`execution`, `decode`, `command-and-control`, `persistence`, `collection`, `injection`, `fault`). |
 | `dynamic.behavior.counts`, `evalStages`, `console`, `mocks` | Detailed behaviour counters and staged-eval/console records. |
-| `dynamic.integrity`, `dynamic.disposal`, `dynamic.settle` | Per-run integrity diff, handle-disposal status, event-loop settlement. |
+| `dynamic.counts.byKind`, `dynamic.exceptions` | Trace counts per event kind and exception counters. |
 | `tracing.jsvmp.sequence`, `dispatch`, `kind` | Recovered opcode sequence (bounded) and dispatch shape. |
 | `artifacts[].source`, `artifacts[].count` | Provenance (`dynamic:eval@12`, `network:<url>@7`, `static:offset=…`) and duplicate count. |
 | `hooks.errors` | Hook registrations that threw (isolated, never fatal). |
+
+### Run records returned alongside the report
+
+`report.dynamic` is normalised to a stable set of fields, so two run-level
+objects are **not** part of the report JSON: they are returned by
+`analyzeSample()` as `run` (and printed by `tools/cli.js run --json`) and the
+report keeps only their observable outcome (`dynamic.ok`, `dynamic.limitsHit`,
+`dynamic.error`).
+
+```js
+const { report, run } = await analyzeSample(source)
+run.disposal   // teardown record, shapes below
+run.settle     // event-loop settlement, fields below
+report.integrity // integrity diff (top-level, already in the schema)
+```
+
+### `run.disposal`
+
+The run's teardown record, verbatim:
+
+```jsonc
+{ "ok": true, "errors": [] }                       // clean
+{
+  "ok": false,
+  "errors": [{ "stage": "runtime", "message": "Aborted(…)" }],
+  "leaked": true,                                   // WASM heap known corrupted
+  "stage": "runtime",                               // first failing (or skipped) stage
+  "skipped": true                                   // present only when abandoned
+}
+```
+
+Stages: `instrumentation`, `bridge`, `stealth`, `context`, `runtime`, `clock`.
+`skipped: true` means the runtime was **abandoned** after a stack-limit breach
+(it was never disposed, and the WASM module was quarantined), so `leaked:true`
+here is a statement about the engine heap, not about the sample's intent.
+
+### `run.settle`
+
+```jsonc
+{
+  "jobs": 0,               // promise jobs executed
+  "timerCallbacks": 2,     // timer callbacks invoked
+  "promiseErrors": 0,      // unhandled rejections observed at settle
+  "exhausted": false,      // a job/timer cap was hit
+  "pendingTimers": 0,      // timers still scheduled
+  "virtualMs": 0,          // virtual time consumed by the settle
+  "limitsHit": [],         // e.g. ["stack"] when a callback breached the stack
+  "stackExhaustion": false,// explicit engine marker (drives abandonment)
+  "error": null            // { origin: 'timer'|'promise-job', name, message, stack }
+}
+```
+
+`dynamic.limitsHit` (the report field) is the union of the script phase and the
+settle phase, so a breach inside a callback still shows up even though
+`dynamic.ok` stays `true` for the script itself. `run.stackExhaustion` is the
+explicit engine marker (`docs/API.md`); the report keeps the observable outcome.
 
 `report.integrity.drift` entries have `{kind, target, detail?}` where `kind` is
 one of `global-added`, `global-removed`, `prototype-added`, `prototype-removed`,

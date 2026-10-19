@@ -7,7 +7,7 @@ what it is, and where to extend it.
 
 ```
 tools/
-├── index.js                  public barrel (67 exports)
+├── index.js                  public barrel (68 exports)
 ├── cli.js                    analyze | restore | run | passes | version
 │
 ├── logging/logger.js         pino + pino-pretty, redaction, event sink
@@ -22,7 +22,7 @@ tools/
 │   ├── clock.js              virtual clock + timer queue
 │   ├── limits.js             normalized resource limits
 │   ├── integrity.js          intrinsic snapshot / diff
-│   └── env/                  24 platform-surface modules (+ loader)
+│   └── env/                  28 platform-surface modules (+ loader + platform-kit)
 │
 ├── invocation/
 │   ├── stealth.js            native branding, marker masking, stack sanitiser
@@ -63,6 +63,53 @@ tools/
     └── orchestrator.js       the composed pipeline
 ```
 
+## 1.1 Environment module map
+
+`tools/sandbox/env/` holds 30 files: `index.js` (the loader), `platform-kit.js`
+(the shared helper layer — **not** a module: it exports `createKit` only) and 28
+modules installed in `meta.order`:
+
+```
+ 10 globals          20 console          25 time            27 stack
+ 28 random           30 dom              32 dom-parser      45 screen
+ 50 location         55 storage          58 navigator       65 timers
+ 70 encoding         75 performance      80 crypto          80 xhr
+ 82 network          84 fetch            85 eventsource     86 websocket
+ 88 url              92 blob            100 misc           105 canvas
+108 observers       110 intl             115 chrome          130 anti-fingerprint
+```
+
+`ENV_MODULE_IDS` is exactly that list (28 ids). Sorting is `(order, id)`, so the
+only tie — `crypto` and `xhr` at 80 — is deterministic. Every `requires` names a
+module installed strictly earlier; a subset install either satisfies the graph or
+throws `SandboxError` in strict mode, it never drops a surface silently.
+`url` owns `URL`/`URLSearchParams`/legacy `webkitURL`/`external`, `blob` owns
+`Blob`/`File`/`FormData`, `navigator` owns `navigator` plus permissions/
+connection/battery/mediaDevices/plugins/storage, `dom-parser` owns `DOMParser`/
+`XMLSerializer`, `eventsource` owns `EventSource`, and `misc` owns what is left
+(`AbortController`, Notification, Worker, BroadcastChannel,
+`RTCPeerConnection`, `structuredClone`, the `indexedDB`/`caches` stubs, …).
+
+## 1.2 Guest runs are serialized; a poisoned module is quarantined
+
+All sandboxes in a process share one QuickJS WASM module (memoised in
+`tools/sandbox/runtime.js`) and a module executes one guest at a time. Guest code
+runs synchronously, so a second `run()` is suspended at its first `await`; a
+host-time budget measured from runtime creation would then expire on the first
+statement after the neighbour released the thread, abort the evaluation and leave
+guest objects on that runtime's GC list. `TracelessSandbox.run()` therefore
+appends its whole body to a promise-chain mutex (`withGuestRunLock`) — one guest
+run at a time per process, queued callers never rejected, separate worker
+processes for real parallelism.
+
+`runtime.js` also tracks module health: a runtime whose `dispose()` aborts marks
+its module unhealthy (`markModuleUnhealthy`, internal), and `loadQuickJS()`
+returns a *healthy* module, creating a new one (and replacing the memoised
+promise) when the current module is quarantined. A stack-limit breach does not
+even attempt the dispose: the runtime is abandoned (`runtimeHandle.abandon()`),
+the module is quarantined, and the run record says
+`disposal { ok:false, leaked:true, stage:'runtime', skipped:true }`.
+
 ## 2. One dynamic run, step by step
 
 `TracelessSandbox.run(source, options)`:
@@ -73,8 +120,9 @@ tools/
    ast) plus caller registrations. Every registration declares its traceless
    footprint.
 3. **Runtime.** A new `QuickJSRuntime` with memory/stack limits and an interrupt
-   handler that (a) advances virtual time per interrupt so timing looks real,
-   (b) enforces host timeout and virtual-time budget.
+   handler that enforces the host timeout and the virtual-time budget. Interrupts
+   never advance the clock (that is the code channel's job), so guest-observed
+   time is a deterministic function of executed statements.
 4. **Context + stealth.** `Function.prototype.toString` is replaced by a native
    masker before any other code runs. Shim sources registered later are mapped to
    `[native code]`.
@@ -100,7 +148,11 @@ tools/
     contains result/error/limits, events, facts, VM info, hook audit, integrity,
     console/behaviour inputs, and disposal status.
 11. **Disposal.** instrumentation → bridge → stealth → context → runtime →
-    clock. Any error is recorded; a WASM leak assertion is a platform bug.
+    clock, each stage in its own `try/catch`, errors recorded as
+    `{ stage, message }`. A failed disposal is reported
+    (`disposal.ok === false`, `leaked`, `stage`); a stack breach skips the runtime
+    stage entirely (`skipped: true`) because it was abandoned. Any *non-stack*
+    WASM leak assertion is a platform bug.
 
 ## 3. Trace event schema
 
@@ -111,7 +163,8 @@ tools/
   "wall": 1792395737000,      // host wall clock (metadata)
   "kind": "code",             // sandbox|code|api|exception|ast|jsvmp|dom|net|
                               // storage|timer|eval|hook|ioc|restore
-  "phase": "step",            // emit|before|after|enter|exit|step|error|skip
+  "phase": "step",            // emit|before|after|invoke|enter|exit|step|
+                              // transform|skip|error|throw|catch|uncaught
   "actor": "sandbox",
   "event": "statement",       // code/exception payload discriminator
   "line": 12, "column": 4,    // source position of the instrumentation site
@@ -130,11 +183,16 @@ quickjs-emscripten aborts the WASM module on `runtime.dispose()` if any handle i
 still alive. The platform therefore routes every creation through:
 
 - `HandleBag` (per host-callback temporary, disposed LIFO even on throw),
-- `bridge.owned` (long-lived handles created by env modules, disposed at teardown),
+- the bridge's internal `owned` set + `disposeAll()` (long-lived handles created
+  by `fn`/`obj`/`arr`/`install`/`nativeConstructor`, disposed once at teardown),
+- per-run teardown callbacks registered with `bridge.onDispose` (timers, deferred
+  promises, store handles),
 - explicit owners in `instrumentation/api.js` and `invoke.js`.
 
-`run.disposal.ok` is asserted in tests; a leak surfaces as a failed run rather
-than a mysterious process abort.
+`run.disposal.ok` is asserted in tests; a leak surfaces as a failed run
+(`{ ok:false, leaked:true, stage }`) rather than a mysterious process abort. The
+single sanctioned exception is a stack-limit breach, where the runtime cannot be
+released at all and is abandoned instead (section 1.2).
 
 ## 5. Extension points
 
@@ -160,6 +218,17 @@ Restoration is static: it must be safe on a live sample and must not change
 behaviour. The dynamic run always executes the original bytes. `runRestored`
 optionally executes restored code in a *second* fresh sandbox for comparison,
 never in place of the original.
+
+The pipeline is one parse → pass chain → one generate, and it validates its own
+output: `restore()` re-parses the generated text strictly
+(`errorRecovery: false`, both source types, see `validateOutput`) and, if that
+fails, returns the **input** source with `outputValid: false`,
+`outputError: { message }`, `map: null` and a note on the pipeline report. A pass
+may be wrong; the pipeline may not hand back code that does not parse. `changed`
+is likewise evidence-bound: it is `outputValid && (a pass changed the generated
+text || generated text !== input)`, and a pass may only claim a change when
+`compareGeneratedText` reports different text. `rename` declares
+`meta.deferred` and runs once, in the final round.
 
 ## 7. Determinism
 

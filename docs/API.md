@@ -29,11 +29,76 @@ console.log(run.ok, run.result, run.limitsHit)
 console.log(run.traceStats.byKind)      // {code, api, net, exception, …}
 console.log(run.integrity.intrinsicDrift) // prototype tampering by the sample
 console.log(run.disposal)                // { ok: true, errors: [] }
+console.log(run.settle)                  // event-loop settlement, see below
 sandbox.dispose()
 ```
 
 `run.events` is the structured trace (see `docs/ARCHITECTURE.md`). Set
 `keepTrace: false` when you only need statistics.
+
+### `run.disposal` — success and failure shapes
+
+A clean teardown keeps exactly the old shape:
+
+```js
+{ ok: true, errors: [] }
+```
+
+A failed teardown is additive; it says *what* leaked and *where*. Two shapes:
+
+```js
+// (a) a disposal step threw
+{
+  ok: false,
+  errors: [{ stage: 'runtime', message: 'Aborted(Assertion failed: list_empty(…))' }],
+  leaked: true,      // true only when the failing step was `runtime`
+  stage: 'runtime'   // first failing stage
+}
+
+// (b) a stack-limit breach: the runtime was abandoned, never disposed
+{
+  ok: false,
+  errors: [],
+  leaked: true,
+  stage: 'runtime',
+  skipped: true
+}
+```
+
+Stages are the reverse acquisition order: `instrumentation`, `bridge`,
+`stealth`, `context`, `runtime`, `clock`. `leaked: true` is a statement about the
+engine heap, not about the sample's intent; the module is quarantined in both
+cases and the next run recompiles it. A `skipped` failure also implies
+`leaked: true`.
+
+### `run.settle` — event-loop settlement
+
+```js
+{
+  jobs: number,                  // promise jobs executed
+  timerCallbacks: number,        // timer callbacks invoked
+  promiseErrors: number,         // rejected jobs nobody handled
+  exhausted: boolean,            // a job/timer cap was hit
+  pendingTimers: number,         // timers still scheduled at settle time
+  virtualMs: number,             // virtual time consumed by the settle
+  limitsHit: string[],           // e.g. ['stack'] when a callback breached the stack
+  stackExhaustion: boolean,      // explicit engine marker (drives abandonment)
+  error: null | { origin: 'timer'|'promise-job', name, message, stack },
+}
+```
+
+`run.stackExhaustion` mirrors the marker at the top level. It is set only from a
+real engine signal, so a guest cannot steer the disposal path by throwing an
+error that merely *says* "stack overflow".
+
+### Concurrency
+
+`run()` is `async` and **queued**: all sandboxes in a process share one QuickJS
+WASM module, so one guest run executes at a time. Concurrent calls wait (they are
+never rejected) and each still gets a fresh runtime, context, profile and clock.
+Do not call `run()` from inside a hook, an env callback or guest code — it would
+wait for the run that is holding the queue. Real parallelism needs worker
+processes.
 
 ## Full analysis (report)
 
@@ -56,6 +121,11 @@ console.log(report.dynamic.behavior.killChain)
 console.log(markdown)               // human-readable report
 ```
 
+`analyzeSample()` also returns the raw `run` record (`run.disposal`,
+`run.settle`, `run.events`, `run.traceStats`); the report itself is normalised
+and carries only the observable outcome (`dynamic.ok`, `dynamic.limitsHit`,
+`dynamic.error`, `report.integrity`).
+
 Static-only: pass `dynamic: false`. It never executes the sample.
 
 ## Restore code
@@ -71,12 +141,41 @@ const result = restore(source, {
   hooks: hookBus,             // optional: ast:transform may rewrite the tree
 })
 console.log(result.code)
-console.log(result.passes.filter((p) => p.changed)) // [{id, changed, notes, durationMs}]
+console.log(result.passes.filter((p) => p.changed)) // [{id, changed, notes, durationMs, round}]
 console.log(result.stats.beforeHash, result.stats.afterHash)
+console.log(result.outputValid, result.outputError, result.notes)
 ```
 
 Passes share one Babel AST. Never execute restored code as "the sample":
 restoration is static evidence; `runRestored` runs it separately for comparison.
+
+### Output validation, `changed` and deferral
+
+```js
+import { restore, validateOutput, isDeferredPass, listPasses } from './tools/restore/index.js'
+
+validateOutput('var a = 1')        // true
+validateOutput('function (')       // false — strict re-parse, no error recovery
+validateOutput(code, { sourceType: 'script', filename: 'a.js' })
+
+const r = restore(source)
+r.outputValid   // boolean: did the generated text re-parse?
+r.outputError   // null, or { message } — e.g. "Unterminated string constant. (2:10)"
+r.notes         // [] normally; on failure: ["output validation failed (…); returned the input source unchanged"]
+r.changed       // outputValid && (a pass changed the text || the text differs from the input)
+```
+
+- `restore()` **never returns code that does not parse**: on failure it returns
+  the input source unchanged, `map: null`, `outputValid: false`.
+- `passes[].changed` means the generated text changed; a rewrite that regenerates
+  identical text is not a change (that is what makes the pipeline idempotent).
+- `meta.deferred` (declared by `rename`) makes a pass run once, in the final
+  round; the orchestrator still runs it when the final round is never reached
+  (`only: ['rename']`). `isDeferredPass(pass)` is the reader; `listPasses()`
+  reports `deferred` per pass and `passes --json` exposes it.
+- `validateOutput`'s `sourceType` is advisory: the parser falls back to the other
+  source type and accepts a top-level `return` (guest-eval tolerance). Text that
+  fails *both* grammars is always rejected, which is the guarantee that matters.
 
 ## Hooks
 
@@ -125,6 +224,7 @@ the virtual program.
 
 ```js
 import { createLogger, createMemoryDestination, createEventSink, scopeLogger } from './tools/logging/logger.js'
+// `scopeLogger` is also exported from the entry barrel (tools/index.js).
 
 const destination = createMemoryDestination()
 const logger = createLogger({ level: 'debug', destination })
@@ -148,3 +248,52 @@ node tools/cli.js passes [--json]
 ```
 
 Exit codes: `0` success, `1` analysis/run failure, `2` usage error.
+
+### CLI contract (strict validation)
+
+| Invocation | Exit | stderr | stdout |
+| --- | --- | --- | --- |
+| valid `analyze`/`restore`/`run`/`passes`/`version`/`--help` | 0 | empty (logs only with `--log-level`) | result (pure JSON with `--json`) |
+| unknown option (`--nonsense`) | 2 | `error: invalid arguments: Unknown option '--nonsense'. …` | empty |
+| `--seed zzz` / `--seed 0xzz` | 2 | `error: --seed must be a decimal or 0x-prefixed hex integer, got "zzz"` | empty |
+| `--rounds 0`, `--rounds 6`, `--rounds 2.5` | 2 | `error: --rounds must be an integer between 1 and 5, got "0"` | empty |
+| `--level bogus` | 2 | `error: --level must be one of off\|function\|branch\|statement, got "bogus"` | empty |
+| unknown `--passes`/`--exclude` id | 2 | `error: unknown pass id for --passes: bogus (valid: strings, …)` | empty |
+| unreadable input / empty file | 2 | `error: cannot read <path>: ENOENT` / `error: <path> is empty` | empty |
+| `--out` write failure (EACCES/ENOENT/ENOTDIR/EPERM) | 2 | `error: cannot write <path>: ENOENT` | empty |
+| `--events --json` | 2 | `error: --events and --json are mutually exclusive` | empty |
+| analysis/run failure (`--entry` missing, sample throws) | 1 | diagnosis | JSON result |
+| `--out -` | 0 | empty | result |
+| `--out <file>` | 0 | `wrote N bytes to <file>` | empty |
+
+`--arg <value>` is repeatable and is parsed as JSON when the value is valid JSON
+(so `--arg 42` is a number and `{"a":1}` is an object) and passed as a string
+otherwise (`--arg hello`).
+
+### Serialization note
+
+- `run.events`, `run.settle`, `run.disposal` and the whole report are plain
+  JSON. Trace payloads are sanitised (strings 2 048 chars, arrays 100 items,
+  depth 5, handles → `'[Handle]'`), so `JSON.stringify(report)` always works.
+- Host timing (`wall`, `startedAt`, `durationMs`) is the only non-deterministic
+  field; strip it before comparing two runs.
+- `restore().code` has **no trailing newline**. Redirecting stdout (`> out.js`)
+  appends one, so re-restoring that file reports `changed: true` with zero
+  changed passes. Use `--out <file>` for a byte-exact round trip.
+
+### Subpath imports and types
+
+Every subpath is importable on its own and ships declarations:
+
+```js
+import { restore, validateOutput } from 'ai4reverse-web/restore'
+import { TracelessSandbox } from 'ai4reverse-web/sandbox'
+import { createHookBus } from 'ai4reverse-web/hook'
+import { analyzeSample } from 'ai4reverse-web/analysis'
+import { createLogger, scopeLogger } from 'ai4reverse-web/logging'
+```
+
+`package.json` maps `.`, `./sandbox`, `./instrumentation`, `./hook`, `./restore`,
+`./analysis`, `./jsvmp`, `./logging`, `./invocation`, `./util`, `./cli` to
+`tools/**` with a matching `types/*.d.ts`. The entry barrel exports 68 names;
+`validateOutput` and `isDeferredPass` are on `./restore` only.
