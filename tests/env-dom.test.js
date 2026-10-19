@@ -717,3 +717,73 @@ test('the DOM module alone installs the interface hierarchy', async () => {
     harness.dispose()
   }
 })
+
+/**
+ * `XMLDocument extends Document` (residual): the hierarchy only had
+ * `HTMLDocument`, so a parsed XML document was either branded
+ * `[object XMLDocument]` while answering `instanceof HTMLDocument`, or it had
+ * no interface at all. Both document kinds are Documents, and neither is the
+ * other.
+ */
+test('XMLDocument is a Document subtype distinct from HTMLDocument', async () => {
+  const harness = await createHarness({ modules: MODULES })
+  try {
+    const [types, chains, instances, brands, illegal, nativeSources] = run(
+      harness,
+      `(function () {
+        var created = document.implementation.createHTMLDocument('extra');
+        return [
+          { Document: typeof Document, HTMLDocument: typeof HTMLDocument, XMLDocument: typeof XMLDocument },
+          {
+            xmlBelowDocument: Object.getPrototypeOf(XMLDocument.prototype) === Document.prototype,
+            htmlBelowDocument: Object.getPrototypeOf(HTMLDocument.prototype) === Document.prototype,
+            distinct: XMLDocument.prototype !== HTMLDocument.prototype
+          },
+          {
+            liveIsHTML: document instanceof HTMLDocument,
+            liveIsDocument: document instanceof Document,
+            liveNotXML: !(document instanceof XMLDocument),
+            createdIsHTML: created instanceof HTMLDocument,
+            createdIsDocument: created instanceof Document,
+            createdNotXML: !(created instanceof XMLDocument)
+          },
+          {
+            xml: Object.prototype.toString.call(XMLDocument.prototype),
+            html: Object.prototype.toString.call(HTMLDocument.prototype),
+            live: Object.prototype.toString.call(document),
+            names: [Document.name, HTMLDocument.name, XMLDocument.name],
+            xmlConstructor: XMLDocument.prototype.constructor === XMLDocument
+          },
+          {
+            xml: (function () { try { new XMLDocument() } catch (error) { return error.name } return 'constructed' })(),
+            html: (function () { try { new HTMLDocument() } catch (error) { return error.name } return 'constructed' })()
+          },
+          [Document, HTMLDocument, XMLDocument].filter(function (ctor) {
+            return !String(ctor).includes('native code');
+          })
+        ]
+      })()`,
+    )
+    assert.deepEqual(types, { Document: 'function', HTMLDocument: 'function', XMLDocument: 'function' })
+    assert.deepEqual(chains, { xmlBelowDocument: true, htmlBelowDocument: true, distinct: true })
+    assert.deepEqual(instances, {
+      liveIsHTML: true,
+      liveIsDocument: true,
+      liveNotXML: true,
+      createdIsHTML: true,
+      createdIsDocument: true,
+      createdNotXML: true,
+    })
+    assert.deepEqual(brands, {
+      xml: '[object XMLDocument]',
+      html: '[object HTMLDocument]',
+      live: '[object HTMLDocument]',
+      names: ['Document', 'HTMLDocument', 'XMLDocument'],
+      xmlConstructor: true,
+    })
+    assert.deepEqual(illegal, { xml: 'TypeError', html: 'TypeError' })
+    assert.deepEqual(nativeSources, [], 'interface constructors must stringify as native code')
+  } finally {
+    harness.dispose()
+  }
+})

@@ -41,6 +41,11 @@ export function install(bridge) {
     }),
   }
   const host = bridge.obj(bindings)
+  // The DOM shim owns the node brand (its private state map); the parser asks it
+  // instead of duck-typing an element's methods. `dom` is a declared dependency,
+  // so the brand is always published first; a missing brand leaves the parser
+  // on its documented shape fallback rather than failing the module.
+  const isShimNode = bridge.isShimNode ?? null
   const compiled = ctx.evalCode(DOMPARSER_SOURCE, 'ai4r-internal:dom-parser')
   if (compiled.error) {
     const dumped = bridge.fromGuest(compiled.error)
@@ -48,7 +53,8 @@ export function install(bridge) {
     host.dispose()
     throw new Error(`DOMParser shim failed to compile: ${dumped?.message ?? dumped}`)
   }
-  const call = ctx.callFunction(compiled.value, ctx.undefined, [host])
+  const callOptions = isShimNode ? [host, isShimNode] : [host]
+  const call = ctx.callFunction(compiled.value, ctx.undefined, callOptions)
   compiled.value.dispose()
   host.dispose()
   if (call.error) {
@@ -74,7 +80,12 @@ export function install(bridge) {
     }
     functions.dispose()
 
-    for (const name of ['DOMParser', 'XMLSerializer', 'Document', 'HTMLDocument', 'XMLDocument']) {
+    // `Document`, `HTMLDocument` and `XMLDocument` belong to the DOM shim's
+    // interface hierarchy: overwriting them here would break
+    // `document instanceof HTMLDocument` for the live document and make every
+    // parsed document an HTMLDocument. The guest half only builds documents on
+    // those prototypes.
+    for (const name of ['DOMParser', 'XMLSerializer']) {
       const ctor = ctx.getProp(module, name)
       bridge.install(bridge.global, name, ctor, {
         enumerable: false,
@@ -95,7 +106,7 @@ export function install(bridge) {
  * The tree is built with `document.createElement`/`createTextNode`/
  * `createComment`, so parsed nodes are the same objects a page would see.
  */
-const DOMPARSER_SOURCE = `(function (host) {
+const DOMPARSER_SOURCE = `(function (host, nodeBrand) {
   var MAX_LENGTH = ${MAX_MARKUP_LENGTH};
   var MAX_NODES = ${MAX_MARKUP_NODES};
   var MAX_DEPTH = ${MAX_MARKUP_DEPTH};
@@ -190,7 +201,18 @@ const DOMPARSER_SOURCE = `(function (host) {
   // ---- parser ------------------------------------------------------------
   var retagTemplate = null;
 
+  /**
+   * Is the value a node the DOM shim owns?
+   *
+   * The shim's own brand (its private state map) is authoritative: an element a
+   * factory returns may expose appendChild/setAttribute yet still not be a node
+   * the tree can adopt. The shape test stays only as the bounded fallback for a
+   * bridge that did not publish the brand.
+   * @param {unknown} value
+   * @returns {boolean}
+   */
   function isShimNode(value) {
+    if (typeof nodeBrand === 'function') return nodeBrand(value) === true;
     return value !== null && typeof value === 'object' &&
       typeof value.appendChild === 'function' &&
       typeof value.setAttribute === 'function' &&
@@ -414,86 +436,103 @@ const DOMPARSER_SOURCE = `(function (host) {
     Object.defineProperty(target, key, { get: getter, enumerable: true, configurable: true });
   }
 
-  var baseProto = {};
-  defineGetter(baseProto, 'documentElement', function () { return stateOf(this).root; });
-  defineGetter(baseProto, 'head', function () { return stateOf(this).head; });
-  defineGetter(baseProto, 'body', function () { return stateOf(this).body; });
-  defineGetter(baseProto, 'title', function () { return stateOf(this).title; });
-  defineGetter(baseProto, 'contentType', function () { return stateOf(this).contentType; });
-  defineGetter(baseProto, 'nodeType', function () { return 9; });
-  defineGetter(baseProto, 'nodeName', function () { return '#document'; });
-  defineGetter(baseProto, 'nodeValue', function () { return null; });
-  defineGetter(baseProto, 'URL', function () { return 'about:blank'; });
-  defineGetter(baseProto, 'documentURI', function () { return 'about:blank'; });
-  defineGetter(baseProto, 'characterSet', function () { return 'UTF-8'; });
-  defineGetter(baseProto, 'readyState', function () { return 'complete'; });
-  defineGetter(baseProto, 'childNodes', function () {
-    var root = stateOf(this).root;
-    return root ? [root] : [];
-  });
-  defineGetter(baseProto, 'firstChild', function () { return stateOf(this).root; });
-  defineGetter(baseProto, 'doctype', function () { return null; });
-  defineMember(baseProto, 'querySelector', function querySelector(selector) {
-    return queryAll(stateOf(this).root, selector, true);
-  });
-  defineMember(baseProto, 'querySelectorAll', function querySelectorAll(selector) {
-    return queryAll(stateOf(this).root, selector, false);
-  });
-  defineMember(baseProto, 'getElementById', function getElementById(id) {
-    var wanted = String(id);
-    var found = null;
-    if (stateOf(this).root) {
-      walk(stateOf(this).root, function (node) {
-        if (!found && node.nodeType === 1 && String(node.id) === wanted) found = node;
-      });
-    }
-    return found;
-  });
-  defineMember(baseProto, 'getElementsByTagName', function getElementsByTagName(tag) {
-    var wanted = String(tag).toLowerCase();
-    var found = [];
-    if (stateOf(this).root) {
-      walk(stateOf(this).root, function (node) {
-        if (node.nodeType !== 1) return;
-        if (wanted === '*' || String(node.localName).toLowerCase() === wanted) found.push(node);
-      });
-    }
-    return found;
-  });
-  defineMember(baseProto, 'getElementsByClassName', function getElementsByClassName(name) {
-    var found = [];
-    if (stateOf(this).root) {
-      walk(stateOf(this).root, function (node) {
-        if (node.nodeType !== 1) return;
-        if (matchesCompound(node, '.' + String(name).trim())) found.push(node);
-      });
-    }
-    return found;
-  });
-  defineMember(baseProto, 'createElement', function createElement(tag) {
-    return document.createElement(tag);
-  });
-  defineMember(baseProto, 'createTextNode', function createTextNode(value) {
-    return document.createTextNode(value);
-  });
-  defineMember(baseProto, 'createComment', function createComment(value) {
-    return document.createComment(value);
-  });
-  defineMember(baseProto, 'hasFocus', function hasFocus() { return false; });
+  /**
+   * Install the parser's document members on one document prototype.
+   *
+   * The members belong to the parser because they read the parsed tree's state
+   * (kept in the docStates private map); the interface hierarchy, brands and
+   * instanceof answers come from the DOM shim's own prototypes below.
+   * @param {object} proto document prototype to extend
+   */
+  function installDocumentMembers(proto) {
+    defineGetter(proto, 'documentElement', function () { return stateOf(this).root; });
+    defineGetter(proto, 'head', function () { return stateOf(this).head; });
+    defineGetter(proto, 'body', function () { return stateOf(this).body; });
+    defineGetter(proto, 'title', function () { return stateOf(this).title; });
+    defineGetter(proto, 'contentType', function () { return stateOf(this).contentType; });
+    defineGetter(proto, 'nodeType', function () { return 9; });
+    defineGetter(proto, 'nodeName', function () { return '#document'; });
+    defineGetter(proto, 'nodeValue', function () { return null; });
+    defineGetter(proto, 'URL', function () { return 'about:blank'; });
+    defineGetter(proto, 'documentURI', function () { return 'about:blank'; });
+    defineGetter(proto, 'characterSet', function () { return 'UTF-8'; });
+    defineGetter(proto, 'readyState', function () { return 'complete'; });
+    defineGetter(proto, 'childNodes', function () {
+      var root = stateOf(this).root;
+      return root ? [root] : [];
+    });
+    defineGetter(proto, 'firstChild', function () { return stateOf(this).root; });
+    defineGetter(proto, 'doctype', function () { return null; });
+    defineMember(proto, 'querySelector', function querySelector(selector) {
+      return queryAll(stateOf(this).root, selector, true);
+    });
+    defineMember(proto, 'querySelectorAll', function querySelectorAll(selector) {
+      return queryAll(stateOf(this).root, selector, false);
+    });
+    defineMember(proto, 'getElementById', function getElementById(id) {
+      var wanted = String(id);
+      var found = null;
+      if (stateOf(this).root) {
+        walk(stateOf(this).root, function (node) {
+          if (!found && node.nodeType === 1 && String(node.id) === wanted) found = node;
+        });
+      }
+      return found;
+    });
+    defineMember(proto, 'getElementsByTagName', function getElementsByTagName(tag) {
+      var wanted = String(tag).toLowerCase();
+      var found = [];
+      if (stateOf(this).root) {
+        walk(stateOf(this).root, function (node) {
+          if (node.nodeType !== 1) return;
+          if (wanted === '*' || String(node.localName).toLowerCase() === wanted) found.push(node);
+        });
+      }
+      return found;
+    });
+    defineMember(proto, 'getElementsByClassName', function getElementsByClassName(name) {
+      var found = [];
+      if (stateOf(this).root) {
+        walk(stateOf(this).root, function (node) {
+          if (node.nodeType !== 1) return;
+          if (matchesCompound(node, '.' + String(name).trim())) found.push(node);
+        });
+      }
+      return found;
+    });
+    defineMember(proto, 'createElement', function createElement(tag) {
+      return document.createElement(tag);
+    });
+    defineMember(proto, 'createTextNode', function createTextNode(value) {
+      return document.createTextNode(value);
+    });
+    defineMember(proto, 'createComment', function createComment(value) {
+      return document.createComment(value);
+    });
+    defineMember(proto, 'hasFocus', function hasFocus() { return false; });
+  }
 
-  function HTMLDocument() { throw new TypeError('Illegal constructor'); }
-  function XMLDocument() { throw new TypeError('Illegal constructor'); }
-  function Document() { throw new TypeError('Illegal constructor'); }
-  var htmlProto = Object.create(baseProto);
-  var xmlProto = Object.create(baseProto);
-  Object.defineProperty(htmlProto, Symbol.toStringTag, { value: 'HTMLDocument', configurable: true });
-  Object.defineProperty(xmlProto, Symbol.toStringTag, { value: 'XMLDocument', configurable: true });
-  HTMLDocument.prototype = htmlProto;
-  XMLDocument.prototype = xmlProto;
-  Document.prototype = baseProto;
-  defineMember(htmlProto, 'constructor', HTMLDocument);
-  defineMember(xmlProto, 'constructor', XMLDocument);
-  defineMember(baseProto, 'constructor', Document);
+  /**
+   * The interface prototypes are the DOM shim's, so instanceof Document,
+   * instanceof HTMLDocument and instanceof XMLDocument answer exactly as in a
+   * browser: both document kinds are Documents, and neither is the other.
+   * The parser's own prototype sits closest to the instance (its members must
+   * win over the shim's live-document ones).
+   */
+  var inherited =
+    typeof Document === 'function' && typeof HTMLDocument === 'function' && typeof XMLDocument === 'function'
+      ? { html: HTMLDocument.prototype, xml: XMLDocument.prototype }
+      : null;
+  var htmlProto = Object.create(inherited ? inherited.html : Object.prototype);
+  var xmlProto = Object.create(inherited ? inherited.xml : Object.prototype);
+  if (!inherited) {
+    // Bounded fallback: a brand is still better than an unbranded object, and
+    // the dom module is a declared dependency, so this path is not expected.
+    Object.defineProperty(htmlProto, Symbol.toStringTag, { value: 'HTMLDocument', configurable: true });
+    Object.defineProperty(xmlProto, Symbol.toStringTag, { value: 'XMLDocument', configurable: true });
+  }
+  installDocumentMembers(htmlProto);
+  installDocumentMembers(xmlProto);
 
   function createDocument(state, contentType) {
     var xml = state.mode === 'xml';
@@ -584,12 +623,9 @@ const DOMPARSER_SOURCE = `(function (host) {
   function surfaceFunctions() {
     var out = [
       ['DOMParser', DOMParser],
-      ['XMLSerializer', XMLSerializer],
-      ['Document', Document],
-      ['HTMLDocument', HTMLDocument],
-      ['XMLDocument', XMLDocument]
+      ['XMLSerializer', XMLSerializer]
     ];
-    var targets = [baseProto, DOMParser.prototype, XMLSerializer.prototype, htmlProto, xmlProto];
+    var targets = [DOMParser.prototype, XMLSerializer.prototype, htmlProto, xmlProto];
     for (var targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
       var names = Object.getOwnPropertyNames(targets[targetIndex]);
       for (var index = 0; index < names.length; index += 1) {
@@ -605,9 +641,6 @@ const DOMPARSER_SOURCE = `(function (host) {
   return {
     DOMParser: DOMParser,
     XMLSerializer: XMLSerializer,
-    Document: Document,
-    HTMLDocument: HTMLDocument,
-    XMLDocument: XMLDocument,
     functions: surfaceFunctions()
   };
 })`

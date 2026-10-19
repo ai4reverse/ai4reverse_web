@@ -65,7 +65,9 @@ export function install(bridge) {
     ['elementProto', 'elementPrototype'],
     ['nodeProto', 'nodePrototype'],
     ['documentProto', 'documentPrototype'],
+    ['documentPrototypes', 'documentPrototypes'],
     ['interfaces', 'domInterfaces'],
+    ['isNode', 'isShimNode'],
   ]) {
     const prototypeHandle = ctx.getProp(shim, key)
     if (prototypeHandle && !prototypeHandle.disposed) {
@@ -2473,7 +2475,8 @@ function domShim(host) {
    *
    *   EventTarget <- Node <- Element <- HTMLElement <- HTML*Element
    *               <- CharacterData <- Text/Comment
-   *               <- Document <- HTMLDocument, DocumentFragment, DocumentType
+   *               <- Document <- HTMLDocument, XMLDocument,
+   *                              DocumentFragment, DocumentType
    *
    * `NodeList`/`HTMLCollection`/`DOMTokenList`/`CSSStyleDeclaration` are
    * independent interfaces with their own prototypes.
@@ -2492,6 +2495,7 @@ function domShim(host) {
   var documentFragmentProto = Object.create(nodeProto)
   var documentProto = Object.create(nodeProto)
   var htmlDocumentProto = Object.create(documentProto)
+  var xmlDocumentProto = Object.create(documentProto)
   var documentTypeProto = Object.create(nodeProto)
 
   var nodeListProto = {}
@@ -2550,6 +2554,7 @@ function domShim(host) {
   defineInterfacePrototype(documentFragmentProto, 'DocumentFragment')
   defineInterfacePrototype(documentProto, 'Document')
   defineInterfacePrototype(htmlDocumentProto, 'HTMLDocument')
+  defineInterfacePrototype(xmlDocumentProto, 'XMLDocument')
   defineInterfacePrototype(documentTypeProto, 'DocumentType')
   defineInterfacePrototype(nodeListProto, 'NodeList')
   defineInterfacePrototype(htmlCollectionProto, 'HTMLCollection')
@@ -2594,6 +2599,22 @@ function domShim(host) {
     elementProto: htmlElementProto,
     nodeProto: nodeProto,
     documentProto: htmlDocumentProto,
+    /** Interface prototypes the parser builds its documents from. */
+    documentPrototypes: {
+      Document: documentProto,
+      HTMLDocument: htmlDocumentProto,
+      XMLDocument: xmlDocumentProto,
+    },
+    /**
+     * Unforgeable node brand: a shim node is exactly an object the shim put in
+     * its private state map. Consumers (`dom-parser`) use this instead of
+     * duck-typing `appendChild`/`setAttribute`, which only describes a shape.
+     * @param {unknown} value
+     * @returns {boolean}
+     */
+    isNode: function isNode(value) {
+      return value !== null && typeof value === 'object' && nodeStates.has(value)
+    },
     interfaces: interfaces,
     interfaceEntries: interfaceEntries,
     characterDataMethods: characterDataMethods,

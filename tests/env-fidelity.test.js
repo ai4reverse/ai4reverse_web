@@ -1015,6 +1015,72 @@ test('DOMParser builds a real tree and XMLSerializer round-trips it', async () =
   }
 })
 
+test('a parsed XML document is an XMLDocument, an HTML one an HTMLDocument', async () => {
+  const sb = await sandbox()
+  try {
+    const { value } = await probe(
+      sb,
+      `(function () {
+        var parser = new DOMParser();
+        var html = parser.parseFromString('<html><body><p>x</p></body></html>', 'text/html');
+        var xml = parser.parseFromString('<root><item/></root>', 'text/xml');
+        var xhtml = parser.parseFromString('<html xmlns="http://www.w3.org/1999/xhtml"><body/></html>', 'application/xhtml+xml');
+        return JSON.stringify({
+          brands: {
+            html: Object.prototype.toString.call(html),
+            xml: Object.prototype.toString.call(xml),
+            live: Object.prototype.toString.call(document)
+          },
+          html: {
+            isHTML: html instanceof HTMLDocument,
+            isNotXML: !(html instanceof XMLDocument),
+            isDocument: html instanceof Document,
+            ctor: html.constructor === HTMLDocument
+          },
+          xml: {
+            isXML: xml instanceof XMLDocument,
+            isNotHTML: !(xml instanceof HTMLDocument),
+            isDocument: xml instanceof Document,
+            ctor: xml.constructor === XMLDocument,
+            query: xml.querySelector('item').tagName
+          },
+          xhtml: {
+            isXML: xhtml instanceof XMLDocument,
+            isNotHTML: !(xhtml instanceof HTMLDocument)
+          },
+          live: {
+            isHTML: document instanceof HTMLDocument,
+            isNotXML: !(document instanceof XMLDocument),
+            isDocument: document instanceof Document
+          },
+          interfaces: {
+            xmlBelowDocument: Object.getPrototypeOf(XMLDocument.prototype) === Document.prototype,
+            globalsIntact: String(DOMParser).includes('native code') && String(XMLDocument).includes('native code')
+          }
+        });
+      })()`,
+    )
+    assert.deepEqual(value.brands, {
+      html: '[object HTMLDocument]',
+      xml: '[object XMLDocument]',
+      live: '[object HTMLDocument]',
+    })
+    assert.deepEqual(value.html, { isHTML: true, isNotXML: true, isDocument: true, ctor: true })
+    assert.deepEqual(value.xml, {
+      isXML: true,
+      isNotHTML: true,
+      isDocument: true,
+      ctor: true,
+      query: 'ITEM',
+    })
+    assert.deepEqual(value.xhtml, { isXML: true, isNotHTML: true })
+    assert.deepEqual(value.live, { isHTML: true, isNotXML: true, isDocument: true })
+    assert.deepEqual(value.interfaces, { xmlBelowDocument: true, globalsIntact: true })
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('DOMParser bounds a hostile payload instead of parsing it', async () => {
   const sb = await sandbox()
   try {
