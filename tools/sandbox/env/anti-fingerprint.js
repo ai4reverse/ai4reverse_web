@@ -56,6 +56,21 @@ const HONEYPOT_KEYS = [
 export const meta = { id: 'anti-fingerprint', order: 130, requires: ['globals'] }
 
 /**
+ * Sanity bound for a single surface's moved-property count.
+ *
+ * The count comes from guest code; a sandboxed but arbitrary number must never
+ * reach a report unbounded. 1000 own properties per platform object is already
+ * far above any real browser surface.
+ * @param {unknown} value
+ * @returns {number}
+ */
+function clampCount(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0
+  return Math.min(1000, Math.trunc(numeric))
+}
+
+/**
  * Move own properties to a fresh prototype layer.
  *
  * WebIDL objects expose attributes and operations on their prototype, not as
@@ -123,7 +138,10 @@ function prototypifySurfaces(bridge) {
     target.value.dispose()
     if (call.error) call.error.dispose()
     else {
-      moved += Number(call.value?.value ?? 0)
+      // `call.value` is a *handle*: `.value` is a linear-memory address, not the
+      // number the guest returned. Reading it as a number put a host pointer
+      // into the trace and made two same-seed runs disagree (D3).
+      moved += clampCount(bridge.num([call.value], 0))
       call.value?.dispose?.()
     }
   }
