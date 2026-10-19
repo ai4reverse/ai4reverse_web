@@ -62,7 +62,7 @@ export {
   summarizeVM,
 } from './jsvmp/index.js'
 
-export { createLogger, createEventSink, createMemoryDestination, redactPaths } from './logging/logger.js'
+export { createLogger, createEventSink, createMemoryDestination, redactPaths, scopeLogger } from './logging/logger.js'
 
 import { analyzeSample } from './analysis/index.js'
 import { restore } from './restore/index.js'
