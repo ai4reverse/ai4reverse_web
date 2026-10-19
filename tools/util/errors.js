@@ -1,4 +1,12 @@
-/** Typed errors so callers can branch on failure class without string matching. */
+/**
+ * Typed errors so callers can branch on failure class without string matching.
+ *
+ * Every class below is thrown by a real code path; the list is deliberately
+ * short so `catch (error) { if (error instanceof X) }` stays meaningful.
+ * `SandboxError` covers initialisation and run failures, `ParseError` a source
+ * that no parser configuration accepts, `HookError` a malformed hook phase or
+ * handler registration.
+ */
 
 export class AnalyzerError extends Error {
   /**
@@ -19,28 +27,9 @@ export class SandboxError extends AnalyzerError {
   }
 }
 
-/** The guest script exceeded an execution limit. */
-export class LimitationError extends SandboxError {
-  /**
-   * @param {'timeout'|'memory'|'stack'|'steps'} limit
-   * @param {string} message
-   * @param {object} [details]
-   */
-  constructor(limit, message, details = {}) {
-    super(message, { code: 'SANDBOX_LIMIT', details: { limit, ...details } })
-    this.limit = limit
-  }
-}
-
 export class ParseError extends AnalyzerError {
   constructor(message, options = {}) {
     super(message, { code: 'PARSE_ERROR', ...options })
-  }
-}
-
-export class PassError extends AnalyzerError {
-  constructor(message, options = {}) {
-    super(message, { code: 'PASS_ERROR', ...options })
   }
 }
 
