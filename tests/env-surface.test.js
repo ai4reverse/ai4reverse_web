@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
 import { ENV_MODULE_IDS } from '../tools/sandbox/env/index.js'
+import { createProfile, consistencyReport } from '../tools/sandbox/profile.js'
 
 /**
  * Full-surface integration: every environment module must load in strict mode
@@ -362,9 +363,15 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
     for (const [key, source] of Object.entries(value.sources)) {
       assert.match(source, /native code/, `${key} shim leaks source: ${source}`)
     }
-    // The coherence invariant is part of the run's profile report.
+    // The coherence invariant is part of the run's profile report. The count is
+    // compared exactly against a direct report for the same profile options: a
+    // hand-maintained "at least N" assertion would keep passing while the
+    // report silently stopped evaluating checks the code added.
     assert.equal(run.profile.consistency.ok, true, JSON.stringify(run.profile.consistency.problems))
-    assert.ok(run.profile.consistency.checked >= 15)
+    assert.equal(
+      run.profile.consistency.checked,
+      consistencyReport(createProfile({ seed: sb.seed, ...PROFILE })).checked,
+    )
   } finally {
     sb.dispose()
   }
