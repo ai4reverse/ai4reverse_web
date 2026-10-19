@@ -12,6 +12,7 @@
  *   code:before         rewrite source before compilation
  *   code:after          observe compiled/executed source + result
  *   code:error          observe compile/eval failure
+ *   code:step           per-statement/loop instrumentation probe (very high volume)
  *   api:before          inspect/intercept a guest-visible API call
  *   api:after           observe a completed API call
  *   api:error           observe a throwing API call
@@ -29,6 +30,7 @@ export const HOOK_PHASES = Object.freeze([
   'code:before',
   'code:after',
   'code:error',
+  'code:step',
   'api:before',
   'api:after',
   'api:error',
@@ -49,6 +51,23 @@ export const HOOK_PHASES = Object.freeze([
 ])
 
 const MUTATING_PHASES = new Set(['code:before', 'ast:transform', 'api:before', 'ast:node'])
+
+/**
+ * Hook phases that never produce their own `hook` trace event.
+ *
+ * `code:step` fires once per instrumented statement/loop iteration, so a tight
+ * loop drowns the trace budget in no-op bookkeeping records. The information is
+ * already carried by the `code` events the same probe emits; keeping the phase
+ * dispatchable (hooks may still subscribe) but untraced keeps the evidence.
+ */
+const UNTRACED_PHASES = new Set(['code:step'])
+
+/**
+ * How many hook failures are retained for `stats()`. A sample with a broken
+ * hook can fail once per guest statement; unbounded growth would make a long
+ * analysis alloc-retained forever.
+ */
+const MAX_HOOK_ERRORS = 200
 
 /**
  * @typedef {object} HookRegistration
@@ -72,9 +91,11 @@ export function createHookBus(options = {}) {
   const { logger, trace, strict = false, record = true, recordPhases = null } = options
   const shouldRecord = (phase) => {
     if (!record) return false
+    // An explicit `recordPhases` allow-list wins: it is an opt-in request.
     if (recordPhases) return recordPhases.some((prefix) => phase.startsWith(prefix))
     // High-frequency AST/step phases are already represented by their own
     // trace events; re-recording them doubles log volume for no insight.
+    if (UNTRACED_PHASES.has(phase)) return false
     return !phase.startsWith('ast:') && !phase.startsWith('jsvmp:')
   }
 
@@ -84,9 +105,9 @@ export function createHookBus(options = {}) {
   const context = new Map()
   let nextId = 1
   let dispatchCount = 0
+  /** Bounded ring of hook failures; `errorsTruncated` says entries were dropped. */
   const errors = []
-
-  const keyFor = (phase) => phase
+  let errorsTruncated = false
 
   function normalizePhase(phase) {
     if (phase === '*') return phase
@@ -106,6 +127,18 @@ export function createHookBus(options = {}) {
       ...(registry.get(`${domain}:*`) ?? []),
       ...(registry.get('*') ?? []),
     ].sort((a, b) => b.priority - a.priority || a.seq - b.seq)
+  }
+
+  /**
+   * Enabled registrations for `phase`, in dispatch order.
+   * Callers use the length to skip the bookkeeping (trace event, dispatch
+   * counter) when nothing is listening. `code:step` fires thousands of times
+   * per run, so an unlistened phase must cost no more than one Map lookup.
+   */
+  function enabledFor(phase) {
+    const candidates = matching(phase)
+    if (candidates.length === 0) return candidates
+    return candidates.filter((registration) => registration.enabled)
   }
 
   const bus = {
@@ -196,10 +229,14 @@ export function createHookBus(options = {}) {
      * @param {object} [extraContext]
      */
     emit(phase, payload = {}, extraContext = {}) {
-      const runContext = { phase, bus, logger, trace, ...extraContext }
+      // Validate first: a strict bus must reject unknown phases even when no
+      // hook is listening for them.
+      const normalized = normalizePhase(phase)
+      const registrations = enabledFor(normalized)
+      if (registrations.length === 0) return { phase: normalized, results: [] }
+      const runContext = { phase: normalized, bus, logger, trace, ...extraContext }
       const results = []
-      for (const registration of matching(normalizePhase(phase))) {
-        if (!registration.enabled) continue
+      for (const registration of registrations) {
         try {
           const result = registration.handler(payload, { ...runContext, hook: registration })
           results.push({ id: registration.id, result })
@@ -210,8 +247,10 @@ export function createHookBus(options = {}) {
         }
       }
       dispatchCount += 1
-      if (trace && shouldRecord(phase)) trace.emit('hook', phase.split(':')[1] ?? 'emit', { phase, hook: phase })
-      return { phase, results }
+      if (trace && shouldRecord(normalized)) {
+        trace.emit('hook', normalized.split(':')[1] ?? 'emit', { phase: normalized, hook: normalized })
+      }
+      return { phase: normalized, results }
     },
 
     /**
@@ -228,15 +267,21 @@ export function createHookBus(options = {}) {
      * @param {object} [extraContext]
      */
     dispatch(phase, payload = {}, extraContext = {}) {
-      const runContext = { phase, bus, logger, trace, ...extraContext }
+      const normalized = normalizePhase(phase)
+      const registrations = enabledFor(normalized)
+      if (registrations.length === 0) {
+        // Neutral decision: same shape as a dispatch nobody intercepted, so
+        // callers that read `.blocked`/`.args` keep working.
+        return { blocked: false, value: undefined, args: undefined, stopped: false, results: [], phase: normalized }
+      }
+      const runContext = { phase: normalized, bus, logger, trace, ...extraContext }
       const results = []
       let blocked = false
       let value
       let args
       let stopped = false
 
-      for (const registration of matching(normalizePhase(phase))) {
-        if (!registration.enabled) continue
+      for (const registration of registrations) {
         try {
           const result = registration.handler(payload, { ...runContext, hook: registration })
           results.push({ id: registration.id, result })
@@ -270,15 +315,15 @@ export function createHookBus(options = {}) {
       }
 
       dispatchCount += 1
-      if (trace && shouldRecord(phase)) {
-        trace.emit('hook', phase.split(':')[1] ?? 'emit', {
-          phase,
+      if (trace && shouldRecord(normalized)) {
+        trace.emit('hook', normalized.split(':')[1] ?? 'emit', {
+          phase: normalized,
           hooks: results.length,
           blocked,
           stopped,
         })
       }
-      return { blocked, value, args, stopped, results, phase }
+      return { blocked, value, args, stopped, results, phase: normalized }
     },
 
     /**
@@ -303,8 +348,10 @@ export function createHookBus(options = {}) {
       let value = initial
       let changed = false
       const steps = []
-      for (const registration of matching(normalized)) {
-        if (!registration.enabled) continue
+      const registrations = enabledFor(normalized)
+      // Same rule as `emit`/`dispatch`: an unlistened transform is not evidence.
+      if (registrations.length === 0) return { value, changed, steps }
+      for (const registration of registrations) {
         try {
           const result = registration.handler(value, { ...runContext, hook: registration })
           if (registration.once) bus.off(registration.id)
@@ -349,7 +396,8 @@ export function createHookBus(options = {}) {
       return {
         hooks: bus.describe().length,
         dispatches: dispatchCount,
-        errors: errors.slice(-20),
+        errors: errors.slice(),
+        errorsTruncated,
         byPhase: Object.fromEntries(
           [...registry].map(([phase, list]) => [phase, list.length]),
         ),
@@ -364,6 +412,12 @@ export function createHookBus(options = {}) {
       message: error?.message ?? String(error),
     }
     errors.push(entry)
+    if (errors.length > MAX_HOOK_ERRORS) {
+      // Keep the newest failures; the ring is bounded so a hook that throws on
+      // every guest statement cannot grow the sandbox's memory without limit.
+      errors.splice(0, errors.length - MAX_HOOK_ERRORS)
+      errorsTruncated = true
+    }
     if (logger) logger.warn({ hook: entry }, 'hook failed; continuing')
   }
 
