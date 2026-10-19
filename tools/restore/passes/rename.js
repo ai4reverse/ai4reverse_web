@@ -40,6 +40,9 @@ export const meta = {
   order: 90,
   description: 'rename obfuscated _0x[0-9a-f]+ locals from their first assignment',
   idempotent: true,
+  // Cosmetic only and the most expensive pass; the orchestrator runs it once,
+  // in the final round (docs/EVALUATION-TOOLS.md D12).
+  deferred: true,
 }
 
 /**
