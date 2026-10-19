@@ -323,6 +323,58 @@ test('a non-stack settle error stays a non-stack outcome (no stack quarantine)',
 })
 
 /**
+ * Quarantine under concurrency (cross-runtime): a stack breach abandons its
+ * runtime and marks the shared WASM module unhealthy. Guest runs are queued now,
+ * so a concurrent neighbour either finishes before the breach or starts after
+ * it and re-acquires a healthy module — it must never inherit the abandoned
+ * heap, and both sandboxes must stay usable afterwards.
+ */
+test('a concurrent stack overflow quarantines without disturbing the next run', async () => {
+  const breached = await sandbox()
+  const neighbour = await sandbox()
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    const [overflow, normal] = await Promise.all([
+      breached.run(OVERFLOW),
+      neighbour.run('globalThis.__neighbour = 1; typeof window;'),
+    ])
+
+    // The breach is still classified and still reported as an abandoned runtime.
+    assert.equal(overflow.stackExhaustion, true)
+    assert.deepEqual(overflow.limitsHit, ['stack'])
+    assert.deepEqual(
+      { ...overflow.disposal, errors: overflow.disposal.errors.length },
+      { ok: false, errors: 0, leaked: true, stage: 'runtime', skipped: true },
+    )
+
+    // The queued run is unaffected: no interruption, no leaked handle, and its
+    // disposal is clean even though the module was quarantined during the pair.
+    assert.equal(normal.ok, true, JSON.stringify(normal.error))
+    assert.equal(normal.result.value, 'object')
+    assert.deepEqual(normal.limitsHit, [])
+    assert.equal(normal.runtime.reason, null, `interrupted: ${JSON.stringify(normal.runtime)}`)
+    assert.deepEqual(normal.disposal, { ok: true, errors: [] })
+
+    // Both sandboxes re-acquire a healthy module afterwards, whichever order
+    // they are called in.
+    for (const sb of [breached, neighbour]) {
+      const again = await sb.run('1+1')
+      assert.equal(again.ok, true, JSON.stringify(again.error))
+      assert.equal(again.result.value, 2)
+      assert.deepEqual(again.disposal, { ok: true, errors: [] })
+    }
+  } finally {
+    restoreEngine()
+    breached.dispose()
+    neighbour.dispose()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted\(/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+})
+
+/**
  * Forgery (audit N1): a *guest* that throws the engine's stack wording inside a
  * callback is an ordinary uncaught exception. Before the fix the settle path
  * classified it by message, abandoned the runtime and recorded a false leak.

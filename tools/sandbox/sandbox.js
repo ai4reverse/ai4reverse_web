@@ -15,6 +15,53 @@ import { SandboxError } from '../util/errors.js'
 import { shortHash } from '../util/hash.js'
 
 /**
+ * Guest execution is serialized process-wide.
+ *
+ * Every sandbox shares one QuickJS WASM module (`runtime.js` memoises it) and a
+ * module executes one guest at a time: guest code runs synchronously, so while
+ * one run spins every other run is parked at an `await` in its run preamble.
+ * That suspension is what used to corrupt the other run. The host-time budget
+ * (`limits.timeoutMs`) is measured with `Date.now()` from *runtime creation*, so
+ * a run that resumes after a neighbour monopolised the thread for 400 ms finds
+ * its budget already expired, interrupts itself on its first guest statement,
+ * and the aborted evaluation leaves guest objects on that runtime's GC list.
+ * Its `runtime.dispose()` then aborts the WASM engine
+ * (`Aborted(Assertion failed: list_empty(&rt->gc_obj_list))`) and quarantines
+ * the module for every later run — while the run that caused the delay (the
+ * timeout) disposes cleanly, which is what made the leak look unrelated to
+ * concurrency.
+ *
+ * The queue below is a mutex built from a promise chain (no new dependency).
+ * `run()` appends its whole body — acquisition, invocation, settle, disposal —
+ * and the next body starts only after the previous one has settled. Concurrent
+ * callers are queued, never rejected, and every queued run still gets its own
+ * fresh runtime and context, so per-run isolation and determinism are
+ * unchanged: a run now behaves exactly like the sequential equivalent.
+ */
+
+/** Tail of the guest-run queue. Always a promise that settles, never rejects. */
+let runQueueTail = Promise.resolve()
+
+/**
+ * Run `task` once no other run holds the shared WASM module.
+ *
+ * The tail is replaced by a promise that can never reject, so one failing run
+ * cannot stop the queue from draining.
+ *
+ * @template T
+ * @param {() => Promise<T>} task
+ * @returns {Promise<T>}
+ */
+function withGuestRunLock(task) {
+  const started = runQueueTail.then(task)
+  runQueueTail = started.then(
+    () => undefined,
+    () => undefined,
+  )
+  return started
+}
+
+/**
  * Traceless sandbox: the analysis platform base.
  *
  * Every `run()` gets:
@@ -33,6 +80,20 @@ import { shortHash } from '../util/hash.js'
  *    `stackExhaustion` marker, never by matching a guest error message — a
  *    sample that merely throws `Error('stack overflow')` must leave the runtime
  *    healthy.
+ *
+ * Concurrency contract:
+ *  - one guest run at a time per *process*, not per sandbox: `run()` calls are
+ *    queued on the shared WASM module (see `withGuestRunLock` above) and the
+ *    API stays async — concurrent callers wait, they are never rejected;
+ *  - the queue covers the full run body, including module (re-)acquisition, so
+ *    a run queued behind a quarantined module picks up a healthy one;
+ *  - it only serializes guest execution: static analysis (`analyze()`, the
+ *    restore pipeline) never touches the module and is not serialized;
+ *  - real (wall-clock) parallelism requires separate worker processes, one
+ *    WASM module each — a pool inside one process is a queue, not a fan-out;
+ *  - nested runs are *not* supported: a `run()` started from inside a hook, an
+ *    env callback or guest code waits for the run that is holding the queue,
+ *    i.e. for itself. Do not call `run()` from a callback of a running run.
  */
 export class TracelessSandbox {
   /**
@@ -114,11 +175,29 @@ export class TracelessSandbox {
   /**
    * Execute one sample in a fresh, isolated context.
    *
+   * Concurrent calls are queued, one run at a time per process, because all
+   * sandboxes share a single WASM module (see the class JSDoc). The returned
+   * promise resolves with the same record the sequential call would produce.
+   *
    * @param {string} source
    * @param {object} [runOptions]
    * @returns {Promise<object>} run record
    */
   async run(source, runOptions = {}) {
+    if (this.disposed) throw new SandboxError('sandbox has been disposed')
+    return withGuestRunLock(() => this.#runExclusive(source, runOptions))
+  }
+
+  /**
+   * The run body. Callers must hold the guest-run queue (`run()` is the only
+   * supported entry point); it is one indirection so the lock covers *every*
+   * stage — module acquisition, invocation, settlement and disposal.
+   *
+   * @param {string} source
+   * @param {object} runOptions
+   * @returns {Promise<object>} run record
+   */
+  async #runExclusive(source, runOptions) {
     if (this.disposed) throw new SandboxError('sandbox has been disposed')
     if (!this.module) await this.init()
     if (typeof source !== 'string' || source.length === 0) {
