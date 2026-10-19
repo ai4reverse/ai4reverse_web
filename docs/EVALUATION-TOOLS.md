@@ -313,3 +313,74 @@ instead of pass metadata; `bridge.fn` has a mis-indented catch block; the
    examples/benign.js --json` behave as documented.
 5. An independent auditor (fresh context, read-only) reproduces the original
    reproducers and confirms they now behave as specified.
+
+---
+
+# Alignment outcome
+
+Recorded 2026-10-19. Everything above this line is the review as written; this
+section is the outcome and does not rewrite the findings.
+
+- Commit range: `1b0f2c7..HEAD` — 47 commits, of which `c8300ff` is this
+  document and `7836126..d7dc371` are the alignment itself.
+- Method: one writer per area (`tools/sandbox`, `tools/hook`,
+  `tools/restore`, `tools/cli`, packaging/types, and this documentation lane),
+  each with a targeted test file; then four independent, read-only auditors
+  (`.pi/audits/AUDIT-{A,B,C,D}-*.md`) reproduced every original reproducer on a
+  pristine export of the committed tree.
+- Disposition detail (commit + regression test per item) lives in
+  `docs/DESIGN-REVIEW.md` → "Review 6"; the commands and counts live in
+  `docs/VERIFICATION.md`.
+
+## Per-`Dn` status
+
+| Id | Severity | Status | Acceptance evidence |
+| --- | --- | --- | --- |
+| D1 | S1 | **Fixed** | 12 consecutive stack overflows then a normal `ok:true` run; every breach reports `disposal {ok:false, leaked:true, stage:'runtime', skipped:true}`; the module is quarantined and recompiled; no `Aborted(` line. |
+| D2 | S1 | **Fixed** | Acquisition inside the guarded region; escaping failures are `SandboxError` with `code: SANDBOX_INIT\|SANDBOX_RUN`, non-empty message, `cause`; no unhandled rejection. |
+| D3 | S2 | **Fixed** | `moved` is a clamped integer (202 on `examples/network-c2.js`), never a handle address; same-seed dynamic events are byte-identical after removing `wall`. |
+| D4 | S2 | **Fixed** | 20-iteration loop: 2 hook events, 45 code events (was 48/45); strict bus accepts every declared phase, rejects typos; 1 000 throwing hooks leave 200 bounded errors with `errorsTruncated`. |
+| D5 | S2 | **Fixed** | Both reproducers report `changed:false` on re-application; 0/11 pipeline and 0/121 per-pass fixed-point failures; `validateOutput('function (') === false`; invalid generated output falls back to the input with `outputValid:false`. |
+| D6 | S1 | **Fixed** | WebAssembly stub, isolation triple with the invariant in `consistencyReport()` (20 checks), `HTMLElement` + 39 tag interfaces + `customElements`, bounded `DOMParser`/`XMLSerializer`, `EventSource` on the virtual network, `Object.keys(element).length === 0`. The documentation half (README/SECURITY-MODEL) is delivered. |
+| D7 | S2 | **Fixed** | All three reproducers now exit 2 with a message on stderr and empty stdout; 21 invalid invocations covered; valid invocations, stdout purity and `--out -` unchanged. |
+| D8 | S3 | **Fixed** | `CONTRACTS.md` rewritten against the code (bridge method-by-method, trace recorder, hook bus, env graph, pass contract), every count in `VERIFICATION.md` regenerated, `DESIGN-REVIEW.md` Review 6 + this outcome, `SECURITY-MODEL.md`/`README.md`/`API.md`/`ARCHITECTURE.md` corrected, `_w6-fidelity-notes.md` folded in and deleted. |
+| D9 | S3 | **Fixed** | ISC `LICENSE`, `files` whitelist (114-file tarball — 91 tools, 9 docs, 11 types, `README.md`, `LICENSE`, `package.json` — only `tools/ docs/ types/ README.md LICENSE package.json`), 11 subpath `exports` that all import at runtime, `types/*.d.ts` covering every runtime export, `100755` `tools/cli.js`, no `z3-solver` in `package.json` or `pnpm-lock.yaml`. |
+| D10 | S3 | **Fixed** | The eight dead names are gone (absence pinned by `tests/api-surface.test.js`); `TRACE_PHASES`, `resetQuickJS`, `restoreCode`, `scopeLogger` are kept because they gained a consumer/test; a 387-export rescan finds no export without a use. |
+| D11 | S3 | **Fixed** | One surface per module (`url`, `blob`, `navigator`, non-module `platform-kit`); `ENV_MODULE_IDS` = 28 = install order; zero `requires` violations; 28/28 strict install; subset selection fails loudly instead of dropping a surface. |
+| D12 | S3 | **Fixed** | `meta.deferred` declared (`rename`) and consumed by `isDeferredPass`, exposed by `passes --json`; `bridge.fn` indentation fixed; `bridge.call`/`adoptPrototype` removed. |
+
+## Accepted limitations (unchanged from the list above, now documented)
+
+QuickJS ≠ V8, deterministic canvas/WebGL/audio, `IndexedDB` stub,
+`crypto.subtle` digest (+ `generateKey`) only, no WASM execution, bounded
+`DOMParser`. Added by the alignment: `Attr`/`Range`/`ShadowRoot` absent,
+`DocumentType` never instantiated, one guest run per process, a guest-set
+`name:'InternalError'` still classifies as a stack breach, per-run cost +28 %,
+branch coverage 73.56 %. Each is stated in `README.md` → "Known limitations"
+(and, where it is a security boundary, in `docs/SECURITY-MODEL.md`).
+
+## Audit verdicts
+
+| Auditor | Scope | Verdict | Note |
+| --- | --- | --- | --- |
+| AUDIT-A | D1, D2, D3 | **PASS** (after N1) | Criteria reproduced; N1 (sample-forged "stack overflow" abandoned a healthy runtime) found and fixed by `94b1638`, whose residual is documented. |
+| AUDIT-B | D4, D5, D7 | **PASS** | Both D5 reproducers, the full CLI matrix and the trace budget reproduced; two non-blocking notes (`changed` and a trailing newline; advisory `sourceType`) documented. |
+| AUDIT-C | D6, D9, D10, D11, D12 | **PASS** on substance | D9/D10/D11/D12 clean; D6's five behavioural criteria hold, its documentation criterion is what this alignment delivers; F4 (missing DOM base interfaces) found and fixed. |
+| AUDIT-D | D8 + regression sweep | **FAIL on D8 only** | D8 was the only unmet criterion (no docs/contract update in the range) and is closed by this alignment; no handle leak, no new nondeterminism and no new detection tell was introduced, no barrel export was lost. F1 (a narrowed examples assertion), F2 (+28 % per-run cost) recorded; F3/F4/F5 fixed. |
+
+## Final gates
+
+1. `node --test --test-concurrency=1 tests/*.test.js` → **484 tests, 484 pass,
+   0 fail** (43 files, 77.0 s).
+2. `node --test --test-concurrency=1 --experimental-test-coverage tests/*.test.js`
+   → lines **96.98 %**, branches **73.56 %**, functions **88.78 %**. Lines and
+   functions are above the review baseline (88.08/80.33); branches are 1.7 points
+   below 75.26 and are recorded as an accepted gap, not silently re-based.
+3. Every `Dn` has an automated check that fails on the pre-fix code: AUDIT-A/B
+   demonstrated the failures on `git archive <fix>^` trees (D1/D2 6 failures,
+   D3 2, D4 5, D5 5 + 2 mutation runs, D7 6).
+4. `node tools/cli.js analyze examples/sample-loader.js --json` → verdict
+   `malicious` (60) with IOCs and artifacts; `restore` returns the decoded source;
+   `run examples/benign.js --json` → `ok:true`; `passes --json` → 11.
+5. Four independent auditors reproduced the original reproducers on the aligned
+   tree; their reports are under `.pi/audits/`.
