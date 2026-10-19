@@ -464,56 +464,85 @@ export function createProfile(options = {}) {
 /**
  * Verify the profile is internally coherent. Used by tests and exposed through
  * the sandbox report so an analyst can prove the environment was consistent.
+ *
+ * The invariants live in one `checks` list so `checked` is derived from what was
+ * actually evaluated: a hand-maintained count silently drifts (and then an
+ * analyst report claims coverage the code does not have) every time a check is
+ * added or removed.
  * @param {ReturnType<typeof createProfile>} profile
  */
 export function consistencyReport(profile) {
-  const problems = []
   const ua = profile.userAgent
+  const locale = LOCALES[profile.language]
 
   const uaPlatformToken =
     profile.os === 'windows' ? 'Windows NT' : profile.os === 'macos' ? 'Macintosh' : 'Linux'
-  if (!ua.includes(uaPlatformToken)) problems.push(`UA missing platform token ${uaPlatformToken}`)
 
-  if (profile.os === 'windows' && profile.platform !== 'Win32') problems.push('Windows profile must report Win32')
-  if (profile.os === 'macos' && profile.platform !== 'MacIntel') problems.push('macOS profile must report MacIntel')
-  if (profile.os === 'linux' && !profile.platform.startsWith('Linux')) problems.push('Linux profile must report Linux platform')
-  if (profile.mobile && !/Mobile|Android|iPhone/.test(profile.userAgent)) problems.push('mobile profile needs a Mobile UA token')
+  /**
+   * @type {Array<{ ok: boolean, problem: string }>} `ok` is the invariant, `problem`
+   * is the message reported when it does not hold.
+   */
+  const checks = [
+    { ok: ua.includes(uaPlatformToken), problem: `UA missing platform token ${uaPlatformToken}` },
+    { ok: profile.os !== 'windows' || profile.platform === 'Win32', problem: 'Windows profile must report Win32' },
+    { ok: profile.os !== 'macos' || profile.platform === 'MacIntel', problem: 'macOS profile must report MacIntel' },
+    {
+      ok: profile.os !== 'linux' || profile.platform.startsWith('Linux'),
+      problem: 'Linux profile must report Linux platform',
+    },
+    { ok: !profile.mobile || /Mobile|Android|iPhone/.test(ua), problem: 'mobile profile needs a Mobile UA token' },
+    { ok: Boolean(locale), problem: `unknown locale ${profile.language}` },
+    // An unknown locale is already reported above; the preset comparisons stay
+    // vacuously true so they do not add noise for a single root cause.
+    { ok: !locale || locale.timezone === profile.timezone, problem: 'timezone does not match locale preset' },
+    {
+      ok: !locale || locale.tzOffsetMinutes === profile.timezoneOffsetMinutes,
+      problem: 'timezone offset does not match locale preset',
+    },
+    {
+      ok: !profile.webgl.renderer.includes('Direct3D') || profile.os === 'windows',
+      problem: 'D3D renderer on non-Windows profile',
+    },
+    {
+      ok: !profile.webgl.renderer.includes('Metal') || profile.os === 'macos',
+      problem: 'Metal renderer on non-macOS profile',
+    },
+    {
+      ok: !profile.webgl.renderer.includes('Mesa') || profile.os === 'linux',
+      problem: 'Mesa renderer on non-Linux profile',
+    },
+    {
+      ok: profile.browser !== 'firefox' || !profile.userAgentData,
+      problem: 'Firefox must not expose userAgentData',
+    },
+    {
+      ok: (profile.browser !== 'chrome' && profile.browser !== 'edge') || Boolean(profile.userAgentData),
+      problem: 'Chromium profile must expose userAgentData',
+    },
+    { ok: profile.browser !== 'firefox' || !profile.chrome, problem: 'Firefox must not expose window.chrome' },
+    { ok: profile.screen.availWidth <= profile.screen.width, problem: 'availWidth cannot exceed width' },
+    { ok: profile.screen.devicePixelRatio > 0, problem: 'devicePixelRatio must be positive' },
+    {
+      ok: profile.timezoneOffsetMinutes <= 840 && profile.timezoneOffsetMinutes >= -840,
+      problem: 'timezone offset out of range',
+    },
+    // D6: the isolation triple has exactly two legal states. A buffer that exists
+    // without isolation, or an isolation flag with no buffer, is impossible in a
+    // browser and is a one-line detection tell.
+    {
+      ok: Boolean(profile.sharedArrayBuffer) === Boolean(profile.crossOriginIsolated),
+      problem: 'SharedArrayBuffer must exist exactly when crossOriginIsolated is true',
+    },
+    {
+      ok: Boolean(profile.atomics) === Boolean(profile.crossOriginIsolated),
+      problem: 'Atomics must exist exactly when crossOriginIsolated is true',
+    },
+    {
+      ok: !profile.crossOriginIsolated || String(profile.origin).startsWith('https://'),
+      problem: 'crossOriginIsolated requires a secure context',
+    },
+  ]
 
-  const locale = LOCALES[profile.language]
-  if (locale) {
-    if (locale.timezone !== profile.timezone) problems.push('timezone does not match locale preset')
-    if (locale.tzOffsetMinutes !== profile.timezoneOffsetMinutes) problems.push('timezone offset does not match locale preset')
-  } else {
-    problems.push(`unknown locale ${profile.language}`)
-  }
-
-  if (profile.webgl.renderer.includes('Direct3D') && profile.os !== 'windows') problems.push('D3D renderer on non-Windows profile')
-  if (profile.webgl.renderer.includes('Metal') && profile.os !== 'macos') problems.push('Metal renderer on non-macOS profile')
-  if (profile.webgl.renderer.includes('Mesa') && profile.os !== 'linux') problems.push('Mesa renderer on non-Linux profile')
-
-  if (profile.browser === 'firefox' && profile.userAgentData) problems.push('Firefox must not expose userAgentData')
-  if ((profile.browser === 'chrome' || profile.browser === 'edge') && !profile.userAgentData) {
-    problems.push('Chromium profile must expose userAgentData')
-  }
-  if (profile.browser === 'firefox' && profile.chrome) problems.push('Firefox must not expose window.chrome')
-
-  if (profile.screen.availWidth > profile.screen.width) problems.push('availWidth cannot exceed width')
-  if (profile.screen.devicePixelRatio <= 0) problems.push('devicePixelRatio must be positive')
-  if (profile.timezoneOffsetMinutes > 840 || profile.timezoneOffsetMinutes < -840) {
-    problems.push('timezone offset out of range')
-  }
-
-  // D6: the isolation triple has exactly two legal states. A buffer that exists
-  // without isolation, or an isolation flag with no buffer, is impossible in a
-  // browser and is a one-line detection tell.
-  if (Boolean(profile.sharedArrayBuffer) !== Boolean(profile.crossOriginIsolated)) {
-    problems.push('SharedArrayBuffer must exist exactly when crossOriginIsolated is true')
-  }
-  if (Boolean(profile.atomics) !== Boolean(profile.crossOriginIsolated)) {
-    problems.push('Atomics must exist exactly when crossOriginIsolated is true')
-  }
-  if (profile.crossOriginIsolated && !String(profile.origin).startsWith('https://')) {
-    problems.push('crossOriginIsolated requires a secure context')
-  }
-  return { ok: problems.length === 0, problems, checked: 15 }
+  const problems = checks.filter((check) => !check.ok).map((check) => check.problem)
+  return { ok: problems.length === 0, problems, checked: checks.length }
 }

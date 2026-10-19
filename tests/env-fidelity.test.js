@@ -150,6 +150,152 @@ test('consistencyReport rejects every incoherent isolation combination', () => {
   )
 })
 
+test('consistencyReport counts every check it declares, not a literal', () => {
+  // Audit: `checked` was a hard-coded 15 while the function evaluated 20
+  // invariants, so the analyst-facing report understated its own coverage. The
+  // count is now derived from the check list; this test pins the derivation by
+  // injecting exactly one incoherence per declared check.
+  const base = () => createProfile({ seed: 7, os: 'macos', browser: 'chrome', locale: 'en-US' })
+  const clone = (profile) => JSON.parse(JSON.stringify(profile))
+  const drift = (profile, patch) => Object.assign(clone(profile), patch)
+  const renderer = (profile, value) => {
+    const next = clone(profile)
+    next.webgl.renderer = value
+    return next
+  }
+
+  const coherent = consistencyReport(createProfile({ seed: 7 }))
+  assert.deepEqual(coherent.problems, [], JSON.stringify(coherent.problems))
+  assert.ok(coherent.checked > 0)
+
+  /** @type {Array<{ check: string, profile: object, problems: string[] }>} */
+  const faults = [
+    {
+      check: 'UA platform token',
+      profile: drift(base(), { userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0' }),
+      problems: ['UA missing platform token Macintosh'],
+    },
+    {
+      check: 'windows platform',
+      profile: drift(createProfile({ seed: 7, os: 'windows', browser: 'chrome', locale: 'en-US' }), { platform: 'MacIntel' }),
+      problems: ['Windows profile must report Win32'],
+    },
+    { check: 'macOS platform', profile: drift(base(), { platform: 'Win32' }), problems: ['macOS profile must report MacIntel'] },
+    {
+      check: 'Linux platform',
+      profile: drift(createProfile({ seed: 7, os: 'linux', browser: 'chrome', locale: 'en-US' }), { platform: 'Win32' }),
+      problems: ['Linux profile must report Linux platform'],
+    },
+    {
+      check: 'mobile UA token',
+      profile: drift(base(), {
+        mobile: true,
+        userAgent:
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.92 Safari/537.36',
+      }),
+      problems: ['mobile profile needs a Mobile UA token'],
+    },
+    { check: 'known locale', profile: drift(base(), { language: 'xx-XX' }), problems: ['unknown locale xx-XX'] },
+    {
+      check: 'locale timezone',
+      profile: drift(base(), { timezone: 'UTC' }),
+      problems: ['timezone does not match locale preset'],
+    },
+    {
+      check: 'locale timezone offset',
+      profile: drift(base(), { timezoneOffsetMinutes: 300 }),
+      problems: ['timezone offset does not match locale preset'],
+    },
+    {
+      check: 'Direct3D renderer',
+      profile: renderer(base(), 'ANGLE (NVIDIA, Direct3D11 vs_5_0 ps_5_0)'),
+      problems: ['D3D renderer on non-Windows profile'],
+    },
+    {
+      check: 'Metal renderer',
+      profile: renderer(createProfile({ seed: 7, os: 'linux', browser: 'chrome', locale: 'en-US' }), 'Apple M3 (Metal)'),
+      problems: ['Metal renderer on non-macOS profile'],
+    },
+    {
+      check: 'Mesa renderer',
+      profile: renderer(base(), 'ANGLE (Mesa, llvmpipe (LLVM 17.0.6, 256 bits))'),
+      problems: ['Mesa renderer on non-Linux profile'],
+    },
+    {
+      check: 'Firefox without userAgentData',
+      profile: drift(createProfile({ seed: 7, os: 'macos', browser: 'firefox', locale: 'en-US' }), { userAgentData: { brands: [] } }),
+      problems: ['Firefox must not expose userAgentData'],
+    },
+    {
+      check: 'Chromium with userAgentData',
+      profile: drift(base(), { userAgentData: null }),
+      problems: ['Chromium profile must expose userAgentData'],
+    },
+    {
+      check: 'Firefox without window.chrome',
+      profile: drift(createProfile({ seed: 7, os: 'macos', browser: 'firefox', locale: 'en-US' }), { chrome: {} }),
+      problems: ['Firefox must not expose window.chrome'],
+    },
+    {
+      check: 'availWidth fits width',
+      profile: (() => {
+        const next = clone(base())
+        next.screen.availWidth = next.screen.width + 1
+        return next
+      })(),
+      problems: ['availWidth cannot exceed width'],
+    },
+    {
+      check: 'positive devicePixelRatio',
+      profile: (() => {
+        const next = clone(base())
+        next.screen.devicePixelRatio = 0
+        return next
+      })(),
+      problems: ['devicePixelRatio must be positive'],
+    },
+    {
+      // An out-of-range offset also breaks the locale preset, so this fault
+      // reports two problems: one check each, still one declared check.
+      check: 'timezone offset range',
+      profile: drift(base(), { timezoneOffsetMinutes: 900 }),
+      problems: ['timezone offset does not match locale preset', 'timezone offset out of range'],
+    },
+    {
+      check: 'SharedArrayBuffer isolation',
+      profile: drift(base(), { sharedArrayBuffer: true }),
+      problems: ['SharedArrayBuffer must exist exactly when crossOriginIsolated is true'],
+    },
+    {
+      check: 'Atomics isolation',
+      profile: drift(base(), { atomics: true }),
+      problems: ['Atomics must exist exactly when crossOriginIsolated is true'],
+    },
+    {
+      check: 'secure context for isolation',
+      profile: drift(
+        createProfile({ seed: 7, os: 'macos', browser: 'chrome', locale: 'en-US', crossOriginIsolated: true }),
+        { origin: 'http://www.example-cdn.com' },
+      ),
+      problems: ['crossOriginIsolated requires a secure context'],
+    },
+  ]
+
+  for (const fault of faults) {
+    const report = consistencyReport(fault.profile)
+    assert.deepEqual(report.problems, fault.problems, `${fault.check}: ${JSON.stringify(report.problems)}`)
+    assert.equal(report.ok, false, fault.check)
+    // A failing check must not change the amount of work reported as done.
+    assert.equal(report.checked, coherent.checked, fault.check)
+  }
+
+  assert.equal(
+    coherent.checked,
+    faults.length,
+    `consistencyReport declares ${coherent.checked} checks but this test exercises ${faults.length}: add the missing fault case`,
+  )
+})
+
 test('WebAssembly is a coherent browser-shaped surface, not undefined', async () => {
   const sb = await sandbox()
   try {
