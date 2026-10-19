@@ -254,10 +254,24 @@ function brandObjects(bridge) {
 }
 
 /**
- * DOM interface brands: `Object.prototype.toString.call(div)` must be
- * `[object HTMLDivElement]` and `div.constructor.name` must match, while
- * `Object.getOwnPropertySymbols(div)` stays empty. Implemented as accessors on
- * the element/node prototypes exposed by the DOM module.
+ * DOM interface brands and the `HTMLElement` hierarchy.
+ *
+ * Browsers expose one prototype per element interface: `document.createElement
+ * ('div') instanceof HTMLDivElement`, `instanceof HTMLElement`, and
+ * `Object.prototype.toString.call(div) === '[object HTMLDivElement]'` with no
+ * own symbol on the instance. The DOM shim has a single element prototype, so
+ * this module:
+ *  - installs `HTMLElement` with `HTMLElement.prototype === elementPrototype`
+ *    (making `el instanceof HTMLElement` a real prototype-chain test),
+ *  - installs one constructor per tag interface with an own
+ *    `Symbol.hasInstance` that matches on `tagName`, because the shim cannot
+ *    rebuild a two-level prototype chain for already-created elements,
+ *  - brands the shared prototype with `Symbol.toStringTag`/`constructor`
+ *    accessors so the per-instance brand stays correct,
+ *  - exposes `customElements` (registry, `whenDefined`, `upgrade`).
+ *
+ * Element instances keep zero own symbols; the `Object.keys(element)` surface is
+ * still the DOM module's own-property layout (see `_w6-fidelity-notes.md`).
  * @param {object} bridge
  */
 const ELEMENT_INTERFACES = {
@@ -278,73 +292,269 @@ function brandElements(bridge) {
   const { ctx } = bridge
   const elementProto = bridge.elementPrototype
   const nodeProto = bridge.nodePrototype
-  if (!elementProto || !nodeProto) return
-  const tagSymbol = ctx.evalCode('Symbol.toStringTag')
-  if (tagSymbol.error) {
-    tagSymbol.error.dispose()
+  // Without the DOM module there is no element prototype to brand; selecting a
+  // subset environment is legitimate, so this is not an installation failure.
+  if (!elementProto || !nodeProto) {
+    bridge.emit('sandbox', 'error', { event: 'anti-fingerprint.elements-skipped', reason: 'no-dom-module' })
     return
   }
-  const ctorCache = new Map()
-  const ctorFor = (name) => {
-    if (!ctorCache.has(name)) {
-      const ctor = ctx.newFunctionWithOptions({
-        name,
-        length: 0,
-        isConstructor: false,
-        fn: () => ctx.undefined,
-      })
-      bridge.adopt(ctor, name)
-      bridge.install(ctx.global, name, ctor, { enumerable: false, configurable: true, writable: true })
-      ctor.dispose()
-      ctorCache.set(name, true)
+
+  /** tag -> [interface names] */
+  const tagTable = {}
+  for (const [tag, name] of Object.entries(ELEMENT_INTERFACES)) {
+    if (!tagTable[name]) tagTable[name] = []
+    tagTable[name].push(tag)
+  }
+
+  const compiled = ctx.evalCode(ELEMENT_INTERFACES_SOURCE, 'ai4r-internal:element-interfaces')
+  if (compiled.error) {
+    const dumped = bridge.fromGuest(compiled.error)
+    compiled.error.dispose()
+    bridge.emit('sandbox', 'error', { event: 'anti-fingerprint.elements-failed', stage: 'compile', error: dumped })
+    return
+  }
+  const factory = compiled.value
+  const tagTableHandle = bridge.toGuest(tagTable)
+  const call = ctx.callFunction(factory, ctx.undefined, [elementProto, nodeProto, tagTableHandle])
+  factory.dispose()
+  if (call.error) {
+    const dumped = bridge.fromGuest(call.error)
+    call.error.dispose()
+    bridge.emit('sandbox', 'error', { event: 'anti-fingerprint.elements-failed', stage: 'install', error: dumped })
+    return
+  }
+  const surface = call.value
+  const own = []
+  const take = (target, key) => {
+    const handle = ctx.getProp(target, key)
+    own.push(handle)
+    return handle
+  }
+
+  // Adopt every constructor and the prototype accessors so `toString()` and
+  // `get [Symbol.toStringTag]` report native code, exactly like the shim does.
+  const adoptList = (handle, name) => {
+    if (!handle) return
+    bridge.adopt(handle, name)
+  }
+  const interfaceTable = take(surface, 'interfaces')
+  for (const name of Object.keys(tagTable)) {
+    const ctor = ctx.getProp(interfaceTable, name)
+    adoptList(ctor, name)
+    ctor.dispose()
+  }
+  const htmlElement = take(surface, 'HTMLElement')
+  adoptList(htmlElement, 'HTMLElement')
+  const tagGetter = take(surface, 'tagGetter')
+  adoptList(tagGetter, 'get [Symbol.toStringTag]')
+  const ctorGetter = take(surface, 'ctorGetter')
+  adoptList(ctorGetter, 'get constructor')
+
+  const customElements = take(surface, 'customElements')
+  for (const name of ['define', 'get', 'whenDefined', 'upgrade']) {
+    const method = ctx.getProp(customElements, name)
+    adoptList(method, name)
+    method.dispose()
+  }
+  bridge.install(bridge.global, 'customElements', customElements, {
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  })
+
+  bridge.onDispose(() => {
+    for (const handle of own) {
+      try {
+        handle.dispose()
+      } catch {
+        /* already released with the context */
+      }
     }
-    return name
-  }
-  const tagGetter = bridge.fn('get [Symbol.toStringTag]', 0, ({ thisHandle }) => {
-    const nodeType = bridge.get(thisHandle, 'nodeType')
-    if (nodeType === 3) return ctx.newString('Text')
-    if (nodeType === 8) return ctx.newString('Comment')
-    if (nodeType === 9) return ctx.newString('HTMLDocument')
-    const tag = String(bridge.get(thisHandle, 'tagName') ?? 'div').toLowerCase()
-    const name = ELEMENT_INTERFACES[tag] ?? 'HTMLElement'
-    ctorFor(name)
-    return ctx.newString(name)
+    own.length = 0
   })
-  const ctorGetter = bridge.fn('get constructor', 0, ({ thisHandle }) => {
-    const tag = String(bridge.get(thisHandle, 'tagName') ?? 'div').toLowerCase()
-    const name = ELEMENT_INTERFACES[tag] ?? 'HTMLElement'
-    ctorFor(name)
-    const ctor = ctx.getProp(ctx.global, name)
-    return ctor
-  })
-  const define = ctx.evalCode(
-    `(function (proto, symbol, getTag, getCtor) {
-      Object.defineProperty(proto, symbol, { get: getTag, configurable: true, enumerable: false });
-      Object.defineProperty(proto, 'constructor', { get: getCtor, configurable: true, enumerable: false });
-    })`,
-    'ai4r-internal:element-brand',
-  )
-  if (define.error) {
-    define.error.dispose()
-    tagSymbol.value.dispose()
-    return
-  }
-  for (const proto of [elementProto, nodeProto]) {
-    const call = ctx.callFunction(define.value, ctx.undefined, [
-      proto,
-      tagSymbol.value,
-      tagGetter,
-      ctorGetter,
-    ])
-    if (call.error) call.error.dispose()
-    else call.value.dispose()
-  }
-  define.value.dispose()
-  tagSymbol.value.dispose()
-  bridge.adopt(tagGetter, 'get [Symbol.toStringTag]')
-  bridge.adopt(ctorGetter, 'get constructor')
+  surface.dispose()
   bridge.emit('sandbox', 'emit', { event: 'anti-fingerprint.elements-branded' })
 }
+
+/**
+ * Guest half of `brandElements`: builds the interface constructors, the
+ * `Symbol.toStringTag`/`constructor` accessors and the `CustomElementRegistry`.
+ * Everything is guest code so the closures live in the guest realm and no host
+ * state can be reached from a prototype.
+ */
+const ELEMENT_INTERFACES_SOURCE = `(function (elementProto, nodeProto, tagTable) {
+  var GLOBAL = globalThis;
+  var interfaces = {};
+  var TAG_INTERFACES = Object.create(null);
+  var name;
+  for (name in tagTable) {
+    var tags = tagTable[name];
+    for (var index = 0; index < tags.length; index += 1) TAG_INTERFACES[tags[index]] = name;
+  }
+
+  function illegal(name) {
+    var ctor = function () { throw new TypeError('Illegal constructor'); };
+    Object.defineProperty(ctor, 'name', { value: name, configurable: true });
+    return ctor;
+  }
+  // The DOM shim builds every element from one shared prototype, and the canvas
+  // module builds its own tag objects, so instanceof for the interfaces is
+  // answered structurally (nodeType plus tagName) instead of by prototype
+  // identity. HTMLElement.prototype is the shim prototype, so the prototype
+  // chain still answers Object.getPrototypeOf(div) correctly.
+  var DEFAULT_HAS_INSTANCE = Function.prototype[Symbol.hasInstance];
+  function installInterface(name, matches, prototype) {
+    // A module that already owns a tag (canvas installs HTMLCanvasElement,
+    // HTMLImageElement, HTMLAudioElement and HTMLVideoElement with real
+    // prototypes) keeps it: replacing it would break its prototype chain.
+    var existing = GLOBAL[name];
+    if (typeof existing === 'function' && name !== 'HTMLElement') {
+      interfaces[name] = existing;
+      return existing;
+    }
+    var ctor = illegal(name);
+    var proto = prototype || Object.create(elementProto);
+    ctor.prototype = proto;
+    Object.defineProperty(proto, 'constructor', { value: ctor, writable: true, enumerable: false, configurable: true });
+    // Derived classes inherit the static side of their parent, so an
+    // unconditional hook would make every element an instance of every user
+    // subclass. Only the interface constructor itself answers structurally;
+    // subclasses fall back to the spec algorithm.
+    Object.defineProperty(ctor, Symbol.hasInstance, {
+      value: function (value) {
+        if (this !== ctor) return DEFAULT_HAS_INSTANCE.call(this, value);
+        return matches(value);
+      },
+      configurable: true
+    });
+    Object.defineProperty(GLOBAL, name, { value: ctor, writable: true, enumerable: false, configurable: true });
+    interfaces[name] = ctor;
+    return ctor;
+  }
+  function isElementLike(value) {
+    return value !== null && typeof value === 'object' && value.nodeType === 1 && typeof value.tagName === 'string';
+  }
+  function tagMatcher(tags) {
+    return function (value) {
+      return isElementLike(value) && tags.indexOf(value.tagName.toLowerCase()) >= 0;
+    };
+  }
+
+  var HTMLElement = installInterface('HTMLElement', isElementLike, elementProto);
+  for (name in tagTable) installInterface(name, tagMatcher(tagTable[name]), null);
+
+  function interfaceNameFor(node) {
+    if (!node || typeof node !== 'object') return 'HTMLElement';
+    var type = node.nodeType;
+    if (type === 3) return 'Text';
+    if (type === 8) return 'Comment';
+    if (type === 9) return 'HTMLDocument';
+    var tag = typeof node.tagName === 'string' ? node.tagName.toLowerCase() : 'div';
+    return TAG_INTERFACES[tag] || 'HTMLElement';
+  }
+  function tagGetter() {
+    return interfaceNameFor(this);
+  }
+  function ctorGetter() {
+    if (this === elementProto) return HTMLElement;
+    return interfaces[interfaceNameFor(this)] || HTMLElement;
+  }
+  var protos = [elementProto, nodeProto];
+  for (var protoIndex = 0; protoIndex < protos.length; protoIndex += 1) {
+    Object.defineProperty(protos[protoIndex], Symbol.toStringTag, { get: tagGetter, enumerable: false, configurable: true });
+    Object.defineProperty(protos[protoIndex], 'constructor', { get: ctorGetter, enumerable: false, configurable: true });
+  }
+
+  // ---- CustomElementRegistry -------------------------------------------
+  var registry = new Map();
+  var waiting = new Map();
+  var upgraded = new WeakSet();
+  var RESERVED = ['annotation-xml', 'color-profile', 'font-face', 'font-face-src',
+    'font-face-uri', 'font-face-format', 'font-face-name', 'missing-glyph'];
+  var VALID_NAME = /^[a-z][a-z0-9._-]*-[a-z0-9._-]*$/;
+
+  function named(name, message) {
+    var error = new Error(message);
+    error.name = name;
+    return error;
+  }
+  function checkName(name, member) {
+    var label = "Failed to execute '" + member + "' on 'CustomElementRegistry': ";
+    var valid = typeof name === 'string' && VALID_NAME.test(name) && RESERVED.indexOf(name) < 0;
+    if (!valid) throw named('SyntaxError', label + '"' + String(name) + '" is not a valid custom element name');
+  }
+  function upgradeElement(element) {
+    if (!element || typeof element !== 'object' || element.nodeType !== 1) return;
+    var tag = typeof element.localName === 'string' ? element.localName.toLowerCase() : '';
+    var record = registry.get(tag);
+    if (!record || upgraded.has(element)) return;
+    upgraded.add(element);
+    try { Object.setPrototypeOf(element, record.ctor.prototype); } catch (error) {}
+    try { record.ctor.call(element); } catch (error) {
+      // Class constructors cannot be invoked without the new operator; a real
+      // upgrade constructs them; this bounded upgrade keeps the prototype link.
+    }
+  }
+  function collect(root, out) {
+    if (!root || typeof root !== 'object' || out.length >= 4096) return out;
+    if (root.nodeType === 1) out.push(root);
+    var children = root.childNodes;
+    if (children && typeof children.length === 'number') {
+      for (var index = 0; index < children.length; index += 1) collect(children[index], out);
+    }
+    return out;
+  }
+
+  var customElements = {};
+  Object.defineProperty(customElements, Symbol.toStringTag, { value: 'CustomElementRegistry', enumerable: false, configurable: true });
+  function method(name, fn) {
+    Object.defineProperty(customElements, name, { value: fn, writable: true, enumerable: false, configurable: true });
+  }
+  method('define', function define(name, ctor) {
+    checkName(name, 'define');
+    if (typeof ctor !== 'function') {
+      throw new TypeError("Failed to execute 'define' on 'CustomElementRegistry': parameter 2 is not a constructor.");
+    }
+    if (registry.has(name)) {
+      throw named('NotSupportedError', "Failed to execute 'define' on 'CustomElementRegistry': the name " + JSON.stringify(name) + " has already been used with this registry");
+    }
+    registry.set(name, { ctor: ctor });
+    var pending = waiting.get(name);
+    if (pending) {
+      waiting.delete(name);
+      pending.resolve(ctor);
+    }
+  });
+  method('get', function get(name) {
+    var record = typeof name === 'string' ? registry.get(name) : undefined;
+    return record ? record.ctor : undefined;
+  });
+  method('whenDefined', function whenDefined(name) {
+    try { checkName(name, 'whenDefined'); } catch (error) { return Promise.reject(error); }
+    var record = registry.get(name);
+    if (record) return Promise.resolve(record.ctor);
+    var pending = waiting.get(name);
+    if (!pending) {
+      var resolve;
+      var promise = new Promise(function (settle) { resolve = settle; });
+      pending = { promise: promise, resolve: resolve };
+      waiting.set(name, pending);
+    }
+    return pending.promise;
+  });
+  method('upgrade', function upgrade(root) {
+    var nodes = collect(root, []);
+    for (var index = 0; index < nodes.length; index += 1) upgradeElement(nodes[index]);
+  });
+
+  return {
+    HTMLElement: HTMLElement,
+    interfaces: interfaces,
+    customElements: customElements,
+    tagGetter: tagGetter,
+    ctorGetter: ctorGetter
+  };
+})`
 
 /**
  * The instrumentation channel is stored under a run-unique registered symbol.
