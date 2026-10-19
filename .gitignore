@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Agent and tooling state
+.pi/
+
+# Logs
+*.log
+logs/
+
+# Analysis output
+out/
+
+# Coverage and caches
+coverage/
+.nyc_output/
+.cache/
+*.tsbuildinfo
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
