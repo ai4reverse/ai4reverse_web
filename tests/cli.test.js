@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -137,4 +137,228 @@ test('cli run --events emits one JSON event per line', async () => {
   const parsed = lines.map((line) => JSON.parse(line))
   assert.ok(parsed.every((event) => typeof event.kind === 'string' && typeof event.seq === 'number'))
   assert.ok(parsed.some((event) => event.kind === 'code'))
+})
+
+/**
+ * Run the CLI and capture the outcome instead of throwing on a non-zero exit,
+ * so the usage-error contract (exit 2, message on stderr, empty stdout) can be
+ * asserted directly.
+ */
+async function runCli(args, options = {}) {
+  try {
+    const { stdout, stderr } = await exec(process.execPath, [CLI, ...args], {
+      cwd: ROOT,
+      timeout: 60_000,
+      ...options,
+    })
+    return { code: 0, stdout, stderr }
+  } catch (error) {
+    return { code: error.code ?? -1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' }
+  }
+}
+
+/** D7: bad input is a usage error — exit 2, explained on stderr, nothing on stdout. */
+async function assertUsageError(args, pattern) {
+  const result = await runCli(args)
+  assert.equal(result.code, 2, `expected exit 2 for "${args.join(' ')}", got ${result.code}: ${result.stderr}`)
+  assert.equal(result.stdout, '', `"${args.join(' ')}" wrote to stdout on a usage error`)
+  assert.match(result.stderr, pattern)
+  return result
+}
+
+test('cli -h/--help print usage without running a command', async () => {
+  for (const flag of ['--help', '-h']) {
+    const result = await runCli([flag])
+    assert.equal(result.code, 0, `${flag}: ${result.stderr}`)
+    assert.match(result.stdout, /Usage:/)
+    assert.equal(result.stderr, '')
+  }
+})
+
+test('cli rejects unknown options for every command', async () => {
+  const cases = [
+    ['analyze', 'examples/benign.js', '--nonsense'],
+    ['restore', 'examples/benign.js', '--nonsense'],
+    ['run', 'examples/benign.js', '--nonsense'],
+    ['passes', '--nonsense'],
+    ['version', '--nonsense'],
+    // an option that needs a value but has none
+    ['analyze', 'examples/benign.js', '--seed'],
+  ]
+  for (const args of cases) await assertUsageError(args, /invalid arguments/)
+})
+
+test('cli rejects malformed --seed values', async () => {
+  for (const value of ['xyz', '1.5', '0x', '0xzz', '12abc', '-12', '']) {
+    await assertUsageError(
+      ['analyze', 'examples/benign.js', '--no-dynamic', `--seed=${value}`],
+      /--seed must be a decimal or 0x-prefixed hex integer/,
+    )
+  }
+})
+
+test('cli accepts decimal and 0x hex seeds', async () => {
+  for (const value of ['24173', '0x5eed', '0X5EED', '0001']) {
+    const result = await runCli(['restore', 'examples/benign.js', '--seed', value])
+    assert.equal(result.code, 0, `${value}: ${result.stderr}`)
+    assert.match(result.stdout, /Benign control sample/)
+  }
+  // the seed is part of the profile fed to the sandbox, not just a CLI field
+  const run = await runCli(['run', 'examples/benign.js', '--json', '--seed', '0x5eed'])
+  assert.equal(run.code, 0, run.stderr)
+  assert.equal(JSON.parse(run.stdout).ok, true)
+})
+
+test('cli rejects --rounds outside 1-5 and non-integers', async () => {
+  for (const value of ['abc', '0', '6', '1.5', '-1', '']) {
+    await assertUsageError(
+      ['restore', 'examples/benign.js', `--rounds=${value}`],
+      /--rounds must be an integer between 1 and 5/,
+    )
+  }
+})
+
+test('cli accepts every valid --rounds value', async () => {
+  for (const value of [1, 2, 3, 4, 5]) {
+    const result = await runCli(['restore', 'examples/sample-loader.js', '--rounds', String(value)])
+    assert.equal(result.code, 0, `rounds=${value}: ${result.stderr}`)
+    assert.ok(result.stdout.length > 0)
+  }
+})
+
+test('cli rejects unknown pass ids and names the valid ones', async () => {
+  const ids = JSON.parse((await runCli(['passes', '--json'])).stdout).map((pass) => pass.id)
+  for (const args of [
+    ['restore', 'examples/benign.js', '--passes', 'bogus'],
+    ['restore', 'examples/benign.js', '--exclude', 'bogus'],
+    ['restore', 'examples/benign.js', '--passes', 'strings,bogus'],
+  ]) {
+    const result = await assertUsageError(args, /unknown pass id/)
+    for (const id of ids) assert.ok(result.stderr.includes(id), `valid pass id ${id} missing from the message`)
+  }
+})
+
+test('cli accepts every registered pass id in --passes and --exclude', async () => {
+  const ids = JSON.parse((await runCli(['passes', '--json'])).stdout).map((pass) => pass.id)
+  const only = await runCli(['restore', 'examples/sample-loader.js', '--passes', ids.join(',')])
+  assert.equal(only.code, 0, only.stderr)
+  assert.ok(only.stdout.length > 0)
+  const excluded = await runCli(['restore', 'examples/sample-loader.js', '--exclude', ids.join(',')])
+  assert.equal(excluded.code, 0, excluded.stderr)
+  assert.ok(excluded.stdout.length > 0)
+})
+
+test('cli rejects invalid --level and accepts the documented levels', async () => {
+  for (const value of ['bogus', 'trace', 'OFF', '']) {
+    await assertUsageError(
+      ['analyze', 'examples/benign.js', '--no-dynamic', `--level=${value}`],
+      /--level must be one of off\|function\|branch\|statement/,
+    )
+  }
+  for (const level of ['off', 'function', 'branch', 'statement']) {
+    const result = await runCli(['restore', 'examples/benign.js', '--level', level])
+    assert.equal(result.code, 0, `${level}: ${result.stderr}`)
+  }
+  const run = await runCli(['run', 'examples/benign.js', '--json', '--level', 'off'])
+  assert.equal(run.code, 0, run.stderr)
+  assert.equal(JSON.parse(run.stdout).ok, true)
+})
+
+test('cli --out failures are usage errors with the path and code', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ai4r-out-'))
+  const parentFile = join(dir, 'not-a-dir')
+  await writeFile(parentFile, 'x')
+  const missing = join(dir, 'missing', 'report.json')
+
+  const enoent = await assertUsageError(
+    ['analyze', 'examples/benign.js', '--no-dynamic', '--json', '--out', missing],
+    /cannot write /,
+  )
+  assert.ok(enoent.stderr.includes(missing), 'stderr must name the target path')
+  assert.match(enoent.stderr, /ENOENT/)
+  await assert.rejects(() => readFile(missing, 'utf8'), /ENOENT/)
+
+  const enotdir = await assertUsageError(
+    ['restore', 'examples/benign.js', '--out', join(parentFile, 'report.js')],
+    /cannot write /,
+  )
+  assert.match(enotdir.stderr, /ENOTDIR/)
+
+  if ((process.getuid?.() ?? 1) !== 0) {
+    const locked = join(dir, 'locked')
+    await mkdir(locked, { mode: 0o500 })
+    const eacces = await assertUsageError(['restore', 'examples/benign.js', '--out', join(locked, 'report.js')], /cannot write /)
+    assert.match(eacces.stderr, /EACCES/)
+  }
+})
+
+test('cli --out - writes the result to stdout', async () => {
+  const text = await runCli(['restore', 'examples/benign.js', '--out', '-'])
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /Benign control sample/)
+  assert.doesNotMatch(text.stderr, /wrote/)
+
+  const json = await runCli(['restore', 'examples/sample-loader.js', '--json', '--out', '-'])
+  assert.equal(json.code, 0, json.stderr)
+  assert.equal(JSON.parse(json.stdout).outputValid, true)
+})
+
+test('cli --out writes the file and keeps stdout empty', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ai4r-out-'))
+  const out = join(dir, 'restore.json')
+  const result = await runCli(['restore', 'examples/sample-loader.js', '--json', '--out', out])
+  assert.equal(result.code, 0, result.stderr)
+  assert.equal(result.stdout, '')
+  assert.match(result.stderr, /wrote \d+ bytes/)
+  assert.equal(JSON.parse(await readFile(out, 'utf8')).outputValid, true)
+})
+
+test('cli keeps --events and --json mutually exclusive', async () => {
+  await assertUsageError(['run', 'examples/benign.js', '--events', '--json'], /mutually exclusive/)
+})
+
+test('cli --json keeps stdout pure JSON while logging to stderr', async () => {
+  const result = await runCli(['restore', 'examples/sample-loader.js', '--json', '--log-level', 'debug'])
+  assert.equal(result.code, 0, result.stderr)
+  const parsed = JSON.parse(result.stdout)
+  assert.equal(typeof parsed.code, 'string')
+  assert.doesNotMatch(result.stdout, /"level":\d+/)
+})
+
+test('cli --arg keeps JSON-or-string behavior for --entry', async () => {
+  const path = await sampleFile('entry.js', 'function probe(a, b, c) { return [a, b, c] }')
+  const result = await runCli([
+    'run',
+    path,
+    '--json',
+    '--entry',
+    'probe',
+    '--arg',
+    '42',
+    '--arg',
+    'hello',
+    '--arg',
+    '{"k":1}',
+  ])
+  assert.equal(result.code, 0, result.stderr)
+  const summary = JSON.parse(result.stdout)
+  assert.equal(summary.ok, true)
+  assert.equal(summary.result.preview, '[42,"hello",{"k":1}]')
+})
+
+test('cli rejects a missing input file for every file command', async () => {
+  for (const command of ['analyze', 'restore', 'run']) {
+    await assertUsageError([command], /missing input file/)
+  }
+})
+
+test('cli rejects malformed numeric limits', async () => {
+  for (const option of ['--timeout', '--virtual-ms']) {
+    for (const value of ['abc', '0', '-5']) {
+      await assertUsageError(
+        ['analyze', 'examples/benign.js', '--no-dynamic', `${option}=${value}`],
+        /must be a positive number/,
+      )
+    }
+  }
 })
