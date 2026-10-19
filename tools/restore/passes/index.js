@@ -38,6 +38,20 @@ export const PASSES = MODULES.map((module) => ({
 
 export const PASS_BY_ID = new Map(PASSES.map((pass) => [pass.meta.id, pass]))
 
+/**
+ * True when a pass is deferred to the final round. `meta.deferred` is the pass
+ * contract (see docs/EVALUATION-TOOLS.md D12); the `rename` id is the fallback
+ * for passes that do not declare it yet.
+ *
+ * @param {{meta?: {id?: string, deferred?: boolean}}} pass
+ * @returns {boolean}
+ */
+export function isDeferredPass(pass) {
+  const declared = pass.meta?.deferred
+  if (typeof declared === 'boolean') return declared
+  return pass.meta?.id === 'rename'
+}
+
 /** Metadata for docs/CLI listing. */
 export function listPasses() {
   return PASSES.map((pass) => ({
@@ -45,6 +59,7 @@ export function listPasses() {
     order: pass.meta.order,
     description: pass.meta.description,
     idempotent: pass.meta.idempotent !== false,
+    deferred: isDeferredPass(pass),
   }))
 }
 
