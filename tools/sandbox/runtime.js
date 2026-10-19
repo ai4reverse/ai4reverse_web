@@ -1,4 +1,4 @@
-import { getQuickJS } from 'quickjs-emscripten'
+import { getQuickJS, newQuickJSWASMModule } from 'quickjs-emscripten'
 
 /**
  * QuickJS module + runtime lifecycle.
@@ -7,27 +7,83 @@ import { getQuickJS } from 'quickjs-emscripten'
  * analysis run gets a *fresh runtime and context* so no state survives between
  * samples. That is both the isolation guarantee and the tracelessness
  * guarantee: after a run the next sample starts from pristine intrinsics.
+ *
+ * Module quarantine: a guest that exhausts the QuickJS native stack leaves
+ * objects on the runtime's GC list, so `runtime.dispose()` aborts with
+ * `list_empty(&rt->gc_obj_list)`. The abort is engine-inherent (the WASM heap
+ * cannot be repaired) and it poisons the *whole module*: every later
+ * `newRuntime()` on it throws a message-less `QuickJSUnwrapError`. A failed
+ * disposal therefore marks the module unhealthy and `loadQuickJS()` compiles a
+ * fresh one, so one hostile recursion cannot disable analysis for the rest of
+ * the process.
  */
 
 let modulePromise = null
+let loadedModule = null
+
+/** @type {WeakSet<object>} modules whose WASM heap is known to be corrupted */
+const unhealthyModules = new WeakSet()
 
 /**
- * Load (and memoise) the QuickJS WASM module.
+ * Quarantine a module whose heap can no longer be trusted.
+ *
+ * Internal (not part of `tools/index.js`): called from `createRuntime()` when
+ * `runtime.dispose()` fails, and from tests that need to force the path.
+ * @param {object} module QuickJS WASM module
+ */
+export function markModuleUnhealthy(module) {
+  if (module && (typeof module === 'object' || typeof module === 'function')) {
+    unhealthyModules.add(module)
+  }
+}
+
+/**
+ * @param {object|null} module
+ * @returns {boolean}
+ */
+function isUnhealthy(module) {
+  return Boolean(module) && unhealthyModules.has(module)
+}
+
+/**
+ * The shared `getQuickJS()` singleton is memoised inside quickjs-emscripten and
+ * cannot be discarded from here, so it is only reused while it is healthy.
+ * @returns {Promise<object>}
+ */
+async function acquireModule() {
+  const shared = await getQuickJS()
+  // Once the singleton is quarantined a *new* WASM instance is the only way to
+  // get a clean heap; `newQuickJSWASMModule()` compiles an isolated module.
+  return isUnhealthy(shared) ? newQuickJSWASMModule() : shared
+}
+
+/**
+ * Load (and memoise) a healthy QuickJS WASM module.
  * @returns {Promise<object>}
  */
 export function loadQuickJS() {
-  if (!modulePromise) {
-    modulePromise = getQuickJS().catch((error) => {
-      modulePromise = null
-      throw error
-    })
+  if (!modulePromise || isUnhealthy(loadedModule)) {
+    const promise = acquireModule()
+      .then((module) => {
+        loadedModule = module
+        return module
+      })
+      .catch((error) => {
+        if (modulePromise === promise) {
+          modulePromise = null
+          loadedModule = null
+        }
+        throw error
+      })
+    modulePromise = promise
   }
   return modulePromise
 }
 
-/** Test helper: drop the memoised module. */
+/** Test helper: drop the memoised module (so the next load re-acquires one). */
 export function resetQuickJS() {
   modulePromise = null
+  loadedModule = null
 }
 
 /**
@@ -73,6 +129,7 @@ export function createRuntime(options) {
     runtime,
     state,
     limits,
+    module,
     /** Stop guest execution at the next interrupt check. */
     poison(reason = 'aborted') {
       state.poisoned = true
@@ -97,7 +154,9 @@ export function createRuntime(options) {
         return { ok: true }
       } catch (error) {
         // A leaked handle aborts the whole WASM module. This is a platform bug,
-        // so report it as a failed disposal instead of hiding it.
+        // so report it as a failed disposal instead of hiding it, and make sure
+        // no later run reuses the corrupted module.
+        markModuleUnhealthy(module)
         logger?.error?.({ err: error?.message }, 'runtime dispose aborted (handle leak)')
         trace?.emit('sandbox', 'error', { event: 'runtime.dispose.failed', message: error?.message })
         return { ok: false, error }
