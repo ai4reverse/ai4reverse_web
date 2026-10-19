@@ -1,5 +1,10 @@
 import { shortHash } from '../util/hash.js'
 import { limitMessage } from '../sandbox/limits.js'
+import {
+  isEngineStackMessage,
+  isGuestStackExhaustion,
+  isHostStackExhaustion,
+} from '../sandbox/runtime.js'
 
 /**
  * Traceless invocation.
@@ -96,27 +101,31 @@ export function createInvoker(options) {
     try {
       evalResult = ctx.evalCode(prepared.code, filename, { type: mode })
     } catch (error) {
-      // QuickJS surfaces native stack exhaustion as a host RangeError instead
-      // of a guest exception. Treat it as a stack limit and keep the record
-      // structured so the report can say what happened.
-      if (isStackOverflow(error, runtime)) {
-        const dumped = { name: 'RangeError', message: 'Maximum call stack size exceeded', stack: '' }
-        instrumentation?.exceptions?.reportUncaught(dumped, 'eval', { filename, limitsHit: ['stack'] })
-        trace?.emit('code', 'error', { event: 'invoke.stack-overflow', filename })
-        return {
-          ok: false,
-          error: dumped,
-          limitsHit: ['stack'],
-          timedOut: false,
-          filename,
-          prepared,
-          facts: prepared.facts,
-          vm: prepared.vm,
-          durationMs: Date.now() - startedAt,
-          virtualMs: Math.round(clock.elapsedMs),
-        }
+      // QuickJS reports a *real* stack overflow by throwing a host RangeError out
+      // of the WASM trampoline; no guest-authored value can reach this catch.
+      // Anything else that escapes here is a platform failure and must surface.
+      // A script that merely says `throw new Error('stack overflow')` arrives
+      // below as a dumped guest error and is reported as an ordinary failure.
+      if (!isHostStackExhaustion(error)) throw error
+      const dumped = stackLimitError()
+      instrumentation?.exceptions?.reportUncaught(dumped, 'eval', { filename, limitsHit: ['stack'] })
+      trace?.emit('code', 'error', { event: 'invoke.stack-overflow', filename })
+      return {
+        ok: false,
+        error: dumped,
+        limitsHit: ['stack'],
+        // Explicit engine marker. `limitsHit`, the abandon decision and the
+        // reported leak are all derived from it, so only the engine can push a
+        // run onto the runtime-recompile path.
+        stackExhaustion: true,
+        timedOut: false,
+        filename,
+        prepared,
+        facts: prepared.facts,
+        vm: prepared.vm,
+        durationMs: Date.now() - startedAt,
+        virtualMs: Math.round(clock.elapsedMs),
       }
-      throw error
     }
     const durationMs = Date.now() - startedAt
 
@@ -124,6 +133,9 @@ export function createInvoker(options) {
       const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(evalResult.error)) : ctx.dump(evalResult.error)
       evalResult.error.dispose()
       const classified = classifyLimit(dumped, runtime, limits)
+      // `stack` here can only come from QuickJS' own `InternalError`; a forged
+      // guest message is classified as a plain error (see `classifyLimit`).
+      const stackExhaustion = classified === 'stack'
       if (instrumentation?.exceptions) {
         instrumentation.exceptions.reportUncaught(dumped, mode === 'module' ? 'module' : 'eval', { filename })
       }
@@ -140,6 +152,7 @@ export function createInvoker(options) {
         ok: false,
         error: dumped,
         limitsHit: classified ? [classified] : [],
+        stackExhaustion,
         timedOut: classified === 'timeout' || classified === 'virtual-time',
         filename,
         prepared,
@@ -156,10 +169,12 @@ export function createInvoker(options) {
       if (runOptions.entry) {
         entryResult = callEntry(runOptions.entry, runOptions.args ?? [], { filename })
         if (!entryResult.ok) {
+          const stackExhaustion = Boolean(entryResult.stackExhaustion)
           return {
             ok: false,
             error: entryResult.error,
-            limitsHit: [],
+            limitsHit: stackExhaustion ? ['stack'] : [],
+            stackExhaustion,
             filename,
             prepared,
             facts: prepared.facts,
@@ -192,6 +207,7 @@ export function createInvoker(options) {
         ok: true,
         result: summary,
         value: summary.value,
+        stackExhaustion: false,
         filename,
         prepared,
         facts: prepared.facts,
@@ -242,7 +258,19 @@ export function createInvoker(options) {
     const argHandles = []
     try {
       for (const arg of args) argHandles.push(bridge.toGuest(arg))
-      const result = ctx.callFunction(entryHandle, ctx.global, argHandles)
+      let result
+      try {
+        result = ctx.callFunction(entryHandle, ctx.global, argHandles)
+      } catch (error) {
+        // Same authoritative signal as in `invoke()`: a host throw out of the
+        // trampoline. A guest that recurses inside the entry point cannot
+        // produce it, so the entry call is classified only from here.
+        if (!isHostStackExhaustion(error)) throw error
+        const dumped = stackLimitError()
+        instrumentation?.exceptions?.reportUncaught(dumped, 'call', { entry: name, limitsHit: ['stack'] })
+        trace?.emit('code', 'error', { event: 'entry.stack-overflow', name })
+        return { ok: false, error: dumped, stackExhaustion: true }
+      }
       if (result.error) {
         const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
         result.error.dispose()
@@ -270,9 +298,10 @@ export function createInvoker(options) {
    * A stack-limit breach inside a *callback* is not a script failure: the entry
    * script already succeeded, yet the runtime's heap is as unrecoverable as
    * after a main-script overflow (handles stay on the GC list). Such a breach is
-   * therefore recorded as a structured `settle.error` plus `limitsHit: ['stack']`
-   * instead of escaping as a host `RangeError` — a host throw here would skip the
-   * quarantine path and make `runtime.dispose()` abort the WASM engine.
+   * therefore recorded as a structured `settle.error` plus
+   * `settle.stackExhaustion: true` instead of escaping as a host `RangeError` —
+   * a host throw here would skip the quarantine path and make
+   * `runtime.dispose()` abort the WASM engine.
    *
    * @param {{maxJobs?: number, maxTimerCallbacks?: number, maxVirtualMs?: number}} [options]
    */
@@ -284,18 +313,30 @@ export function createInvoker(options) {
     let timerCallbacks = 0
     let pendingRejections = 0
     let exhausted = false
+    // The only marker `limitsHit`/abandon may be derived from. Guest-thrown
+    // messages never set it, so `throw new Error('stack overflow')` inside a
+    // callback stays a normal exception report.
+    let stackExhaustion = false
     /** @type {{origin: string, name: string, message: string, stack: string}|null} */
     let stackError = null
 
-    /** Record a stack breach once; later callback failures are noise. */
+    /**
+     * Record an engine stack signal once; later callback failures are noise.
+     *
+     * `value` is host evidence only: the host exception thrown out of the WASM
+     * trampoline, or the `{timerId, message}` entry the virtual clock flattens
+     * such a throw into (see `isEngineStackMessage`).
+     *
+     * @param {string} origin
+     * @param {unknown} value
+     * @returns {boolean} true when the value was the stack signal
+     */
     const noteStack = (origin, value) => {
-      if (stackError || !isStackOverflow(value, runtime)) return false
-      stackError = {
-        origin,
-        name: 'RangeError',
-        message: 'Maximum call stack size exceeded',
-        stack: '',
-      }
+      if (stackExhaustion) return false
+      const fromClock = Boolean(value) && typeof value === 'object' && typeof value.timerId === 'number'
+      if (!isHostStackExhaustion(value) && !(fromClock && isEngineStackMessage(value))) return false
+      stackExhaustion = true
+      stackError = { origin, ...stackLimitError() }
       trace?.emit('sandbox', 'error', { event: 'settle.stack-overflow', origin })
       return true
     }
@@ -377,7 +418,10 @@ export function createInvoker(options) {
       exhausted,
       pendingTimers: bridge.pendingTimers?.() ?? clock.pending(),
       virtualMs: Math.round(clock.elapsedMs),
-      limitsHit: stackError ? ['stack'] : [],
+      limitsHit: stackExhaustion ? ['stack'] : [],
+      // Explicit engine marker: the sandbox abandons the runtime from this, not
+      // from `limitsHit`, so a guest cannot steer the disposal path.
+      stackExhaustion,
       error: stackError,
     }
   }
@@ -408,28 +452,24 @@ function classifyLimit(dumped, runtime, limits) {
   if (runtime.state?.reason === 'virtual-time') return 'virtual-time'
   if (/interrupted/i.test(message)) return 'timeout'
   if (/out of memory|allocation failed|string too long|array too long|memory limit/i.test(message)) return 'memory'
-  if (/stack overflow|too deep|Maximum call stack/i.test(message)) return 'stack'
+  // Never the message: a sample can throw `RangeError('Maximum call stack size
+  // exceeded')` (and does, to force a WASM recompile per run). Only the error
+  // name the engine assigns itself may be read as real stack exhaustion.
+  if (isGuestStackExhaustion(dumped)) return 'stack'
   if (/source/i.test(message) && /too large/i.test(message)) return 'source-size'
   void limits
   return null
 }
 
 /**
- * Is this a stack-limit breach?
+ * The structured record for a stack-limit breach.
  *
- * Three shapes reach the host: a host `RangeError` thrown out of the WASM
- * trampoline (promise jobs), a dumped guest `InternalError`/`RangeError` whose
- * message is QuickJS' `stack overflow`, and a timer entry flattened by the
- * clock (`{ timerId, message }`). A runtime poisoned for stack is the same
- * event observed later.
- * @param {unknown} value error, dumped guest error or clock error entry
- * @param {{state?: {reason?: string|null}}} [runtime]
- * @returns {boolean}
+ * A fresh object per call: consumers may extend it, and the tracing layer must
+ * never see one run's mutation in the next.
+ * @returns {{name: string, message: string, stack: string}}
  */
-function isStackOverflow(value, runtime) {
-  if (runtime?.state?.reason === 'stack') return true
-  const message = typeof value === 'string' ? value : String(value?.message ?? '')
-  return /stack overflow|maximum call stack|too deep/i.test(message)
+function stackLimitError() {
+  return { name: 'RangeError', message: 'Maximum call stack size exceeded', stack: '' }
 }
 
 function summarizeResult(dumped) {

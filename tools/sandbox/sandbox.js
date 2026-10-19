@@ -1,4 +1,4 @@
-import { loadQuickJS, createRuntime } from './runtime.js'
+import { loadQuickJS, createRuntime, isHostStackExhaustion } from './runtime.js'
 import { normalizeLimits, DEFAULT_LIMITS } from './limits.js'
 import { createProfile, consistencyReport } from './profile.js'
 import { createVirtualClock } from './clock.js'
@@ -25,10 +25,14 @@ import { shortHash } from '../util/hash.js'
  *  - a trace channel reachable only through a run-unique registered symbol;
  *  - integrity snapshots before/after to prove nothing leaked in or out;
  *  - full handle disposal, verified by the WASM runtime's leak assertion;
- *  - the exception is the stack-limit path (a breach in the main script *or* in
- *    a timer/promise callback), where the runtime cannot be released at all: it
- *    is abandoned, the WASM module is quarantined and the next run recompiles it
- *    (reported as `disposal.skipped`).
+ *  - the exception is a real stack-limit breach (the engine threw its host
+ *    stack `RangeError` in the main script *or* in a timer/promise callback),
+ *    where the runtime cannot be released at all: it is abandoned, the WASM
+ *    module is quarantined and the next run recompiles it (reported as
+ *    `disposal.skipped`). That decision is driven by the invoker's explicit
+ *    `stackExhaustion` marker, never by matching a guest error message — a
+ *    sample that merely throws `Error('stack overflow')` must leave the runtime
+ *    healthy.
  */
 export class TracelessSandbox {
   /**
@@ -156,6 +160,8 @@ export class TracelessSandbox {
     let leaked = false
     // Set when the runtime is abandoned instead of disposed (stack breach).
     let skippedRuntime = false
+    // Set only from an engine stack signal (the invoker's `stackExhaustion`
+    // marker): it, not a guest message, decides abandonment.
     let stackBreach = false
     let phase = 'init'
 
@@ -260,7 +266,10 @@ export class TracelessSandbox {
       // timer or promise callback leaves the *script* successful while the
       // runtime is just as unrecoverable as after a main-script overflow.
       const limitsHit = mergeLimits(invocation.limitsHit, settle?.limitsHit)
-      stackBreach = limitsHit.includes('stack')
+      // Abandonment is derived from the explicit engine marker only. A guest
+      // error that happens to say "stack overflow" is a normal failure: the
+      // runtime stays healthy and disposal must report `{ok: true, errors: []}`.
+      stackBreach = Boolean(invocation.stackExhaustion || settle?.stackExhaustion)
 
       const integrityAfter = captureIntegrity(ctx, { stealth, trace })
       const integrity = diffIntegrity(integrityBefore, integrityAfter)
@@ -273,6 +282,8 @@ export class TracelessSandbox {
         result: invocation.result ?? null,
         error: invocation.error ?? null,
         limitsHit,
+        // Additive, explicit engine marker (see `disposal.skipped`).
+        stackExhaustion: stackBreach,
         timedOut: Boolean(invocation.timedOut),
         filename: invocation.filename,
         durationMs: invocation.durationMs ?? 0,
@@ -314,6 +325,11 @@ export class TracelessSandbox {
         ? stealth.sanitizeError({ name: error?.name, message: error?.message, stack: error?.stack })
         : { name: error?.name ?? 'Error', message: describeError(error), stack: error?.stack ?? '' }
       trace.emit('sandbox', 'error', { event: 'sandbox.run.failed', phase, error: sanitized })
+      // A host stack `RangeError` can also escape from a host call site the
+      // invoker does not wrap (an env module callback, for example). It is the
+      // same engine signal, so record it and let the finally block abandon the
+      // runtime instead of trying a dispose that would abort the WASM engine.
+      stackBreach = stackBreach || isHostStackExhaustion(error)
       // Reporting a failure must never mask it: the snapshot is best-effort.
       let profileSnapshot = null
       try {
@@ -329,6 +345,7 @@ export class TracelessSandbox {
         // the finally block keys the quarantine off it, and the analyst must
         // still learn why the runtime could not be released.
         limitsHit: stackBreach ? ['stack'] : [],
+        stackExhaustion: stackBreach,
         durationMs: 0,
         virtualMs: Math.round(clock.elapsedMs),
         events: runOptions.keepTrace === false ? null : trace.events.slice(),
@@ -360,10 +377,10 @@ export class TracelessSandbox {
       // `Aborted(Assertion failed: list_empty(&rt->gc_obj_list))` to stderr (see
       // `runtime.js`). Abandon the runtime and quarantine the module instead;
       // the run record still states the leak (`disposal.skipped`). The breach
-      // may have been detected in the main script (`invocation`) or in the
-      // event loop (`settle`); both leave the same unrecoverable heap.
-      const abandonRuntime =
-        stackBreach || Boolean(record?.limitsHit?.includes('stack')) || Boolean(failure?.limitsHit?.includes('stack'))
+      // is known from the engine marker only (`stackExhaustion`), set by the
+      // invoker when the host threw the stack `RangeError` — in the main script
+      // or in the event loop; both leave the same unrecoverable heap.
+      const abandonRuntime = stackBreach || Boolean(record?.stackExhaustion) || Boolean(failure?.stackExhaustion)
       // Reverse acquisition order; every step is independent, so one failing
       // disposal never skips the next one.
       for (const [label, fn] of [

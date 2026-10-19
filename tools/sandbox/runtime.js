@@ -20,9 +20,10 @@ import { getQuickJS, newQuickJSWASMModule } from 'quickjs-emscripten'
  * The abort is best avoided rather than survived: the emscripten build prints
  * `Aborted(Assertion failed: ...)` to the host's stderr before the assertion
  * throws, which pollutes CI logs and any operator watching the process. A run
- * that already knows the stack limit was breached (the engine reports
- * `Maximum call stack size exceeded`, so the runtime's heap is unrecoverable)
- * abandons the runtime instead — see `abandon()`.
+ * that already knows the stack limit was breached abandons the runtime instead
+ * — see `abandon()`. That knowledge comes only from the engine: a guest throw
+ * whose message mentions the stack is an ordinary error (see
+ * `isHostStackExhaustion` and `isGuestStackExhaustion`).
  */
 
 let modulePromise = null
@@ -202,7 +203,79 @@ export function createRuntime(options) {
 }
 
 /**
+ * The wording of a real engine stack overflow.
+ *
+ * QuickJS does not raise it as a guest exception: the WASM trampoline throws a
+ * *host* `RangeError` (`Maximum call stack size exceeded`) out of
+ * `evalCode`/`callFunction`/`executePendingJobs`. That host object is created
+ * outside the guest heap, so a sample cannot fabricate it with
+ * `throw new Error('stack overflow')` — which is why host throws, and only host
+ * throws, may be read as proof that the stack is gone.
+ */
+const ENGINE_STACK_MESSAGE = /maximum call stack size exceeded|stack overflow/i
+
+/** QuickJS' own name for the stack-overflow error it raises itself. */
+const ENGINE_STACK_NAME = 'InternalError'
+
+/**
+ * Does this string (or `{message}` record) carry the engine's stack wording?
+ *
+ * Matching a *message* is only meaningful for host evidence. Never call this
+ * with a dumped guest error, whose message the sample controls.
+ *
+ * @param {string|{message?: unknown}|null|undefined} value
+ * @returns {boolean}
+ */
+export function isEngineStackMessage(value) {
+  const message = typeof value === 'string' ? value : String(value?.message ?? '')
+  return ENGINE_STACK_MESSAGE.test(message)
+}
+
+/**
+ * Is this host-thrown value the engine's stack-overflow signal?
+ *
+ * Only the host catch sites (`ctx.evalCode`, `ctx.callFunction`,
+ * `ctx.executePendingJobs`) can observe it. A guest `throw` of the same name,
+ * message — or both — comes back from the engine as a *value* instead, so it
+ * can never reach this predicate as a host exception.
+ *
+ * @param {unknown} thrown value caught at a host call site
+ * @returns {boolean}
+ */
+export function isHostStackExhaustion(thrown) {
+  if (!thrown || typeof thrown !== 'object') return false
+  const name = typeof thrown.name === 'string' ? thrown.name : ''
+  // `Error` is accepted because emscripten wraps some aborts in a plain Error.
+  if (name !== 'RangeError' && name !== 'Error') return false
+  return isEngineStackMessage(thrown)
+}
+
+/**
+ * Is this *dumped guest* error QuickJS' own stack overflow?
+ *
+ * A dump is attacker-controlled data, so the only dump-based exception allowed
+ * is the name the engine itself assigns: QuickJS raises
+ * `InternalError: stack overflow` when unbounded work happens inside the
+ * interpreter (deep intrinsic recursion) rather than through a host call. A
+ * script that constructs `RangeError('Maximum call stack size exceeded')` — or
+ * even a fake `InternalError` — remains a normal guest error.
+ *
+ * @param {unknown} dumped plain value produced by `ctx.dump(handle)`
+ * @returns {boolean}
+ */
+export function isGuestStackExhaustion(dumped) {
+  if (!dumped || typeof dumped !== 'object') return false
+  return dumped.name === ENGINE_STACK_NAME && isEngineStackMessage(dumped)
+}
+
+/**
  * Classify a guest error as a limit breach when applicable.
+ *
+ * Stack exhaustion is *not* inferred from the guest message: a sample that
+ * throws `Error('stack overflow')` is a normal failure. Only the engine's own
+ * `InternalError` counts here; the host-throw path is classified at the call
+ * site that caught it (see `isHostStackExhaustion`).
+ *
  * @param {object|null} dumpedError
  * @param {object} runtimeState
  */
@@ -214,6 +287,6 @@ export function classifyLimit(dumpedError, runtimeState) {
   const message = String(dumpedError?.message ?? '')
   if (/interrupted/i.test(message)) return 'timeout'
   if (/out of memory/i.test(message)) return 'memory'
-  if (/stack overflow|too deep|Maximum call stack/i.test(message)) return 'stack'
+  if (isGuestStackExhaustion(dumpedError)) return 'stack'
   return null
 }
