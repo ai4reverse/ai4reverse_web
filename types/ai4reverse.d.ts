@@ -145,6 +145,31 @@ export interface ClockStats {
   timerErrors: number
 }
 
+/** One timer callback that threw, as the virtual clock records it. */
+export interface TimerCallbackError {
+  timerId: number
+  message: string
+  /**
+   * The catch site saw the engine's host stack throw. This is the marker the
+   * invoker classifies from; the message is diagnostic text only.
+   */
+  stackExhaustion: boolean
+}
+
+/** Outcome of one virtual-clock timer batch. */
+export interface TimerBatchResult {
+  executed: number
+  advancedMs: number
+  errors: TimerCallbackError[]
+  /** A timer/virtual-time budget stopped the batch before the queue was empty. */
+  exhausted: boolean
+  /**
+   * The batch stopped because a callback exhausted the engine stack. The
+   * runtime is unrecoverable; callers must not run another turn on it.
+   */
+  stackExhaustion: boolean
+}
+
 export interface VirtualClock {
   now(): number
   setTimeout(fn: Function, delay?: number, ...args: unknown[]): number
@@ -152,7 +177,7 @@ export interface VirtualClock {
   setInterval(fn: Function, delay?: number, ...args: unknown[]): number
   clearInterval(id: number): boolean
   /** Drain due timers, up to `maxCallbacks` per call. */
-  runDue(maxCallbacks?: number): { executed: number; advancedMs: number; errors: unknown[]; exhausted: boolean }
+  runDue(options?: { maxCallbacks?: number; maxVirtualMs?: number }): TimerBatchResult
   advanceToNextTimer(capMs?: number): number
   nextDueIn(): number
   stats(): ClockStats
@@ -531,6 +556,13 @@ export interface SandboxSettleDrained {
   pendingTimers: number
   virtualMs: number
   limitsHit: string[]
+  /**
+   * Engine stack signal seen inside a callback. Additive explicit marker: the
+   * sandbox abandons the runtime from this field (and from
+   * `SandboxRunRecord.stackExhaustion`), never from `limitsHit` or a guest
+   * message, so a sample cannot steer the disposal path.
+   */
+  stackExhaustion: boolean
   error: SandboxSettleError | null
 }
 
@@ -617,6 +649,13 @@ export interface SandboxRunRecord {
   result: unknown
   error: { name: string; message: string; stack?: string } | null
   limitsHit: string[]
+  /**
+   * The engine itself signalled stack exhaustion (a host `RangeError` out of a
+   * WASM call, or its own `InternalError`) in the script or in a callback. The
+   * runtime is then abandoned rather than disposed, and a guest that merely
+   * throws "stack overflow" never sets it.
+   */
+  stackExhaustion?: boolean
   timedOut?: boolean
   filename?: string
   durationMs: number
@@ -792,11 +831,21 @@ export interface StealthOptions {
 export interface InvocationResult {
   ok: boolean
   result: unknown
+  /** Dumped value for a successful run (the `result` summary is lossy). */
+  value?: unknown
   error: { name: string; message: string; stack?: string } | null
   limitsHit: string[]
+  /**
+   * Explicit engine marker for stack exhaustion (see
+   * `SandboxRunRecord.stackExhaustion`). Always present on the invocation
+   * record, so consumers can distinguish a real stack breach from a guest
+   * error that only says "stack overflow".
+   */
+  stackExhaustion?: boolean
   timedOut: boolean
   filename?: string
   durationMs?: number
+  virtualMs?: number
   facts?: StaticFacts | null
   vm?: object | null
   prepared?: InstrumentationPrepared | null

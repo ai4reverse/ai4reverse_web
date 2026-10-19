@@ -175,11 +175,18 @@ test('the run record types the event-loop settle outcome and its abandon marker'
   const record = bodyOf('SandboxRunRecord')
   assert.match(record, /settle\?: SandboxSettle/, 'SandboxRunRecord.settle must name the settle shape')
   assert.doesNotMatch(record, /settle\?: (unknown|object)\b/, 'SandboxRunRecord.settle must not be opaque')
+  // The abandon decision is keyed off this additive engine marker, so it must
+  // be typed: an untyped record forces the consumer back to message matching.
+  assert.match(record, /\bstackExhaustion\??: boolean/, 'SandboxRunRecord must declare stackExhaustion')
 
   const settle = bodyOf('SandboxSettleDrained')
-  for (const field of ['virtualMs', 'pendingTimers', 'jobs', 'limitsHit', 'error']) {
+  for (const field of ['virtualMs', 'pendingTimers', 'jobs', 'limitsHit', 'error', 'stackExhaustion']) {
     assert.match(settle, new RegExp(`\\b${field}\\??:`), `SandboxSettleDrained must declare ${field}`)
   }
+
+  const invocation = bodyOf('InvocationResult')
+  assert.match(invocation, /\bstackExhaustion\??: boolean/, 'InvocationResult must declare stackExhaustion')
+  assert.match(invocation, /\bvirtualMs\??: number/, 'InvocationResult must declare virtualMs')
 
   const error = bodyOf('SandboxSettleError')
   for (const field of ['origin', 'name', 'message']) {
