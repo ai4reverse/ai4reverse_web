@@ -24,14 +24,16 @@ sample ──► static analysis ──► Babel restoration ──► traceless
 | Code restoration with Babel | `tools/restore/` | `tests/restore-*.test.js`, `tests/restore-pipeline.test.js` |
 | Logging (pino / pino-pretty) | `tools/logging/` | `tests/logging.test.js` |
 | Full browser environment | `tools/sandbox/env/` | `tests/env-*.test.js`, `tests/env-surface.test.js` |
+| Hardened national JS-SDK (SM2/SM3/SM4 signing, device fingerprint, white-box crypto, JSVMP, zero-trust guard) | `examples/national-sdk/` | `tests/national-sdk.test.js`, `examples/national-sdk/verify.mjs` |
 
-**348 tests, 0 failures** (`pnpm test`).
+**361 tests, 0 failures** (`pnpm test`). The hardened SDK example contributes
+13 end-to-end tests and a 37-check revalidation matrix.
 
 ## Quick start
 
 ```bash
 pnpm install                # Node >= 22.18 (needs @babel/* 8, pino, quickjs-emscripten)
-pnpm test                   # 348 tests
+pnpm test                   # 361 tests
 
 # Full analysis (static + dynamic + report)
 node tools/cli.js analyze examples/sample-loader.js
@@ -51,12 +53,27 @@ node examples/api-usage.mjs
 node examples/hooks-demo.mjs
 node examples/restore-demo.mjs
 node examples/jsvmp-demo.mjs
+
+# Hardened SDK: build, demo, full revalidation matrix
+node examples/national-sdk/build/build-sdk.mjs --seeds 1001-1003
+node examples/national-sdk/demo.mjs
+node examples/national-sdk/verify.mjs
 ```
 
 `examples/README.md` maps each sample to its obfuscation technique and the
 behaviour the platform should report (verdict, IOCs, artifacts, restored code,
 JSVMP opcode trace). `tests/examples.test.js` runs all samples and demos so the
 documentation cannot drift.
+
+`examples/national-sdk/` is the opposite end of the spectrum: a **hardened SDK**
+for request signing and device-fingerprint collection. It combines Chinese
+national crypto (SM2/SM3/SM4), twelve dynamic implicit white-box suites,
+mutated/custom ciphers, hybrid ECDH envelopes, a polymorphic JSVMP, and a
+zero-trust 45-signal environment guard that treats `document.all` as a
+proof-grade invariant. It builds protected bundles (`dist/nsdk-<seed>.js`),
+verifies them on the host and inside the QuickJS sandbox, and includes a
+reference server verifier. See `examples/national-sdk/README.md` and run
+`node examples/national-sdk/verify.mjs`.
 
 Programmatic use:
 
