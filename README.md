@@ -369,7 +369,8 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
   (`tools/instrumentation/api.js`).
 - Fixed per-run cost is ~30 % above the pre-alignment tree (`1b0f2c7`): a
   create + run + dispose cycle of `1+1` measured 34.4 ms against 26.0 ms (median
-  of 9 runs each on one host; earlier measurements on this tree ranged 26-33 %).
+  of 9 runs each on one host; earlier measurements on this tree ranged 26-33 %,
+  and `docs/EVALUATION-TOOLS.md` recorded 28 %).
   The cost is per run, not per statement, because each run compiles the
   environment's guest sources; `restore` is unchanged.
 - Stack breaches are expensive in host memory: each abandoned runtime keeps its
@@ -382,7 +383,8 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
   creates are released when the call returns (per-call bag), long-lived handles
   are bridge-owned and freed once at teardown, a handle returned by `bridge.fn`
   is transferred by the trampoline instead of duplicated, and a deferred promise
-  releases its host handles when it settles (or at the next call). A 20 000-call
+  releases its record when it settles (on the next bridge entry) or at teardown
+  when it never settles. A 20 000-call
   loop therefore stays on a plateau (`tests/sandbox-core.test.js`), but there is
   no host-heap cap: a sample that makes orders of magnitude more host calls is
   bounded by the timeout, not by `memoryBytes`.
