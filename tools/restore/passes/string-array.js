@@ -988,11 +988,21 @@ function removeUnreferencedDeclarations(traverse, ast, records, decoders, notes,
       if (record.poisoned) continue
       const binding = currentArrayBinding(record)
       if (!binding || binding.referencePaths.length > 0 || binding.constantViolations.length > 0) continue
+      // P0-7: empty referencePaths is not enough — window._0xa / eval / with can
+      // still reach the binding without a static Identifier reference.
+      if (hasDynamicAccess(traverse, ast, record.name)) {
+        notes.push(`kept ${record.name}: reachable via dynamic access`)
+        continue
+      }
       pending.push({ path: record.declaratorPath, name: record.name })
     }
     for (const decoder of decoders) {
       const binding = currentDecoderBinding(decoder)
       if (!binding || binding.referencePaths.length > 0) continue
+      if (hasDynamicAccess(traverse, ast, decoder.name)) {
+        notes.push(`kept ${decoder.name}: reachable via dynamic access`)
+        continue
+      }
       pending.push({ path: decoder.declarationPath, name: decoder.name })
     }
     if (pending.length === 0) break
@@ -1004,6 +1014,47 @@ function removeUnreferencedDeclarations(traverse, ast, records, decoders, notes,
   }
   if (removed > 0) notes.push(`removed ${removed} unreferenced string-array declaration${removed === 1 ? '' : 's'}`)
   return removed
+}
+
+const GLOBAL_ALIASES = new Set(['window', 'globalThis', 'self', 'global'])
+
+/**
+ * True when `name` may still be reached without a static binding reference
+ * (`window.name`, `eval`, `with`). Mirrors rename.js dynamic-scope bail (P0-7).
+ */
+function hasDynamicAccess(traverse, ast, name) {
+  let found = false
+  traverse(ast, {
+    WithStatement(path) {
+      found = true
+      path.stop()
+    },
+    CallExpression(path) {
+      if (found) return
+      if (path.node.callee?.type !== 'Identifier' || path.node.callee.name !== 'eval') return
+      if (path.scope.getBinding('eval')) return
+      found = true
+      path.stop()
+    },
+    MemberExpression(path) {
+      if (found) return
+      const property = path.node.property
+      const propertyName = path.node.computed
+        ? property?.type === 'StringLiteral'
+          ? property.value
+          : null
+        : property?.type === 'Identifier'
+          ? property.name
+          : null
+      if (propertyName !== name) return
+      const object = path.node.object
+      if (object?.type === 'Identifier' && GLOBAL_ALIASES.has(object.name)) {
+        found = true
+        path.stop()
+      }
+    },
+  })
+  return found
 }
 
 /**
