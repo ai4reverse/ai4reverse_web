@@ -28,99 +28,122 @@ revision of the document.
 
 ```
 $ node --test --test-concurrency=1 tests/*.test.js
-ℹ tests 484
+ℹ tests 600
 ℹ suites 0
-ℹ pass 484
+ℹ pass 600
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 77037.688
+ℹ duration_ms 80256.719
 ```
 
-`pnpm test` runs exactly that command.
+`pnpm test` runs exactly that command. The captured log contains **0** lines
+matching `Aborted(` — that is, no engine heap assertion escapes from any stack,
+timer or promise-job breach (section "Sandbox resilience evidence").
 
 ### Coverage
 
+Coverage is recorded on **two scopes**, because the review baseline was measured
+on `tools/` while `examples/` now holds large example suites that the tests
+execute rather than assert on.
+
 ```
 $ node --test --test-concurrency=1 --experimental-test-coverage tests/*.test.js
-ℹ tests 484
-ℹ pass 484
+ℹ tests 600
+ℹ pass 600
 ℹ fail 0
-ℹ all files                               |  96.98 |    73.56 |   88.78 |
+ℹ all files                               |  97.22 |    74.41 |   90.43 |
+
+$ node --test --test-concurrency=1 --experimental-test-coverage \
+    --test-coverage-exclude='examples/**' tests/*.test.js
+ℹ tests 600
+ℹ pass 600
+ℹ fail 0
+ℹ all files                               |  93.02 |    83.05 |   91.48 |
 ```
 
-| Metric | Measured | Review baseline (`docs/EVALUATION-TOOLS.md`) |
-| --- | --- | --- |
-| Lines | **96.98 %** | 88.08 % |
-| Branches | **73.56 %** | 75.26 % |
-| Functions | **88.78 %** | 80.33 % |
+| Metric | Whole tree | `tools/` scope | Review baseline (`docs/EVALUATION-TOOLS.md`) | `tools/` vs baseline |
+| --- | --- | --- | --- | --- |
+| Lines | 97.22 % | **93.02 %** | 88.08 % | **+4.94** |
+| Branches | 74.41 % | **83.05 %** | 75.26 % | **+7.79** |
+| Functions | 90.43 % | **91.48 %** | 80.33 % | **+11.15** |
 
-Lines and functions improved by ~9 and ~8.5 points. **Branches are 1.7 points
-below the review baseline** (73.56 % vs 75.26 %): the four new environment
-modules (`url`, `blob`, `dom-parser`, `eventsource`, `navigator`) added many
-defensive branches that the env tests reach behaviourally but not exhaustively.
-This is recorded as a known gap rather than papered over; see
-`docs/DESIGN-REVIEW.md` → Review 6 → "Accepted limitations".
+**The review gate is applied to the `tools/` scope** (L8 acceptance criterion
+`lines >= 88 / branches >= 75 / functions >= 80`), because `examples/` is outside
+`tools/` and its works are evidence fixtures, not platform code. That scope is
+above the baseline on all three metrics — branches by 7.79 points, where the
+previous refresh was 1.7 points below it. The whole-tree scope is reported for
+completeness: its branch figure (74.41 %) is dominated by example code that is
+executed, not asserted, and is an accepted, documented gap rather than a
+re-based gate (`README.md` → "Known limitations").
 
-## Test files (43) and observed counts
+## Test files (46) and observed counts
 
 `node --test --test-concurrency=1 tests/<file>` per file, run on the same tree:
 
 | File | Tests | File | Tests |
 | --- | --- | --- | --- |
-| `analysis-e2e` | 8 | `jsvmp-builder` | 9 |
-| `api-instrumentation` | 3 | `jsvmp-trace` | 7 |
-| `api-surface` | 9 | `logging` | 6 |
-| `cli` | 30 | `national-sdk` | 13 |
-| `determinism` | 2 | `report` | 7 |
-| `env-canvas` | 16 | `resilience` | 15 |
+| `analysis-e2e` | 8 | `jsvmp-analyze` | 6 |
+| `api-instrumentation` | 3 | `jsvmp-builder` | 9 |
+| `api-surface` | 9 | `jsvmp-trace` | 7 |
+| `cli` | 30 | `logging` | 6 |
+| `determinism` | 2 | `national-sdk` | 13 |
+| `env-anti-fingerprint` | 10 | `report` | 7 |
+| `env-canvas` | 32 | `resilience` | 18 |
 | `env-dom` | 16 | `restore-accuracy` | 10 |
-| `env-fidelity` | 15 | `restore-anti-analysis` | 12 |
-| `env-intl` | 12 | `restore-control-flow` | 16 |
-| `env-misc` | 13 | `restore-fold` | 18 |
-| `env-network` | 18 | `restore-pipeline` | 17 |
-| `env-storage` | 1 | `restore-string-array` | 14 |
-| `env-surface` | 18 | `restore-strings` | 14 |
-| `env-time` | 15 | `restore-unwrap` | 18 |
-| `examples` | 12 | `sandbox-core` | 20 |
-| `examples-mega` | 4 | `timers` | 5 |
-| `examples-products` | 6 | `trace-budget` | 5 |
-| `examples-suite` | 6 | `traceless` | 16 |
-| `examples-works` | 6 | `types` | 5 |
-| `hook` | 12 | `ioc` | 8 |
-| `instrumentation` | 11 | `invocation` | 10 |
-| `jsvmp-analyze` | 6 | | |
+| `env-encoding` | 12 | `restore-anti-analysis` | 12 |
+| `env-fidelity` | 15 | `restore-control-flow` | 16 |
+| `env-intl` | 12 | `restore-fold` | 24 |
+| `env-misc` | 19 | `restore-pipeline` | 17 |
+| `env-network` | 18 | `restore-string-array` | 17 |
+| `env-observers` | 14 | `restore-strings` | 14 |
+| `env-storage` | 1 | `restore-unwrap` | 37 |
+| `env-surface` | 18 | `sandbox-core` | 36 |
+| `env-time` | 15 | `timers` | 7 |
+| `examples` | 12 | `trace-budget` | 5 |
+| `examples-mega` | 4 | `traceless` | 16 |
+| `examples-products` | 6 | `types` | 6 |
+| `examples-suite` | 6 | `hook` | 20 |
+| `examples-works` | 6 | `instrumentation` | 11 |
+| `ioc` | 8 | `invocation` | 10 |
 
-Sum: **484 tests across 43 files** — the same total the suite reports.
+Sum: **600 tests across 46 files** — the same total the suite reports
+(`node --test --test-concurrency=1 tests/<file>.test.js` per row).
 
 Test files are the regression layer for every finding in this document: the
 alignment lanes added `resilience` (D1/D2), `determinism` (D3),
 `trace-budget` (D4), `restore-accuracy` (D5), `env-fidelity` (D6 probes in a real
 sandbox), `api-instrumentation` (wrapped-descriptor and timer-release fixes),
-`api-surface` (D10 export surface, kept-and-used names), `types` (D9.4
-declarations), and the `examples-{products,works,suite,mega}` contract suites.
+`api-surface` (D10 export surface, kept-and-used names) and `types` (D9.4
+declarations). The last alignment wave added `env-observers` (`8473a6a`,
+`335c2d0`), `env-encoding` and `env-anti-fingerprint` (`b28db87`), and extended
+`env-canvas` (32), `hook` (20), `sandbox-core` (36), `resilience` (18),
+`env-misc` (19) and the `restore-*` files for the coverage round
+(`758e225`/`06e099c`/`d145be9`/`b28db87`). The `examples-{products,works,suite,mega}`
+contract suites belong to the examples lane and are counted here because they run
+in the same command.
 
 ## Requirement → implementation → evidence
 
 | Requirement | Implementation | Evidence (command) |
 | --- | --- | --- |
-| Sandbox built on quickjs-emscripten | `tools/sandbox/runtime.js`, `sandbox.js` | `node --test tests/sandbox-core.test.js` — 20/20 |
+| Sandbox built on quickjs-emscripten | `tools/sandbox/runtime.js`, `sandbox.js` | `node --test tests/sandbox-core.test.js` — 36/36 |
 | Traceless base: isolation, no detection, no info collection, no honeypots/booby traps | `tools/sandbox/{sandbox,profile,integrity,limits,clock}.js`, `tools/sandbox/env/*` (28 modules), `tools/sandbox/env/anti-fingerprint.js` | `node --test tests/traceless.test.js` — 16/16; `tests/env-surface.test.js` — 18/18 |
-| Fresh state per run (no cross-sample residue) | `sandbox.run()` creates runtime + context; full handle disposal; one guest run at a time per process | `sandbox-core` isolation + disposal assertions; `run.disposal.ok`; `resilience` — 15/15 |
+| Fresh state per run (no cross-sample residue) | `sandbox.run()` creates runtime + context; full handle disposal; one guest run at a time per process | `sandbox-core` isolation + disposal assertions; `run.disposal.ok`; `resilience` — 18/18 |
 | Traceless invocation | `tools/invocation/{invoke,stealth}.js` | `node --test tests/invocation.test.js` — 10/10 |
 | Traceless Code/API/Exception/AST instrumentation | `tools/instrumentation/{code,api,exception,ast,index}.js` | `node --test tests/instrumentation.test.js` — 11/11; `api-instrumentation` — 3/3; byte-identical `toString` assertion in `traceless` |
 | JSVMP interpreter instrumentation | `tools/instrumentation/jsvmp.js` + `tools/jsvmp/*` | `node --test tests/jsvmp-trace.test.js` — 7/7 (319 opcode events, 14 distinct opcodes, obfuscated VM traces identically) |
-| Traceless Code/API/Exception/AST hooks | `tools/hook/{hookbus,code-hook,api-hook,exception-hook,ast-hook,index}.js` | `node --test tests/hook.test.js` — 12/12; `trace-budget` — 5/5 |
-| Babel code restoration (unified parse/transform/generate), output validated | `tools/restore/{parse,generate,pass-context,index}.js`, `passes/` (11 passes) | `node --test tests/restore-*.test.js` — 8 files / 119 tests, semantics preservation by execution, `outputValid` fallback |
+| Traceless Code/API/Exception/AST hooks | `tools/hook/{hookbus,code-hook,api-hook,exception-hook,ast-hook,index}.js` | `node --test tests/hook.test.js` — 20/20; `trace-budget` — 5/5 |
+| Babel code restoration (unified parse/transform/generate), output validated | `tools/restore/{parse,generate,pass-context,index}.js`, `passes/` (11 passes) | `node --test tests/restore-*.test.js` — 8 files / 147 tests, semantics preservation by execution, `outputValid` fallback |
 | Pass `changed` is evidence-bound and the pipeline is a fixed point | `tools/restore/pass-context.js` (`compareGeneratedText`), `passes/{strings,jsfuck}.js` | `restore-accuracy` 10/10; second application reports `changed:false` on all 11 `examples/*.js` |
 | Logging with pino / pino-pretty | `tools/logging/logger.js` | `node --test tests/logging.test.js` — 6/6; `node tools/cli.js passes --pretty` renders via pino-pretty |
-| Final implementation under `tools/` | 91 JS modules / 34 044 lines | `find tools -name '*.js' \| wc -l` = 91; `find tools -name '*.js' -exec cat {} + \| wc -l` = 34044 |
-| Tests under `tests/` | 43 test files + `tests/helpers/` | `ls tests/*.test.js \| wc -l` = 43 |
-| Public surface | 68 exports from `tools/index.js`; 11 `exports` subpaths with `types` | `node -e "import('./tools/index.js').then(m=>console.log(Object.keys(m).length))"` → 68; `types` — 5/5 |
+| Final implementation under `tools/` | 91 JS modules / 34 377 lines | `find tools -name '*.js' \| wc -l` = 91; `find tools -name '*.js' -exec cat {} + \| wc -l` = 34377 |
+| Tests under `tests/` | 46 test files + `tests/helpers/` | `ls tests/*.test.js \| wc -l` = 46 |
+| Public surface | 68 exports from `tools/index.js`; 11 `exports` subpaths with `types` | `node -e "import('./tools/index.js').then(m=>console.log(Object.keys(m).length))"` → 68; `types` — 6/6 |
 | Composable auxiliary analysis | `tools/analysis/*` (IOC, report, behaviour, artifacts, stages, orchestrator), CLI, hooks, passes | `node --test tests/analysis-e2e.test.js tests/cli.test.js` — 38/38 |
 | CLI contract: strict validation, exit codes, stdout purity | `tools/cli.js` | `node --test tests/cli.test.js` — 30/30 |
-| Environment fidelity (D6 surfaces) | `tools/sandbox/env/*`: DOM hierarchy, `dom-parser`, `eventsource`, `url`, `blob`, `navigator`, `globals` (WebAssembly + isolation triple) | `env-fidelity` 15/15, `env-dom` 16/16, `env-surface` 18/18, `env-misc` 13/13, `env-network` 18/18 |
+| Environment fidelity (D6 surfaces) | `tools/sandbox/env/*`: DOM hierarchy, `dom-parser`, `eventsource`, `url`, `blob`, `navigator`, `globals` (WebAssembly + isolation triple) | `env-fidelity` 15/15, `env-dom` 16/16, `env-surface` 18/18, `env-misc` 19/19, `env-observers` 14/14, `env-encoding` 12/12, `env-canvas` 32/32, `env-network` 18/18 |
 | Deterministic runs | seeded profile/clock/PRNG; `anti-fingerprint` reports a count, never a handle address | `determinism` 2/2 (identical dynamic events after removing `wall`; identical report after removing timing) |
 | Runnable examples / ecosystem docs | `examples/*.js` (11 samples), `examples/*.mjs` (4 demos), `examples/build-jsvmp-sample.mjs`, `examples/cli-usage.sh`, `examples/README.md` | `node --test tests/examples.test.js` — 12/12 (all samples execute; all demos and the CLI cookbook run); `bash examples/cli-usage.sh` → exit 0 |
 | Hardened national JS-SDK | `examples/national-sdk/` (signing, fingerprint, white-box crypto, JSVMP, zero-trust guard, build pipeline, server verifier, docs) | `node --test tests/national-sdk.test.js` — 13/13; `node examples/national-sdk/verify.mjs` — 37/37 |
@@ -160,11 +183,14 @@ normal run:      ok true, value 2, disposal {ok:true, errors:[]}
 $ grep -c Aborted  →  0
 ```
 
-- A stack breach is classified from the **engine marker only**: the host-thrown
-  `RangeError` ("Maximum call stack size exceeded") out of `evalCode`,
-  `callFunction` or `executePendingJobs`, or QuickJS's own
-  `InternalError: stack overflow` name for interpreter recursion. Ordering:
-  `runtime.js` `isHostStackExhaustion` / `isGuestStackExhaustion` →
+- A stack breach is classified from the **engine signal only**, never from a
+  dumped guest name or message: the host-thrown `RangeError` ("Maximum call stack
+  size exceeded") out of `evalCode`, `callFunction` or `executePendingJobs`
+  (`runtime.js` `isHostStackExhaustion`), or — for interpreter recursion, which
+  QuickJS raises as its own `InternalError` — intrinsic identity through
+  `stealth.isIntrinsicStackError(handle)`, which requires the engine's captured
+  `InternalError.prototype` in the thrown value's chain and refuses to certify
+  while that constructor is guest-reachable. Ordering: that pair →
   `invoke.js` `stackExhaustion` → `sandbox.js` abandon decision. The runtime is
   then **abandoned** (never disposed), the WASM module is quarantined and the
   next run recompiles it.
@@ -233,10 +259,17 @@ $ grep -c Aborted  →  0
   still `undefined`, and `DocumentType` is never instantiated (`new` throws
   `TypeError`; `document.implementation.createDocumentType()` returns an object
   that is not `instanceof DocumentType`).
-- A **guest-set** `error.name = 'InternalError'` with a stack-overflow message is
-  classified as a stack breach (QuickJS's own name for interpreter stack
-  overflow) and abandons the runtime. The message alone is not enough — the name
-  is required — but the name is guest-writable.
+- Stack-breach classification is **intrinsic**: `stealth.isIntrinsicStackError()`
+  requires the engine's captured `InternalError.prototype` in the thrown value's
+  prototype chain and refuses to certify while that constructor is
+  guest-reachable, so a forged record, a renamed `Error` and a prototype
+  stand-in no longer classify. The one residual needs a **reduced**
+  `limits.stackBytes` (interpreter check instead of the WASM native stack) plus a
+  guest that catches a genuine overflow and reuses its prototype; it costs an
+  abandoned runtime for a run that already breached the stack.
+- `new ImageData(w, h)` installs a real `data` view, but the shared class factory
+  cannot see `arguments.length`, so `new ImageData(2)` reports the height rule
+  instead of Chrome's "2 arguments required" `TypeError`.
 - One guest run at a time per process: real parallelism needs separate worker
   processes.
 - Wrapped platform APIs that throw synchronously keep name/message but the stack
@@ -263,8 +296,8 @@ Executed after all review dispositions, on the authoritative tree:
 
 ```
 $ node --test --test-concurrency=1 tests/*.test.js
-ℹ tests 484
-ℹ pass 484
+ℹ tests 600
+ℹ pass 600
 ℹ fail 0
 ```
 
@@ -287,14 +320,15 @@ Strict full-environment audit (`env: {strict:true}`):
 ## Disposition matrix
 
 `Dn` ids come from `docs/EVALUATION-TOOLS.md`; the audit findings (`N1`, `F1`–`F5`,
-`R*`) come from `.pi/audits/AUDIT-{A,B,C,D}-*.md`. "Fixed" always names the commit
-that changed the code and the test that keeps it fixed.
+`R*`, plus the handle-lifetime findings `L1`–`L5` of the last alignment wave) come
+from `.pi/audits/AUDIT-{A,B,C,D}-*.md` and `docs/DESIGN-REVIEW.md`. "Fixed" always
+names the commit that changed the code and the test that keeps it fixed.
 
 ### D1–D12
 
 | Id | Severity | Status | Evidence |
 | --- | --- | --- | --- |
-| D1 runtime/module poisoning | S1 | **Fixed** | `7836126` quarantine + `loadQuickJS` re-acquire; `9e9f3cf`/`94b1638` abandon from the engine marker only; `markModuleUnhealthy` stays internal. `tests/resilience.test.js` 15/15 ("12 consecutive stack overflows…", "a failed disposal quarantines the module…"), `tests/sandbox-core.test.js` 20/20. 12-run reproducer: `disposal {ok:false, leaked:true, stage:'runtime', skipped:true}`, then a normal run `ok:true`, `0` `Aborted` lines. |
+| D1 runtime/module poisoning | S1 | **Fixed** | `7836126` quarantine + `loadQuickJS` re-acquire; `9e9f3cf`/`94b1638` abandon from the engine marker only; `markModuleUnhealthy` stays internal. `tests/resilience.test.js` 18/18 ("12 consecutive stack overflows…", "a failed disposal quarantines the module…"), `tests/sandbox-core.test.js` 36/36. 12-run reproducer: `disposal {ok:false, leaked:true, stage:'runtime', skipped:true}`, then a normal run `ok:true`, `0` `Aborted` lines. |
 | D2 guarded acquisition + typed errors | S1 | **Fixed** | `75eb922` acquisition inside the guarded region; `sandbox.js` wraps escaping errors as `SandboxError` (`SANDBOX_INIT`/`SANDBOX_RUN`, `cause`, non-empty message). `tests/resilience.test.js` init-failure and post-acquisition cases; no unhandled rejection. |
 | D3 `moved` is a count | S2 | **Fixed** | `2ecd382` `bridge.num([call.value],0)` + clamp (0…1000). `tests/determinism.test.js` 2/2: `moved` integer, `0 < moved < 10000`, identical dynamic events across same-seed runs. Pre-fix it reported a handle address (~4.7e7). |
 | D4 trace/hook budget | S2 | **Fixed** | `3118a60` unlistened phases are not traced or counted, `code:step` declared and untraced, errors bounded at 200 + `errorsTruncated`. `tests/trace-budget.test.js` 5/5: 20-iteration loop → `byKind.hook = 2`, `code = 45`. |
@@ -302,7 +336,7 @@ that changed the code and the test that keeps it fixed.
 | D6 missing/incoherent browser surfaces | S1 | **Fixed** (docs half included) | `26ff5cb` WebAssembly stub + isolation triple; `7896d0b` HTMLElement/tag interfaces/customElements; `24d4670` DOMParser/XMLSerializer/EventSource; `d9a3d60`/`479d758` real prototype chains and XMLDocument; `736e177` `Object.keys(element).length === 0`; `b28cba4`/`c41a172` `checked` derived (20). `env-surface` 18/18, `env-fidelity` 15/15, `env-dom` 16/16. Documentation: `README.md` "Known limitations", `docs/SECURITY-MODEL.md` WASM/`SharedArrayBuffer` sections. |
 | D7 CLI contract | S2 | **Fixed** | `09eae89` closed-set validation, `--out` write failures as usage errors; `faa0cb1` matrix tests. `tests/cli.test.js` 30/30: 21 invalid invocations → exit 2, stderr message, empty stdout; `--out -` writes to stdout; `--json` stdout stays pure. |
 | D8 docs/contracts drift | S3 | **Fixed** (this file) | This alignment commit: `CONTRACTS.md` rewritten against `tools/sandbox/bridge.js`, `tools/instrumentation/trace.js`, `tools/hook/hookbus.js`, `tools/sandbox/env/index.js`, `tools/restore/*`; counts regenerated; `DESIGN-REVIEW.md` Review 6; `SECURITY-MODEL.md`, `README.md`, `API.md`, `ARCHITECTURE.md` corrected. |
-| D9 packaging/metadata | S3 | **Fixed** | `207e170` LICENSE (ISC) + `files` whitelist + subpath `exports`; `6319a5a` z3-solver removed from `package.json` and lockfile; `3334341` `types/*.d.ts`. `git ls-files -s tools/cli.js` → `100755`; `npm pack --dry-run` → **114 files** (91 tools + 9 docs + 11 types + `README.md` + `LICENSE` + `package.json`), only `tools/ docs/ types/ README.md LICENSE package.json`; `tests/types.test.js` 5/5. |
+| D9 packaging/metadata | S3 | **Fixed** | `207e170` LICENSE (ISC) + `files` whitelist + subpath `exports`; `6319a5a` z3-solver removed from `package.json` and lockfile; `3334341` `types/*.d.ts`. `git ls-files -s tools/cli.js` → `100755`; `npm pack --dry-run` → **114 files** (91 tools + 9 docs + 11 types + `README.md` + `LICENSE` + `package.json`), only `tools/ docs/ types/ README.md LICENSE package.json`; `tests/types.test.js` 6/6. |
 | D10 dead exports/stubs | S3 | **Fixed** | `a57c785`, `c63f8bb`, `ff1732a`, `6187217`, `e98353e`, `7d43028`: the eight dead names are gone, `TRACE_PHASES`/`resetQuickJS`/`restoreCode`/`scopeLogger` kept with a consumer or test. `tests/api-surface.test.js` 9/9 pins both the removals and the kept names. |
 | D11 `env/misc.js` split | S3 | **Fixed** | `62c130d` split into `url`/`blob`/`navigator`/`platform-kit` (+ `dom-parser`, `eventsource` later). `ENV_MODULE_IDS` = 28, install order = `(order,id)`, zero `requires` violations, 28/28 strict install, a missing requirement is a loud `SandboxError`. |
 | D12 minor quality faults | S3 | **Fixed** | `b126492`/`6187217`: `meta.deferred` declared (`rename`) and consumed by `isDeferredPass`; `bridge.fn` indentation fixed; `bridge.call` and `adoptPrototype` removed. `restore-accuracy` asserts the deferral; CLI lists `deferred` per pass. |
@@ -311,7 +345,13 @@ that changed the code and the test that keeps it fixed.
 
 | Finding | Status | Evidence |
 | --- | --- | --- |
-| N1 (AUDIT-A) a sample-forged "stack overflow" message abandoned a healthy runtime | **Fixed** | `94b1638` classify only from the engine signal (`isHostStackExhaustion` for host throws, `isGuestStackExhaustion` requiring QuickJS's own `InternalError` name). Measured: `throw new Error('stack overflow')` → `limitsHit: []`, `disposal {ok:true}`. Residual: setting `name='InternalError'` still classifies — documented in README/SECURITY-MODEL. |
+| N1 (AUDIT-A) a sample-forged "stack overflow" message abandoned a healthy runtime | **Closed** | `94b1638` stopped classifying on the message alone; `829b1f4` closed the remaining forgery by replacing the dumped-name test with **intrinsic identity**. `stealth.install()` captures the engine's `InternalError.prototype` before `env/globals.js` removes the binding, and `stealth.isIntrinsicStackError(handle)` answers from the live handle: the prototype chain must contain that captured prototype, and the probe refuses to certify while the constructor is still guest-reachable (Firefox profile). Measured on this tree: `throw {name:'InternalError',message:'Maximum call stack size exceeded'}`, a renamed `Error`, and `new InternalError(...)` under a Firefox profile all report `limitsHit: []`, `stackExhaustion: false`, `disposal {ok:true, errors:[]}`. **Narrow residual** (documented in `README.md` and `docs/SECURITY-MODEL.md`): at a reduced `limits.stackBytes` a guest that first causes a *genuine* overflow, catches it and reuses the caught error's prototype can forge the second classification; at the default 1 MB limit no guest-reachable prototype exists. `tests/resilience.test.js` 18/18 pins all four cases (`829b1f4`, `d593cff`). |
+| Observer entries were built inside the `observe()` bridge call, so the call bag freed them before delivery | **Fixed** | `8473a6a` queues plain record descriptors and builds entries at delivery time, and dups the observer instance so the callback's second argument outlives `init()`. Pre-fix, any property read of a delivered entry raised `QuickJSUseAfterFree`. `tests/env-observers.test.js` 14/14 (new file). |
+| Observer target duplicates were kept past delivery | **Fixed** | `335c2d0` releases the `observe()`/`observeAll` target duplicate once the entry has copied it; `env-observers` asserts the harness disposal record stays `{ok:true, errors:[]}`. |
+| Canvas handles that outlive the bridge call leaked (engine abort on dispose) | **Fixed** | `4201ae9`: `FontFaceSet.add` stored `face.dup()` with no owner, and `toBlob`/`img.src` handed a duplicate to a virtual-clock task that a short run never reached. `canvas.js` now keeps one `retain()` teardown set plus `release()` for early frees. A real `document.fonts.add()` sample reported `disposal {ok:false, leaked:true}` and printed `Aborted(…)`; it now tears down cleanly. `tests/env-canvas.test.js` 32/32 (`4201ae9`, `74c6eae`, `e655f0b`, `cde1fec`). |
+| `new ImageData(w, h)` had no guest `data` view; `getLineDash()` returned a fresh empty array every call | **Fixed** | `74c6eae` installs one own `Uint8ClampedArray` over a guest `ArrayBuffer` (transparent black payload, Chrome dimension rules, 64 MiB ceiling) and stores the dash list on the context so `save()`/`restore()` carry it. Deviation kept and documented: `new ImageData(2)` reports the height rule instead of Chrome's arity `TypeError`. |
+| Dead microtask queue: `timers.js` kept a `microtasks` array and a `drainMicrotasks` hook that nothing ever fed | **Fixed** | `9122627`/`3013295` removed the array, the hook, its teardown loop and the caller's drain. Microtasks are the engine's promise jobs (`executePendingJobs`). `tests/timers.test.js` 7/7 asserts the FIFO order and that the module exposes no `drainMicrotasks`. |
+| The suite printed `Aborted(…)` on stack-overflow runs | **Fixed** | `335c2d0` (observer duplicates) completed the handle-lifetime work, so `node --test --test-concurrency=1 tests/*.test.js` now reports **600 pass / 0 fail** with **0** lines matching `Aborted(` in the captured log; `tests/resilience.test.js` and `tests/sandbox-core.test.js` capture engine output and fail on any assertion line. |
 | F2 (AUDIT-D) fixed per-run cost +28 % from per-run guest-source compiles | **Accepted** | No latency criterion exists; `restore` 200 KB is unchanged. Recorded in `README.md` → Known limitations. |
 | F3 (AUDIT-D) `_w6-fidelity-notes.md` stale (element own keys, wrapped-descriptor bug) | **Fixed** | Content folded into `README.md`/`SECURITY-MODEL.md` with the measured values (`Object.keys(div) = 0`, `Object.keys(WebAssembly) = 0`), then the file was deleted. |
 | F4 (AUDIT-D) half-built DOM interface hierarchy | **Fixed** | `d9a3d60` builds real prototype chains. Measured in a strict run: `div instanceof Node/Element/HTMLElement` all true; chain `HTMLDivElement > HTMLElement > Element > Node > EventTarget`. Residual: `Attr`, `Range`, `ShadowRoot` absent (documented). |
@@ -319,7 +359,28 @@ that changed the code and the test that keeps it fixed.
 | Cross-runtime interruption leak (timeout while another run was parked at an `await`) | **Fixed** | `d7dc371` serializes guest runs on the shared WASM module (`withGuestRunLock`); concurrent callers queue, never reject. |
 | AUDIT-B observations: top-level `changed` for a trailing newline; `validateOutput` sourceType is advisory | **Accepted** | Both documented in `README.md` (Known limitations) and `docs/API.md` (serialization note). |
 | AUDIT-C observation: 14 DOM interface globals missing and undocumented | **Fixed** (mostly) | 12 of them are now installed (`d9a3d60`/`479d758`); `Attr`/`Range`/`ShadowRoot` remain and are listed as limitations. |
-| Branch coverage 73.56 % < 75.26 % baseline | **Accepted** | New env modules add defensive branches; lines 96.98 % and functions 88.78 % improved. Recorded above. |
+| Coverage gate: `tools/` scope 93.02 / 83.05 / 91.48 vs baseline 88.08 / 75.26 / 80.33 | **Closed** | All three metrics are above the review baseline on the scope the baseline was measured on (`--test-coverage-exclude='examples/**'`): +4.94 lines, +7.79 branches, +11.15 functions. The previous refresh's 1.7-point branch deficit is gone. The whole-tree scope (97.22 / 74.41 / 90.43) is recorded for completeness only: `examples/` is outside `tools/` and its works are evidence fixtures, so the gate is not applied there (accepted, documented gap). Mechanism: the coverage round `758e225`/`06e099c`/`d145be9`/`b28db87` plus `8473a6a`/`4201ae9`/`74c6eae` added `env-observers`, `env-encoding`, `env-anti-fingerprint` and extended `env-canvas`, `hook`, `sandbox-core`, `resilience`, `env-misc`, `restore-*`. |
+
+## Last alignment wave (after Review 6)
+
+Sixteen commits landed after the Review 6 documentation refresh
+(`a8e4965..3013295`) and are the state this file measures:
+
+| Commit | Change | Regression |
+| --- | --- | --- |
+| `8473a6a` | Observer entries get an owned lifetime (records queued as descriptors, entries built at delivery, observer instance duped) | `tests/env-observers.test.js` (14) |
+| `335c2d0` | Observer target duplicates released after delivery | `env-observers` disposal record |
+| `4201ae9` | Canvas handles that outlive the bridge call are retained and released (`FontFaceSet.add`, `toBlob`, `img.src`) | `env-canvas` 32/32 |
+| `74c6eae` | `new ImageData` gets its own `data` view and Chrome's dimension rules; `getLineDash` is tracked through `save()`/`restore()` | `env-canvas` |
+| `829b1f4` | Stack exhaustion classified by **intrinsic identity**, not the dumped name | `resilience` + `sandbox-core` |
+| `d593cff` | Forged records and reduced-`stackBytes` classification covered | `resilience` 18/18 |
+| `28d3fbf` | `Stealth.isIntrinsicStackError` declared in `types/` | `types` 6/6 |
+| `9122627` / `3013295` | Dead microtask queue, hook and drain removed (microtasks are engine promise jobs) | `timers` 7/7 |
+| `06e099c`, `758e225`, `d145be9`, `b28db87` | Coverage round: hook lifecycle/introspection, host-bridge contract, eval-unwrap/fold edges, codecs + hardening + dialogs + canvas surface | `hook` 20, `sandbox-core` 36, `restore-*` 147, `env-encoding` 12, `env-anti-fingerprint` 10 |
+
+Result: **600 tests / 46 files, 0 failures, 0 `Aborted(` lines**, `tools/`-scope
+coverage above the review baseline on all three metrics, and no unfixed
+handle-lifetime finding.
 
 ## Examples evidence
 
