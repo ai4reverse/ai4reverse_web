@@ -206,7 +206,12 @@ export class TracelessSandbox {
 
     this.runSeq += 1
     const runId = `run-${this.runSeq}-${shortHash(`${this.seed}:${this.runSeq}:${source}`, 8)}`
-    const clock = createVirtualClock({ epoch: this.profile.epoch, seed: runId, logger: this.logger })
+    const clock = createVirtualClock({
+      epoch: this.profile.epoch,
+      seed: runId,
+      maxTimers: this.limits.maxTimers,
+      logger: this.logger,
+    })
     const trace = createTraceRecorder({
       limit: this.limits.maxEvents,
       clock: () => clock.now(),

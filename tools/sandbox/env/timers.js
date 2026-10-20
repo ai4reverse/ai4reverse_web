@@ -119,6 +119,22 @@ export function install(bridge) {
           invoke(entry, id)
         },
       })
+      // The clock refuses schedules beyond its concurrent-timer cap by
+      // returning 0. No registry entry is kept for it: a refused timer can
+      // never fire, so its entry would retain the duplicated callback handle
+      // until disposal for nothing.
+      if (id === 0) {
+        bridge.emit('timer', 'enter', {
+          api: name,
+          id: 0,
+          delay: Number.isFinite(delay) ? delay : 0,
+          interval,
+          callbackType,
+          refused: true,
+        })
+        bridge.clock.tick(0.05)
+        return ctx.newNumber(0)
+      }
 
       const entry = {
         interval,
@@ -198,6 +214,12 @@ export function install(bridge) {
           }
         },
       })
+      // Refused by the clock's concurrent-timer cap: no registry entry, or the
+      // duplicated handle could never be released.
+      if (id === 0) {
+        bridge.emit('timer', 'enter', { api: 'requestAnimationFrame', id: 0, delay: 16, refused: true })
+        return ctx.newNumber(0)
+      }
       const entry = { interval: false, args: [], handle: callback?.dup?.(), source: undefined }
       registry.set(id, entry)
       bridge.emit('timer', 'enter', { api: 'requestAnimationFrame', id, delay: 16 })
@@ -272,6 +294,7 @@ export function install(bridge) {
           }
         },
       })
+      if (id === 0) return ctx.newNumber(0) // refused by the concurrent-timer cap
       registry.set(id, { interval: false, args: [], handle: callback?.dup?.() })
       return ctx.newNumber(id)
     }),

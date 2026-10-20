@@ -1,4 +1,5 @@
 import { createSeededRandom } from '../util/random.js'
+import { DEFAULT_LIMITS } from './limits.js'
 import { isHostStackExhaustion } from './runtime.js'
 
 /**
@@ -23,11 +24,17 @@ export function createVirtualClock(options = {}) {
     seed = 'clock',
     logger = null,
   } = options
+  // Concurrently scheduled timers. A guest flooding `setTimeout` from a loop
+  // must not grow this Map (and host memory) without limit; validate the
+  // caller-supplied value at this boundary instead of trusting it.
+  const maxTimers =
+    Number.isFinite(options.maxTimers) && options.maxTimers >= 1 ? Math.floor(options.maxTimers) : DEFAULT_LIMITS.maxTimers
 
   const rng = createSeededRandom(seed)
   const timeOriginOffset = Math.floor(rng.next() * 2000) + 100
   let elapsed = 0
   let timerSeq = 0
+  let droppedTimers = 0
   /** @type {Map<number, {id:number, due:number, fn:Function, interval:number|null, args:unknown[]}>} */
   const timers = new Map()
   const errors = []
@@ -74,10 +81,22 @@ export function createVirtualClock(options = {}) {
 
     /**
      * Schedule a virtual timer.
+     *
+     * When `maxTimers` timers are already pending, the schedule is *refused*
+     * rather than rejected with a throw: a flood loop must not kill the run
+     * (availability of the analysis beats completeness). `0` is returned —
+     never a real id, those start at 1 — and nothing is stored, so the caller
+     must not keep per-timer state for it. Cancelling a timer frees its slot,
+     so ordinary churn is unaffected; refusals are counted in `stats()`.
+     *
      * @param {{fn: Function, delay?: number, interval?: boolean, args?: unknown[]}} timer
-     * @returns {number} timer id
+     * @returns {number} timer id, or `0` when the schedule was refused
      */
     schedule(timer) {
+      if (timers.size >= maxTimers) {
+        droppedTimers += 1
+        return 0
+      }
       timerSeq += 1
       const delay = clampDelay(timer.delay, maxTimerDelay)
       const entry = {
@@ -197,6 +216,7 @@ export function createVirtualClock(options = {}) {
         elapsedMs: Number(elapsed.toFixed(3)),
         pendingTimers: timers.size,
         timerErrors: errors.length,
+        droppedTimers,
       }
     },
 

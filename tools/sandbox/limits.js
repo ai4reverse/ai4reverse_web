@@ -18,6 +18,8 @@ export const DEFAULT_LIMITS = Object.freeze({
   maxJobs: 10_000,
   /** Timer callbacks executed per run. */
   maxTimerCallbacks: 1000,
+  /** Timers concurrently scheduled (setTimeout/setInterval/rAF/idle/…). */
+  maxTimers: 10_000,
   /** Retained trace events (0 = unbounded). */
   maxEvents: 20_000,
   /** Maximum number of source bytes analysed in one run. */
@@ -34,6 +36,7 @@ const NUMERIC_BOUNDS = {
   stackBytes: [64 * 1024, 16 * 1024 * 1024],
   maxJobs: [1, 1_000_000],
   maxTimerCallbacks: [1, 100_000],
+  maxTimers: [1, 100_000],
   maxEvents: [0, 1_000_000],
   maxSourceBytes: [1024, 128 * 1024 * 1024],
   maxStageDepth: [1, 32],

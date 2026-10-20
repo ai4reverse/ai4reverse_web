@@ -130,6 +130,7 @@ export interface Limits {
   stackBytes: number
   maxJobs: number
   maxTimerCallbacks: number
+  maxTimers: number
   maxEvents: number
   maxSourceBytes: number
   maxStageDepth: number
@@ -143,6 +144,8 @@ export interface ClockStats {
   elapsedMs: number
   pendingTimers: number
   timerErrors: number
+  /** Schedules refused because `maxTimers` timers were already pending. */
+  droppedTimers: number
 }
 
 /** One timer callback that threw, as the virtual clock records it. */
@@ -1405,6 +1408,11 @@ export declare function extractStagedPayloads(
 
 export declare function assemble(program: { op: string; args?: unknown[] }[]): AssembledProgram
 
+/**
+ * Build a self-contained JSVMP interpreter artifact. The artifact's
+ * `run(options)` convenience runner executes the generated source in the host
+ * process and requires the explicit `{ trust: 'host' }` acknowledgement.
+ */
 export declare function buildVM(
   program: { op: string; args?: unknown[] }[] | AssembledProgram,
   options?: object,

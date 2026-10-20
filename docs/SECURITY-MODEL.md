@@ -16,7 +16,7 @@ shared host, and it is not a browser.
 | Guest ↔ network | No socket API is reachable. `fetch`/XHR/WebSocket/EventSource are synthetic services driven by the virtual clock; policies are `deny` (default), `empty`, `echo`, or explicit routes. Every request is a trace event + IOC. |
 | CPU | Interrupt handler enforces a host deadline (default 5 s) and a virtual-time budget (default 60 s). Infinite loops are interrupted and classified. |
 | Memory | `setMemoryLimit` (default 64 MB) and `setMaxStackSize` (default 1 MB); breaches become structured limit results. |
-| Event volume | Trace ring buffer limit; instrumentation event budget; console buffer cap; artifact size/count caps; hook error ring (200 entries **and** 64 KiB of message text, 2 KiB per message). |
+| Event volume | Trace ring buffer limit; instrumentation event budget; console buffer cap, each entry bounded by argument count **and** serialized characters; concurrent-timer cap (`limits.maxTimers`, refused schedules counted in `clock.stats().droppedTimers`); artifact size/count caps; hook error ring (200 entries **and** 64 KiB of message text, 2 KiB per message). |
 | State leakage between samples | A **fresh runtime and context per run**; guest execution serialized one run at a time per process; intrinsic snapshot before/after proves no cross-run residue. |
 
 The sandbox is *not* a kernel-level isolation boundary. QuickJS/WASM has a strong

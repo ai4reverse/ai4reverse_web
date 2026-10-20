@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
+import { createVirtualClock } from '../tools/sandbox/clock.js'
 import { createHarness } from './helpers/harness.js'
 
 /**
@@ -205,6 +206,70 @@ test('microtasks drain between same-batch timer callbacks like a browser', async
     const logged = (run.events ?? []).find((event) => event.kind === 'api' && event.api === 'console.log' && String(event.text ?? '').startsWith('ORDER:'))
     assert.ok(logged, 'marker log missing')
     assert.equal(logged.text, 'ORDER:t1,m1,t2', `browser order violated: ${logged.text}`)
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('the virtual clock refuses schedules beyond maxTimers and counts the drops', () => {
+  const clock = createVirtualClock({ seed: 'timer-cap', maxTimers: 2 })
+  const first = clock.schedule({ fn: () => {}, delay: 1 })
+  const second = clock.schedule({ fn: () => {}, delay: 2 })
+  const third = clock.schedule({ fn: () => {}, delay: 3 })
+  // Refused schedules get 0 (never a real id: those start at 1), deterministically.
+  assert.deepEqual([first, second, third], [1, 2, 0])
+  assert.equal(clock.pending(), 2)
+  assert.equal(clock.stats().droppedTimers, 1)
+  // Cancelling frees a slot, so ordinary timer churn is unaffected.
+  clock.cancel(first)
+  assert.equal(clock.schedule({ fn: () => {}, delay: 1 }), 3)
+  clock.dispose()
+})
+
+test('scheduling beyond the timer cap returns 0 and earlier timers still fire', async () => {
+  // A restricted module set: the full environment schedules install-time
+  // timers of its own (e.g. the service-worker registration promise in
+  // `env/misc.js`), which would consume cap slots ahead of the guest.
+  const sb = await TracelessSandbox.create({
+    logLevel: 'silent',
+    env: { strict: true, only: ['globals', 'console', 'timers'] },
+    limits: { maxTimers: 3 },
+  })
+  try {
+    const run = await sb.run(
+      `var ids = [];
+       for (var i = 0; i < 5; i++) ids.push(setTimeout(function () { console.log('fired') }, 10));
+       console.log('ids=' + ids.join(','));`,
+      { level: 'off' },
+    )
+    assert.ok(consoleLogs(run).includes('ids=1,2,3,0,0'), JSON.stringify(consoleLogs(run)))
+    assert.equal(consoleLogs(run).filter((line) => line === 'fired').length, 3)
+    assert.equal(run.clock.droppedTimers, 2)
+    await assertHealthy(sb, run, 'timer cap')
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('requestAnimationFrame beyond the timer cap is refused without corrupting the runtime', async () => {
+  const sb = await TracelessSandbox.create({
+    logLevel: 'silent',
+    env: { strict: true, only: ['globals', 'console', 'timers'] },
+    limits: { maxTimers: 2 },
+  })
+  try {
+    const run = await sb.run(
+      `setTimeout(function () { console.log('timeout') }, 5);
+       var frame = requestAnimationFrame(function () { console.log('frame') });
+       console.log('refused=' + setTimeout(function () { console.log('never') }, 50));`,
+      { level: 'off' },
+    )
+    assert.ok(consoleLogs(run).includes('refused=0'), JSON.stringify(consoleLogs(run)))
+    assert.ok(consoleLogs(run).includes('timeout'), JSON.stringify(consoleLogs(run)))
+    assert.ok(consoleLogs(run).includes('frame'), JSON.stringify(consoleLogs(run)))
+    assert.ok(!consoleLogs(run).includes('never'), JSON.stringify(consoleLogs(run)))
+    assert.equal(run.clock.droppedTimers, 1)
+    await assertHealthy(sb, run, 'rAF timer cap')
   } finally {
     sb.dispose()
   }
