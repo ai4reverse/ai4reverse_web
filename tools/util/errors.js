@@ -5,7 +5,8 @@
  * short so `catch (error) { if (error instanceof X) }` stays meaningful.
  * `SandboxError` covers initialisation and run failures, `ParseError` a source
  * that no parser configuration accepts, `HookError` a malformed hook phase or
- * handler registration.
+ * handler registration, `TrustError` a host-side execution invoked without the
+ * explicit trust acknowledgement it requires.
  */
 
 export class AnalyzerError extends Error {
@@ -36,5 +37,11 @@ export class ParseError extends AnalyzerError {
 export class HookError extends AnalyzerError {
   constructor(message, options = {}) {
     super(message, { code: 'HOOK_ERROR', ...options })
+  }
+}
+
+export class TrustError extends AnalyzerError {
+  constructor(message, options = {}) {
+    super(message, { code: 'TRUST_ERROR', ...options })
   }
 }

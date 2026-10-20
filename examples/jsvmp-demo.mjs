@@ -21,7 +21,7 @@ const obfuscated = buildVM(buildSampleProgram(), { seed: 2026, name: '__vmp_run'
 // makes the devirtualised trace easier to read in this demo.
 const vm = buildVM(buildSampleProgram(), { seed: 2026, name: '__vmp_run', obfuscate: false })
 console.log('builder:', vm.opcodes.length, 'opcodes,', vm.bytecode.length, 'instructions')
-console.log('host run (plain):', vm.run(), '| (obfuscated):', obfuscated.run())
+console.log('host run (plain):', vm.run({ trust: 'host' }), '| (obfuscated):', obfuscated.run({ trust: 'host' }))
 
 const staticAnalysis = analyzeVM(obfuscated.code)
 const summary = summarizeVM(staticAnalysis)

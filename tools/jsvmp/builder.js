@@ -12,8 +12,12 @@
 
 import { OPCODE_BY_CODE, assemble } from './spec.js'
 import { createSeededRandom } from '../util/random.js'
+import { TrustError } from '../util/errors.js'
 
 export const DEFAULT_VM_NAME = '__vm_run'
+
+/** The only `trust` value `run()` accepts: an explicit host-execution opt-in. */
+const REQUIRED_TRUST = 'host'
 
 /** Names that cannot be used as the generated global function identifier. */
 const RESERVED_NAMES = new Set([
@@ -331,7 +335,10 @@ const TERMINATING_OPCODES = new Set(['RET', 'HALT'])
  *   Canonical opcodes used by this program.
  * @property {Array<{pc: number, code: number, name: string, line: number}>} sourceMap
  *   Bytecode instruction -> handler line in `code`.
- * @property {(...args: unknown[]) => unknown} run Convenience host runner.
+ * @property {(options: { trust: 'host', args?: unknown[] }) => unknown} run
+ *   Convenience host runner. Requires the explicit `{ trust: 'host' }`
+ *   acknowledgement because it executes the generated source in the host
+ *   process.
  * @property {Array<{code: number, args: unknown[]}>} bytecode Canonical bytecode
  *   (unencoded opcodes), useful for disassembly and assertions.
  */
@@ -432,16 +439,32 @@ export function buildVM(program, options = {}) {
    * Execute the generated artifact in the host process. The generated global
    * is restored afterwards so a convenience run does not leave host state
    * behind.
-   * @param {...unknown} callArgs
+   *
+   * Hazard: `new Function` executes with full host globals, so an artifact
+   * assembled from sample-derived constants or bytecode is host-side code
+   * execution. The call therefore requires the explicit `trust: 'host'`
+   * acknowledgement and throws `TrustError` without it; artifacts that are not
+   * known to be platform-originated should be executed with `vm.code` inside a
+   * `TracelessSandbox` instead.
+   *
+   * @param {{ trust: 'host', args?: unknown[] }} options `trust` must be the
+   *   literal `'host'`; `args` fills the VM's `LOAD_ARG` slots.
    * @returns {unknown}
    */
-  function run(...callArgs) {
+  function run(options) {
+    const trust = options !== null && typeof options === 'object' ? options.trust : undefined
+    if (trust !== REQUIRED_TRUST) {
+      throw new TrustError(
+        `buildVM().run() executes sample-derived code in the host process; pass { trust: '${REQUIRED_TRUST}' } to acknowledge the artifact is platform-originated, or execute vm.code inside a TracelessSandbox.`,
+        { details: { expected: `{ trust: '${REQUIRED_TRUST}' }`, received: trust } },
+      )
+    }
     const hadGlobal = Object.prototype.hasOwnProperty.call(globalThis, name)
     const previous = globalThis[name]
     try {
       const factory = new Function(`${code}\nreturn ${name};`)
       const vm = factory()
-      return vm(callArgs)
+      return vm(options.args)
     } finally {
       if (hadGlobal) globalThis[name] = previous
       else delete globalThis[name]

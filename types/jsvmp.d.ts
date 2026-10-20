@@ -3,6 +3,10 @@
  *
  * The canonical opcode table (`spec`), the interpreter-source builder
  * (`builder`) and the dispatcher analyzer (`analyze`).
+ *
+ * The builder artifact's `run(options)` convenience runner executes the
+ * generated source in the host process; it requires the explicit
+ * `run({ trust: 'host' })` acknowledgement and throws `TrustError` otherwise.
  */
 
 export {

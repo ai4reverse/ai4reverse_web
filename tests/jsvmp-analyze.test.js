@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildSampleProgram, buildVM } from '../tools/jsvmp/builder.js'
+import { buildSampleProgram, buildVM, DEFAULT_VM_NAME } from '../tools/jsvmp/builder.js'
 import { OPCODE_BY_NAME } from '../tools/jsvmp/spec.js'
 import { analyzeVM, extractHandlers, isJSVMP, summarizeVM } from '../tools/jsvmp/analyze.js'
+import { TrustError } from '../tools/util/errors.js'
 
 const sampleVM = () => buildVM(buildSampleProgram())
 
@@ -109,4 +110,30 @@ test('summarizeVM returns a compact JSON-safe summary without AST nodes', () => 
   assert.ok(summary.consts.count >= 1)
   assert.ok(summary.consts.sample.includes('fib(10)='))
   assert.deepEqual(summary.interpreter.pcVariables, ['pc'])
+})
+
+test('run() without the trust acknowledgement throws TrustError naming the host-execution hazard', () => {
+  const vm = sampleVM()
+  const rejections = [undefined, null, {}, { trust: 'sandbox' }, 'host']
+  for (const options of rejections) {
+    assert.throws(
+      () => vm.run(options),
+      (error) =>
+        error instanceof TrustError &&
+        error.code === 'TRUST_ERROR' &&
+        /executes sample-derived code in the host process/.test(error.message),
+    )
+  }
+  // The refusal precedes any host execution: the generated global never lands
+  // on globalThis.
+  assert.equal(Object.prototype.hasOwnProperty.call(globalThis, DEFAULT_VM_NAME), false)
+})
+
+test('run() with trust host executes a trivial generated program and restores the host global', () => {
+  const vm = buildVM([
+    { op: 'LOAD_CONST', args: ['trusted-ok'] },
+    { op: 'HALT' },
+  ])
+  assert.equal(vm.run({ trust: 'host' }), 'trusted-ok')
+  assert.equal(Object.prototype.hasOwnProperty.call(globalThis, DEFAULT_VM_NAME), false)
 })

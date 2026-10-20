@@ -116,6 +116,11 @@ test('every error class that remains is thrown by a real path', () => {
     () => bus.emit('bogus:phase'),
     (error) => error instanceof errors.HookError && error.code === 'HOOK_ERROR',
   )
+
+  assert.throws(
+    () => api.buildVM(api.buildSampleProgram()).run({}),
+    (error) => error instanceof errors.TrustError && error.code === 'TRUST_ERROR',
+  )
 })
 
 test('the D10 dead surface is gone, not merely unused', async () => {

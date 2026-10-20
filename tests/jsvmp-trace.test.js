@@ -8,7 +8,7 @@ const ENV = ['globals', 'console', 'timers', 'encoding', 'time', 'stack', 'rando
 
 test('JSVMP source is detected, instrumented and traced at opcode level', async () => {
   const vm = buildVM(buildSampleProgram(), { seed: 11 })
-  assert.equal(vm.run(), 'fib(10)=55 via VM')
+  assert.equal(vm.run({ trust: 'host' }), 'fib(10)=55 via VM')
 
   const sb = await TracelessSandbox.create({
     logLevel: 'silent',
@@ -44,7 +44,7 @@ test('obfuscated VM traces identically at the semantic level', async () => {
   const plain = buildVM(buildSampleProgram(), { seed: 3 })
   const obfuscated = buildVM(buildSampleProgram(), { seed: 3, obfuscate: true })
   assert.notEqual(plain.code, obfuscated.code)
-  assert.equal(obfuscated.run(), plain.run())
+  assert.equal(obfuscated.run({ trust: 'host' }), plain.run({ trust: 'host' }))
 
   const sb = await TracelessSandbox.create({
     logLevel: 'silent',

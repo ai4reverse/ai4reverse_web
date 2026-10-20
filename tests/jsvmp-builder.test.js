@@ -95,8 +95,8 @@ test('assemble rejects invalid arguments and jump targets', () => {
 test('buildVM computes fibonacci(10) and exercises string concat plus object get/set', () => {
   const vm = buildVM(buildSampleProgram())
 
-  assert.equal(vm.run(), 'fib(10)=55 via VM')
-  assert.equal(vm.run(), 'fib(10)=55 via VM')
+  assert.equal(vm.run({ trust: 'host' }), 'fib(10)=55 via VM')
+  assert.equal(vm.run({ trust: 'host' }), 'fib(10)=55 via VM')
   assert.ok(vm.bytecode.length > 0)
   assert.equal(vm.sourceMap.length, vm.bytecode.length)
   assert.ok(vm.opcodes.some((spec) => spec.name === 'JMP_IF_NOT'))
@@ -107,21 +107,21 @@ test('buildVM computes fibonacci(10) and exercises string concat plus object get
   assert.ok(vm.code.startsWith('globalThis.__vm_run = (function () {'))
 })
 
-test('new Function(code + return name) produces the same result as run()', () => {
+test('new Function(code + return name) produces the same result as run({ trust: host })', () => {
   const name = '__jsvmp_test_vm'
   const vm = buildVM(buildSampleProgram(), { name })
 
   try {
     const factory = new Function(`${vm.code}; return ${name};`)
     const generated = factory()
-    assert.equal(generated([]), vm.run())
+    assert.equal(generated([]), vm.run({ trust: 'host' }))
     assert.equal(generated([]), 'fib(10)=55 via VM')
   } finally {
     delete globalThis[name]
   }
 })
 
-test('run() forwards arguments through LOAD_ARG and restores the host global', () => {
+test('run() with trust host forwards arguments through LOAD_ARG and restores the host global', () => {
   const name = '__jsvmp_arg_vm'
   const vm = buildVM(
     [
@@ -134,7 +134,7 @@ test('run() forwards arguments through LOAD_ARG and restores the host global', (
   )
   const previous = globalThis[name]
   try {
-    assert.equal(vm.run(20, 22), 42)
+    assert.equal(vm.run({ trust: 'host', args: [20, 22] }), 42)
     assert.equal(Object.prototype.hasOwnProperty.call(globalThis, name), Boolean(previous))
   } finally {
     if (previous === undefined) delete globalThis[name]
@@ -150,9 +150,9 @@ test('obfuscate:true changes source and dispatch codes without changing behaviou
 
   assert.notEqual(plain.code, first.code)
   assert.notEqual(first.code, second.code)
-  assert.equal(first.run(), plain.run())
-  assert.equal(second.run(), plain.run())
-  assert.equal(first.run(), 'fib(10)=55 via VM')
+  assert.equal(first.run({ trust: 'host' }), plain.run({ trust: 'host' }))
+  assert.equal(second.run({ trust: 'host' }), plain.run({ trust: 'host' }))
+  assert.equal(first.run({ trust: 'host' }), 'fib(10)=55 via VM')
 
   // Canonical bytecode is still available, while the generated switch uses
   // per-build encoded opcode numbers.

@@ -25,6 +25,8 @@ export declare class ParseError extends AnalyzerError {}
 
 export declare class HookError extends AnalyzerError {}
 
+export declare class TrustError extends AnalyzerError {}
+
 /**
  * LIFO bag of QuickJS handles.
  *
