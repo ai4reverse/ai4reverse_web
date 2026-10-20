@@ -365,16 +365,21 @@ export function createCodeInstrumenter(options) {
           if (activeRank < LEVEL_RANK.function) return
           const argument = path.node.arguments[0]
           if (!argument || path.node.arguments.length !== 1) return
+          if (argument.type === 'SequenceExpression') return
           const id = record('eval', path.node, currentFunctionName)
-          add(argument.start, 60, `${bindingName()}(${kind('eval')},${id},`)
-          add(argument.end, 60, ')')
-          stats.evalSites += 1
+          if (id < 0) return
+          if (addAtomic([
+            { offset: argument.start, priority: 60, code: `${bindingName()}(${kind('eval')},${id},(` },
+            { offset: argument.end, priority: 60, code: '))' },
+          ])) stats.evalSites += 1
         } else if (callee.name === 'Function' && !path.scope.getBinding('Function')) {
           if (activeRank < LEVEL_RANK.function) return
           const id = record('Function', path.node, currentFunctionName)
-          add(callee.start, 60, `(${bindingName()}(${kind('Function')},${id}),`)
-          add(callee.end, 60, ')')
-          stats.evalSites += 1
+          if (id < 0) return
+          if (addAtomic([
+            { offset: callee.start, priority: 60, code: `(${bindingName()}(${kind('Function')},${id}),` },
+            { offset: callee.end, priority: 60, code: ')' },
+          ])) stats.evalSites += 1
         }
       },
 
@@ -382,9 +387,15 @@ export function createCodeInstrumenter(options) {
         if (activeRank < LEVEL_RANK.function) return
         const argument = path.node.argument
         if (!argument) return
+        // SequenceExpression arguments must stay parenthesised or the channel
+        // call would capture only the first element (P0-4).
+        if (argument.type === 'SequenceExpression') return
         const id = record('throw', path.node, currentFunctionName)
-        add(argument.start, 55, `${bindingName()}(${kind('throw')},${id},`)
-        add(argument.end, 55, ')')
+        if (id < 0) return
+        addAtomic([
+          { offset: argument.start, priority: 55, code: `${bindingName()}(${kind('throw')},${id},(` },
+          { offset: argument.end, priority: 55, code: '))' },
+        ])
       },
 
       NewExpression(path) {
