@@ -353,18 +353,7 @@ export function createInvoker(options) {
       return true
     }
 
-    const drainMicro = () => {
-      try {
-        bridge.drainMicrotasks?.()
-      } catch (error) {
-        if (noteStack('microtask', error)) return
-        logger?.debug?.({ err: error.message }, 'microtask drain failed')
-      }
-    }
-
     for (let guard = 0; guard < 100_000; guard += 1) {
-      if (stackError) break
-      drainMicro()
       if (stackError) break
       if (runtime.hasPendingJob()) {
         if (jobs >= maxJobs) {
