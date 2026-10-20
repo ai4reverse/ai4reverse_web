@@ -402,3 +402,50 @@ branch coverage 73.56 %. Each is stated in `README.md` → "Known limitations"
    `run examples/benign.js --json` → `ok:true`; `passes --json` → 11.
 5. Four independent auditors reproduced the original reproducers on the aligned
    tree; their reports are under `.pi/audits/`.
+
+## Final gate (last alignment wave)
+
+Appended, not a rewrite: the gates above were the alignment wave's own record.
+This section is the state of the same acceptance criteria after the follow-up
+coverage and handle-lifetime wave (`a8e4965..3013295`, 16 commits).
+
+1. **Suite.** `node --test --test-concurrency=1 tests/*.test.js` →
+   **600 tests, 600 pass, 0 fail** across **46 test files**
+   (`ls tests/*.test.js | wc -l`), and the captured log contains **0** lines
+   matching `Aborted(` — the engine heap assertion no longer escapes on any
+   stack, timer or promise-job path (`335c2d0`, `8473a6a`, `4201ae9`).
+2. **Coverage, both scopes.**
+
+   ```
+   $ node --test --test-concurrency=1 --experimental-test-coverage tests/*.test.js
+   ℹ all files                               |  97.22 |    74.41 |   90.43 |
+   $ node --test --test-concurrency=1 --experimental-test-coverage \
+       --test-coverage-exclude='examples/**' tests/*.test.js
+   ℹ all files                               |  93.02 |    83.05 |   91.48 |
+   ```
+
+   | Scope | Lines | Branches | Functions |
+   | --- | --- | --- | --- |
+   | whole tree (includes `examples/`) | 97.22 % | 74.41 % | 90.43 % |
+   | `tools/` only | **93.02 %** | **83.05 %** | **91.48 %** |
+
+   **The gate is applied to the `tools/` scope**, because the baseline
+   (88.08 / 75.26 / 80.33) was measured there and `examples/` is outside
+   `tools/`. That scope is above the baseline on all three metrics (+4.94 /
+   +7.79 / +11.15), which closes the 1.7-point branch deficit recorded above.
+   The whole-tree branch figure is lower only because the example suites
+   contribute sample code that is executed, not asserted on; it is recorded, not
+   re-based.
+3. **Reproducers.** `node tools/cli.js analyze examples/sample-loader.js` →
+   score 60 / `malicious`, 9 weighted reasons, 3 URL IOCs, 2 decoded payloads;
+   `restore` prints the decoded stage-2 source; `run --events` emits 136 trace
+   events ending with `net after` `net::ERR_NAME_NOT_RESOLVED` for the mocked
+   beacon; `node examples/works/30-sandbox-farm/app.mjs --self-test` →
+   `farm: total=4 completed=3 limited=1 disposed=true` / `SELFTEST OK`.
+4. **Audit re-run plan.** The four read-only auditors re-run their original
+   reproducers against this tree (AUDIT-A: D1–D3 + forged-`InternalError`
+   matrix, AUDIT-B: D4/D5/D7, AUDIT-C: D6 + packaging, AUDIT-D: D8 claim sweep)
+   plus the five new handle-lifetime findings L1–L5 recorded in
+   `docs/DESIGN-REVIEW.md` → Review 6. Auditors never fix; findings go back to a
+   repair lane and then to a re-audit, and `docs/VERIFICATION.md` carries the
+   numbers each audit is checked against.
