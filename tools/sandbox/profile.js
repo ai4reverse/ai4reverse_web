@@ -294,19 +294,19 @@ export function createProfile(options = {}) {
 
   const plugins = firefoxLike
     ? [
-        { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-      ]
+      { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+    ]
     : [
-        { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-      ]
+      { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+    ]
 
   const fonts = [...new Set([...os.fonts, 'Arial', 'Courier New', 'Georgia', 'Times New Roman', 'Verdana'])]
 
@@ -400,26 +400,26 @@ export function createProfile(options = {}) {
     },
     chrome: chromeLike
       ? {
-          runtime: {},
-          app: { isInstalled: false },
-          csi: () => ({ onloadT: 0, startE: nowEpoch, pageT: 0, tran: 15 }),
-          loadTimes: () => ({}),
-        }
+        runtime: {},
+        app: { isInstalled: false },
+        csi: () => ({ onloadT: 0, startE: nowEpoch, pageT: 0, tran: 15 }),
+        loadTimes: () => ({}),
+      }
       : undefined,
     userAgentData: chromeLike
       ? {
-          brands: browser.brands(major),
-          mobile,
-          platform: osKey === 'windows' ? 'Windows' : osKey === 'macos' ? 'macOS' : 'Linux',
-          getHighEntropyValues: {
-            architecture: os.architecture,
-            bitness: os.bitness,
-            model: '',
-            platformVersion: os.platformVersion,
-            uaFullVersion: version,
-            fullVersionList: browser.brands(major).map((entry) => ({ ...entry, version })),
-          },
-        }
+        brands: browser.brands(major),
+        mobile,
+        platform: osKey === 'windows' ? 'Windows' : osKey === 'macos' ? 'macOS' : 'Linux',
+        getHighEntropyValues: {
+          architecture: os.architecture,
+          bitness: os.bitness,
+          model: '',
+          platformVersion: os.platformVersion,
+          uaFullVersion: version,
+          fullVersionList: browser.brands(major).map((entry) => ({ ...entry, version })),
+        },
+      }
       : undefined,
     permissions: {
       notifications: 'default',

@@ -201,7 +201,7 @@ function passListOption(name, text) {
   return ids
 }
 
-class UsageError extends Error {}
+class UsageError extends Error { }
 
 async function emitResult(text, options) {
   if (options.out && options.out !== '-') {

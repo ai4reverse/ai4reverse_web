@@ -118,14 +118,14 @@ export function install(bridge) {
    */
   const arrayJoin = guest(
     '(function(array, locales, options){\n' +
-      '  if (array === undefined || array === null) throw new TypeError("Array.prototype.toLocaleString called on null or undefined");\n' +
-      '  var out = [];\n' +
-      '  for (var i = 0; i < array.length; i++) {\n' +
-      '    var element = array[i];\n' +
-      '    out.push(element === undefined || element === null ? "" : element.toLocaleString(locales, options));\n' +
-      '  }\n' +
-      '  return out.join(",");\n' +
-      '})',
+    '  if (array === undefined || array === null) throw new TypeError("Array.prototype.toLocaleString called on null or undefined");\n' +
+    '  var out = [];\n' +
+    '  for (var i = 0; i < array.length; i++) {\n' +
+    '    var element = array[i];\n' +
+    '    out.push(element === undefined || element === null ? "" : element.toLocaleString(locales, options));\n' +
+    '  }\n' +
+    '  return out.join(",");\n' +
+    '})',
   )
   /** `Date.prototype.getTime`, captured before any sample can patch it. */
   const dateGetTime = guest('Date.prototype.getTime')
