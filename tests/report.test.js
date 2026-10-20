@@ -413,6 +413,22 @@ test('renderMarkdown escapes table pipes', () => {
   assert.ok(markdown.includes('evil\\|domain.top'))
 })
 
+test('renderMarkdown escapes guest Markdown image/link injection', () => {
+  const report = buildReport({
+    dynamic: {
+      ok: true,
+      error: { message: '![x](https://attacker.example/t)' },
+      behavior: {
+        console: [{ level: 'log', args: ['![x](https://attacker.example/t)'] }],
+      },
+    },
+    recommendations: ['see ![x](https://attacker.example/t)'],
+  })
+  const markdown = renderMarkdown(report)
+  assert.ok(!markdown.includes('![x](https://attacker.example/t)'))
+  assert.ok(markdown.includes('&#33;\\[x\\](https://attacker.example/t)') || markdown.includes('&#33;'))
+})
+
 test('buildReport and renderMarkdown survive empty or partial input', () => {
   const empty = buildReport({})
   assert.equal(empty.verdict.score, 0)

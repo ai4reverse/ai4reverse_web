@@ -854,7 +854,10 @@ function summarize(input) {
     try {
       const json = JSON.stringify(input)
       if (json === undefined) return 'object'
-      return json.length > 240 ? `${json.slice(0, 240)}…` : json
+      // Escape after stringify so guest-controlled object fields cannot inject
+      // live Markdown image/link syntax into the report (ACCEPTANCE H8).
+      const clipped = json.length > 240 ? `${json.slice(0, 240)}…` : json
+      return escapeText(clipped)
     } catch {
       return 'object'
     }
@@ -918,6 +921,10 @@ function escapeText(input) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/`/g, '&#96;')
+    // Neutralise Markdown image/link injection from guest strings (ACCEPTANCE H8).
+    .replace(/!/g, '&#33;')
+    .replace(/\[/g, '\\[')
+    .replace(/\]/g, '\\]')
     .replace(/\r?\n/g, ' ')
 }
 
