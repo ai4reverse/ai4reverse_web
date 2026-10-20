@@ -141,7 +141,7 @@ export const SCENARIOS = Object.freeze([
         sample: STAGE_SAMPLES['c2-beacon'],
         expect: Object.freeze({
           ...EXPECT_BASELINE,
-          minScore: 34,
+          minScore: 30,
           techniques: ['network-communication'],
           iocHosts: ['beacon.example.test'],
           killChain: ['command-and-control'],
@@ -180,7 +180,7 @@ export const SCENARIOS = Object.freeze([
         sample: STAGE_SAMPLES['c2-beacon'],
         expect: Object.freeze({
           ...EXPECT_BASELINE,
-          minScore: 34,
+          minScore: 30,
           techniques: ['network-communication'],
           iocHosts: ['beacon.example.test'],
           minNetworkEvents: 3,

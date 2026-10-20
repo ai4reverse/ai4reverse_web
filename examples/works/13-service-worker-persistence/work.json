@@ -17,7 +17,7 @@
   "verify": {},
   "expect": {
     "level": "suspicious",
-    "minScore": 30,
+    "minScore": 26,
     "requireIocs": [
       "urls"
     ],

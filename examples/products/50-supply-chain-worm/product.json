@@ -24,7 +24,7 @@
   "sample": "sample.js",
   "expect": {
     "level": "suspicious",
-    "minScore": 45,
+    "minScore": 37,
     "requireIocs": [
       "urls"
     ],

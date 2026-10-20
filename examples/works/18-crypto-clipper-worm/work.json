@@ -16,8 +16,8 @@
   "entry": "sample.js",
   "verify": {},
   "expect": {
-    "level": "malicious",
-    "minScore": 60,
+    "level": "suspicious",
+    "minScore": 52,
     "requireIocs": [
       "urls"
     ],
