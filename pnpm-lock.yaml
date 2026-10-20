@@ -32,9 +32,6 @@ importers:
       quickjs-emscripten:
         specifier: ^0.32.0
         version: 0.32.0
-      z3-solver:
-        specifier: ^5.3.1
-        version: 5.3.1
     devDependencies:
       '@types/node':
         specifier: ^24.19.2
@@ -239,9 +236,6 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  async-mutex@0.3.2:
-    resolution: {integrity: sha512-HuTK7E7MT7jZEh1P9GtRW9+aTWiDWWi9InbZ5hjxrnRa39KS4BW04+xLBhYNS2aXhHUIKZSw3gj4Pn1pj+qGAA==}
-
   atomic-sleep@1.0.0:
     resolution: {integrity: sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ==}
     engines: {node: '>=8.0.0'}
@@ -348,9 +342,6 @@ packages:
     resolution: {integrity: sha512-e2zZ96wSChazBsbENf/Pcm/4swHt2cEKQ92rhUjkL9GCKiTDJIaTBenjE/m9DXi0QBmTMDkFDdOomUy20A1tDQ==}
     engines: {node: '>=20'}
 
-  tslib@2.8.1:
-    resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
-
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -361,10 +352,6 @@ packages:
 
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
-
-  z3-solver@5.3.1:
-    resolution: {integrity: sha512-xndynBQoXmFMopcdpCchRhT2mJyuIfmwY2lxBje0OCkDAX8WEWSCg0AXHPZwskcFIziVaA7bBQJxPTKkWy5Diw==}
-    engines: {node: '>=16'}
 
 snapshots:
 
@@ -513,10 +500,6 @@ snapshots:
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
 
-  async-mutex@0.3.2:
-    dependencies:
-      tslib: 2.8.1
-
   atomic-sleep@1.0.0: {}
 
   colorette@2.0.20: {}
@@ -628,8 +611,6 @@ snapshots:
     dependencies:
       real-require: 1.0.0
 
-  tslib@2.8.1: {}
-
   typescript@7.0.2:
     optionalDependencies:
       '@typescript/typescript-aix-ppc64': 7.0.2
@@ -656,7 +637,3 @@ snapshots:
   undici-types@7.24.6: {}
 
   wrappy@1.0.2: {}
-
-  z3-solver@5.3.1:
-    dependencies:
-      async-mutex: 0.3.2
