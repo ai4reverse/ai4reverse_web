@@ -310,6 +310,7 @@ test('a webdriver-true profile is reported as an installation error', async () =
 
 test('a rejected engine snippet is reported instead of thrown', async () => {
   const harness = await createHarness({ modules: ['globals', 'console', 'timers'] })
+  let disposal
   try {
     assert.equal(harness.bridge.antiFingerprint, undefined)
 
@@ -336,8 +337,11 @@ test('a rejected engine snippet is reported instead of thrown', async () => {
     assert.equal(callFailures.length, 1)
     assert.equal(harness.bridge.antiFingerprint, undefined)
   } finally {
-    harness.dispose()
+    disposal = harness.dispose()
   }
+  // The rejected snippets hand back error handles; a degraded install must still
+  // release every handle it took, or the engine aborts on teardown.
+  assert.equal(disposal.leaked, false, 'a rejected snippet must not leak a handle')
 })
 
 test('degraded hardening reports the failed stage and never claims success', async () => {
@@ -373,6 +377,7 @@ test('degraded hardening reports the failed stage and never claims success', asy
 
   for (const testCase of cases) {
     const harness = await createHarness({ modules: plainModules })
+    let disposal
     try {
       assert.doesNotThrow(() => installAntiFingerprint(poisoningBridge(harness.bridge, testCase.poison)), testCase.label)
       const names = harness.trace.events.filter((event) => String(event.event).startsWith('anti-fingerprint.')).map((event) => event.event)
@@ -392,7 +397,10 @@ test('degraded hardening reports the failed stage and never claims success', asy
       const moved = harness.trace.events.filter((event) => event.event === 'anti-fingerprint.prototypified')
       for (const event of moved) assert.ok(event.moved > 0 && event.moved < 10000, JSON.stringify(event))
     } finally {
-      harness.dispose()
+      disposal = harness.dispose()
     }
+    // A degraded stage must not leave the failed snippet's handles alive: the
+    // engine aborts (and quarantines the WASM module) if it does.
+    assert.equal(disposal.leaked, false, `${testCase.label}: degraded install leaked a handle`)
   }
 })
