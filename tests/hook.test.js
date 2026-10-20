@@ -298,7 +298,14 @@ test('trace recording follows record/recordPhases/phase policy', () => {
   allowBus.on('api:before', () => undefined)
   allowBus.emit('ast:node', {})
   allowBus.emit('api:before', { api: 'x' })
-  assert.deepEqual(allowListed.events.map((event) => event.phase ?? event.event), ['node'], 'only the allow-listed prefix is recorded')
+  // The trace phase is the transport (`emit`), which is one of the declared
+  // TRACE_PHASES; the hook phase travels in `hook`. Forwarding the hook
+  // sub-phase used to break a strict recorder on `lifecycle:run`.
+  assert.deepEqual(
+    allowListed.events.map((event) => ({ phase: event.phase, hook: event.hook })),
+    [{ phase: 'emit', hook: 'ast:node' }],
+    'only the allow-listed prefix is recorded',
+  )
 
   const defaultTrace = makeTrace()
   const bus = createHookBus({ trace: defaultTrace })

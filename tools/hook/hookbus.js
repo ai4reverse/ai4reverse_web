@@ -70,6 +70,19 @@ const UNTRACED_PHASES = new Set(['code:step'])
 const MAX_HOOK_ERRORS = 200
 
 /**
+ * Total characters of hook-failure messages retained for `stats()`.
+ *
+ * A count-only bound is not a memory bound: 200 entries carrying a megabyte
+ * stack each retain ~200 MB, and the audit measured up to ~838 MB with real
+ * large messages. 64 KiB keeps `stats()` useful while making the ring's
+ * footprint independent of message size.
+ */
+const MAX_HOOK_ERROR_CHARS = 64 * 1024
+
+/** Per-message cap; the head of a message carries the diagnosis, not the tail. */
+const MAX_HOOK_ERROR_MESSAGE = 2 * 1024
+
+/**
  * @typedef {object} HookRegistration
  * @property {string} id
  * @property {string} phase
@@ -105,8 +118,12 @@ export function createHookBus(options = {}) {
   const context = new Map()
   let nextId = 1
   let dispatchCount = 0
-  /** Bounded ring of hook failures; `errorsTruncated` says entries were dropped. */
+  /**
+   * Bounded ring of hook failures, capped by count *and* by total message
+   * characters; `errorsTruncated` says entries were dropped.
+   */
   const errors = []
+  let errorChars = 0
   let errorsTruncated = false
 
   function normalizePhase(phase) {
@@ -248,7 +265,11 @@ export function createHookBus(options = {}) {
       }
       dispatchCount += 1
       if (trace && shouldRecord(normalized)) {
-        trace.emit('hook', normalized.split(':')[1] ?? 'emit', { phase: normalized, hook: normalized })
+        // The trace phase is the transport, not the hook phase: hook phases
+        // include lifecycle names (`init`, `run`, `dispose`) that are not trace
+        // phases, so forwarding them made a strict recorder throw. The hook
+        // phase travels in `hook` (the event envelope owns `phase`).
+        trace.emit('hook', 'emit', { phase: normalized, hook: normalized })
       }
       return { phase: normalized, results }
     },
@@ -316,8 +337,9 @@ export function createHookBus(options = {}) {
 
       dispatchCount += 1
       if (trace && shouldRecord(normalized)) {
-        trace.emit('hook', normalized.split(':')[1] ?? 'emit', {
+        trace.emit('hook', 'emit', {
           phase: normalized,
+          hook: normalized,
           hooks: results.length,
           blocked,
           stopped,
@@ -369,7 +391,12 @@ export function createHookBus(options = {}) {
       }
       dispatchCount += 1
       if (trace && shouldRecord(normalized)) {
-        trace.emit('hook', 'transform', { phase: normalized, changed, hooks: steps.length })
+        trace.emit('hook', 'transform', {
+          phase: normalized,
+          hook: normalized,
+          changed,
+          hooks: steps.length,
+        })
       }
       return { value, changed, steps }
     },
@@ -409,17 +436,31 @@ export function createHookBus(options = {}) {
     const entry = {
       hook: registration.id,
       phase: registration.phase,
-      message: error?.message ?? String(error),
+      message: clipMessage(error?.message ?? String(error)),
     }
     errors.push(entry)
-    if (errors.length > MAX_HOOK_ERRORS) {
-      // Keep the newest failures; the ring is bounded so a hook that throws on
-      // every guest statement cannot grow the sandbox's memory without limit.
-      errors.splice(0, errors.length - MAX_HOOK_ERRORS)
+    errorChars += entry.message.length
+    // Keep the newest failures; the ring is bounded by count *and* by total
+    // message size, so neither many failures nor very large messages can grow
+    // the sandbox's memory without limit.
+    while (errors.length > MAX_HOOK_ERRORS || (errorChars > MAX_HOOK_ERROR_CHARS && errors.length > 1)) {
+      const dropped = errors.shift()
+      errorChars -= dropped.message.length
       errorsTruncated = true
     }
     if (logger) logger.warn({ hook: entry }, 'hook failed; continuing')
   }
 
   return bus
+}
+
+/**
+ * Bound one failure message. The marker keeps the original length visible, so a
+ * report can state that it was clipped instead of silently losing context.
+ * @param {unknown} message
+ */
+function clipMessage(message) {
+  const text = String(message)
+  if (text.length <= MAX_HOOK_ERROR_MESSAGE) return text
+  return `${text.slice(0, MAX_HOOK_ERROR_MESSAGE)}…[${text.length}]`
 }

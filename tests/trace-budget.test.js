@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHookBus, HOOK_PHASES } from '../tools/hook/hookbus.js'
-import { createTraceRecorder } from '../tools/instrumentation/trace.js'
+import { createTraceRecorder, TRACE_PHASES } from '../tools/instrumentation/trace.js'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
 
 /**
@@ -129,4 +129,82 @@ test('a bus that never fails does not claim truncation', () => {
   const stats = bus.stats()
   assert.deepEqual(stats.errors, [])
   assert.equal(stats.errorsTruncated, false)
+})
+
+test('hook error storage is bounded by total characters, not just by count', () => {
+  const bus = createHookBus({ record: false })
+  // A megabyte of message per failure: the count-only bound used to retain
+  // ~200 MB (the audit measured up to ~838 MB with real stacks).
+  bus.on(
+    'api:before',
+    () => {
+      throw new Error('x'.repeat(1024 * 1024))
+    },
+    { id: 'huge' },
+  )
+  for (let index = 0; index < 50; index += 1) bus.dispatch('api:before', { api: 'x' })
+
+  const stats = bus.stats()
+  assert.equal(stats.errorsTruncated, true)
+  assert.ok(stats.errors.length <= 200, `retained entries: ${stats.errors.length}`)
+  assert.ok(stats.errors.length >= 1, 'the newest failure must survive')
+  const retainedChars = stats.errors.reduce((total, entry) => total + entry.message.length, 0)
+  assert.ok(retainedChars <= 64 * 1024, `retained message characters: ${retainedChars}`)
+  // Each message is clipped, and the clip is visible rather than silent.
+  assert.ok(stats.errors.every((entry) => entry.message.length <= 2 * 1024 + 32))
+  assert.ok(stats.errors.every((entry) => entry.message.startsWith('xxxx')))
+  assert.match(stats.errors.at(-1).message, /…\[1048576\]$/)
+})
+
+test('a short failure keeps its exact message even next to a clipped one', () => {
+  const bus = createHookBus({ record: false })
+  bus.on('api:before', () => {
+    throw new Error('short and exact')
+  }, { id: 'short' })
+  bus.on('api:before', () => {
+    throw new Error('y'.repeat(5000))
+  }, { id: 'long' })
+  bus.dispatch('api:before', {})
+  const [shortEntry, longEntry] = bus.stats().errors
+  assert.equal(shortEntry.message, 'short and exact')
+  assert.equal(longEntry.message.length, 2 * 1024 + '…[5000]'.length)
+})
+
+test('hook trace events use a declared trace phase, so a strict recorder accepts lifecycle hooks', () => {
+  // Regression: the bus forwarded the hook sub-phase (`init`, `run`, `dispose`)
+  // as the trace phase, and a strict recorder rejected it with
+  // "unknown trace phase: run". The hook phase now travels in the payload.
+  const trace = createTraceRecorder({ strict: true })
+  const bus = createHookBus({ trace })
+  for (const phase of ['lifecycle:init', 'lifecycle:run', 'lifecycle:dispose', 'code:before']) {
+    bus.on(phase, (payload) => payload, { id: `listen-${phase}` })
+  }
+  assert.doesNotThrow(() => bus.emit('lifecycle:init', { runId: 'run-1' }))
+  assert.doesNotThrow(() => bus.emit('lifecycle:run', { ok: true }))
+  assert.doesNotThrow(() => bus.emit('lifecycle:dispose', {}))
+  assert.doesNotThrow(() => bus.dispatch('code:before', {}))
+  assert.doesNotThrow(() => bus.pipeline('code:before', 'source'))
+
+  const hookEvents = trace.events.filter((event) => event.kind === 'hook')
+  assert.equal(hookEvents.length, 5)
+  assert.deepEqual(hookEvents.map((event) => event.phase), ['emit', 'emit', 'emit', 'emit', 'transform'])
+  // The hook phase is never lost: it travels in `hook` (the envelope keeps the
+  // declared trace phase).
+  assert.deepEqual(
+    hookEvents.map((event) => event.hook),
+    ['lifecycle:init', 'lifecycle:run', 'lifecycle:dispose', 'code:before', 'code:before'],
+  )
+  assert.ok(TRACE_PHASES.includes('emit'))
+  assert.ok(TRACE_PHASES.includes('transform'))
+})
+
+test('an unknown trace kind is rejected without strict phase validation', () => {
+  const recorder = createTraceRecorder()
+  assert.throws(() => recorder.emit('bogus', 'emit', {}), /unknown trace kind: bogus/)
+  assert.equal(recorder.seq, 0, 'a rejected event must not advance the sequence')
+  assert.deepEqual(recorder.stats().byKind, {})
+  // A non-strict recorder still accepts a descriptive phase: the guest trace
+  // hook forwards whatever phase the DOM shim reports.
+  assert.doesNotThrow(() => recorder.emit('api', 'guest-supplied-phase', {}))
+  assert.equal(recorder.seq, 1)
 })

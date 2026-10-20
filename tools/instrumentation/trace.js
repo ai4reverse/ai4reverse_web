@@ -103,10 +103,15 @@ export function createTraceRecorder(options = {}) {
      * @returns {TraceEvent|null}
      */
     emit(kind, phase, payload = {}) {
+      // `kind` is a code-level constant from TRACE_KINDS, never guest data, so
+      // an unknown kind is a programming error in every mode. It is validated
+      // before anything is mutated: a rejected event must not advance the
+      // sequence or pollute the counters.
+      if (!TRACE_KINDS.includes(kind)) throw new Error(`unknown trace kind: ${kind}`)
       if (strict) {
-        // Validate before mutating anything: a rejected event must not advance
-        // the sequence or pollute the counters.
-        if (!TRACE_KINDS.includes(kind)) throw new Error(`unknown trace kind: ${kind}`)
+        // Phases are stricter than kinds on purpose: non-strict callers (the
+        // guest trace hook) may pass a descriptive phase string, while strict
+        // mode must reject exactly the phases that do not exist.
         if (!TRACE_PHASES.includes(phase)) throw new Error(`unknown trace phase: ${phase}`)
       }
       seq += 1
