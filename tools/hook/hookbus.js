@@ -139,11 +139,23 @@ export function createHookBus(options = {}) {
 
   function matching(phase) {
     const [domain] = phase.split(':')
-    return [
-      ...(registry.get(phase) ?? []),
-      ...(registry.get(`${domain}:*`) ?? []),
-      ...(registry.get('*') ?? []),
-    ].sort((a, b) => b.priority - a.priority || a.seq - b.seq)
+    // Exact phase first. Domain wildcards (`code:*`) and global `*` are added
+    // only when the requested phase is more specific — otherwise
+    // `pipeline('code:*', …)` would match the same registration twice
+    // (exact + domain-wildcard) and apply a transform twice (ACCEPTANCE H9).
+    const exact = registry.get(phase) ?? []
+    const domainWild = phase.endsWith(':*') || phase === '*'
+      ? []
+      : (registry.get(`${domain}:*`) ?? [])
+    const globalWild = phase === '*' ? [] : (registry.get('*') ?? [])
+    const seen = new Set()
+    const out = []
+    for (const registration of [...exact, ...domainWild, ...globalWild]) {
+      if (seen.has(registration)) continue
+      seen.add(registration)
+      out.push(registration)
+    }
+    return out.sort((a, b) => b.priority - a.priority || a.seq - b.seq)
   }
 
   /**
@@ -257,9 +269,15 @@ export function createHookBus(options = {}) {
         try {
           const result = registration.handler(payload, { ...runContext, hook: registration })
           results.push({ id: registration.id, result })
+          if (result && result.stop === true) {
+            if (registration.once) bus.off(registration.id)
+            break
+          }
           if (registration.once) bus.off(registration.id)
-          if (result && result.stop === true) break
         } catch (error) {
+          // `once` still fires: a throwing handler must not re-run on the next
+          // dispatch (ACCEPTANCE H9).
+          if (registration.once) bus.off(registration.id)
           recordHookError(registration, error)
         }
       }
@@ -306,9 +324,9 @@ export function createHookBus(options = {}) {
         try {
           const result = registration.handler(payload, { ...runContext, hook: registration })
           results.push({ id: registration.id, result })
-          if (registration.once) bus.off(registration.id)
           if (result === false) {
             stopped = true
+            if (registration.once) bus.off(registration.id)
             break
           }
           if (result && typeof result === 'object') {
@@ -316,6 +334,7 @@ export function createHookBus(options = {}) {
               blocked = true
               value = result.block
               stopped = true
+              if (registration.once) bus.off(registration.id)
               break
             }
             if ('args' in result && Array.isArray(result.args)) args = result.args
@@ -323,14 +342,18 @@ export function createHookBus(options = {}) {
               blocked = true
               value = result.replace
               stopped = true
+              if (registration.once) bus.off(registration.id)
               break
             }
             if (result.stop === true) {
               stopped = true
+              if (registration.once) bus.off(registration.id)
               break
             }
           }
+          if (registration.once) bus.off(registration.id)
         } catch (error) {
+          if (registration.once) bus.off(registration.id)
           recordHookError(registration, error)
         }
       }
@@ -376,7 +399,6 @@ export function createHookBus(options = {}) {
       for (const registration of registrations) {
         try {
           const result = registration.handler(value, { ...runContext, hook: registration })
-          if (registration.once) bus.off(registration.id)
           if (result !== undefined && result !== null) {
             if (result !== value) changed = true
             value = result
@@ -384,8 +406,13 @@ export function createHookBus(options = {}) {
           } else {
             steps.push({ id: registration.id, changed: false })
           }
-          if (result && result.stop === true) break
+          if (result && result.stop === true) {
+            if (registration.once) bus.off(registration.id)
+            break
+          }
+          if (registration.once) bus.off(registration.id)
         } catch (error) {
+          if (registration.once) bus.off(registration.id)
           recordHookError(registration, error)
         }
       }
@@ -458,7 +485,13 @@ export function createHookBus(options = {}) {
       errorChars -= dropped.message.length
       errorsTruncated = true
     }
-    if (logger) logger.warn({ hook: entry }, 'hook failed; continuing')
+    if (logger) {
+      try {
+        logger.warn({ hook: entry }, 'hook failed; continuing')
+      } catch {
+        // Logger failures must never escape dispatch (ACCEPTANCE H9).
+      }
+    }
   }
 
   return bus

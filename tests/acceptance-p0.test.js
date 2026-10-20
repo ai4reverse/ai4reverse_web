@@ -185,9 +185,7 @@ test('H9 pipeline on a wildcard phase applies a transform exactly once', {
   assert.equal(result.value, 'a/*x*/')
 })
 
-test('H9 a throwing logger does not escape dispatch', {
-  todo: 'ACCEPTANCE H9 — logger failures must stay isolated',
-}, () => {
+test('H9 a throwing logger does not escape dispatch', () => {
   const bus = createHookBus({
     logger: {
       warn() {
