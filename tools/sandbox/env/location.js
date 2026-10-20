@@ -36,6 +36,8 @@ export function install(bridge) {
 
   const refresh = () => {
     for (const [key, value] of Object.entries(parts())) {
+      // `href` is the accessor installed below so assignment navigates (H4).
+      if (key === 'href') continue
       bridge.install(locationProto, key, value, { enumerable: true, configurable: true, writable: false })
     }
     bridge.install(locationProto, 'ancestorOrigins', bridge.arr([]), {
@@ -71,6 +73,16 @@ export function install(bridge) {
     bridge.install(historyProto, 'length', historyStack.length, { enumerable: true, configurable: true, writable: false })
   }
 
+  bridge.accessor(locationProto, 'href', {
+    enumerable: true,
+    configurable: true,
+    get: () => ctx.newString(current.href),
+    set: ({ args }) => {
+      navigate('href', bridge.str(args, 0), false)
+      return ctx.undefined
+    },
+  })
+
   bridge.install(locationProto, 'assign', bridge.fn('assign', 1, ({ args }) => {
     navigate('assign', bridge.str(args, 0), false)
     return ctx.undefined
@@ -92,11 +104,36 @@ export function install(bridge) {
     writable: true,
   })
 
+  // Data property keeps the Location handle alive (accessor getters must
+  // `.dup()` — returning the owned handle lets the trampoline free it).
   bridge.install(bridge.global, 'location', location, {
     enumerable: true,
     configurable: false,
     writable: false,
   })
+
+  // Same Location object on document (ACCEPTANCE H4). Dom (order 30) runs
+  // before location (order 50), so document already exists on the global.
+  bridge.documentLocation = location
+  {
+    const documentHandle = ctx.getProp(bridge.global, 'document')
+    if (documentHandle && ctx.typeof(documentHandle) === 'object') {
+      bridge.accessor(documentHandle, 'location', {
+        // Non-enumerable + configurable so anti-fingerprint prototypify can move
+        // it onto the document prototype layer (Object.keys / getOwnPropertyNames
+        // on the instance stay empty — env-surface WebIDL contract).
+        enumerable: false,
+        configurable: true,
+        get: () => location.dup(),
+        set: ({ args }) => {
+          const value = bridge.str(args, 0, '')
+          if (value) navigate('document.location', value, false)
+          return ctx.undefined
+        },
+      })
+    }
+    documentHandle?.dispose()
+  }
 
   // history
   bridge.install(historyProto, 'length', 1, { enumerable: true, configurable: true, writable: false })

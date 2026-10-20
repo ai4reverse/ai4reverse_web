@@ -709,6 +709,58 @@ test('navigation does not create own properties on location/history', async () =
   }
 })
 
+test('document.location is the same Location and href assignment navigates', async () => {
+  const sb = await fullSandbox()
+  try {
+    const run = await sb.run(`
+      (function () {
+        var same = document.location === location;
+        location.href = 'https://nav.example.test/via-href';
+        var afterHref = location.href;
+        document.location = 'https://nav.example.test/via-document';
+        return {
+          same: same,
+          afterHref: afterHref,
+          afterDocument: location.href,
+          ownLocation: Object.getOwnPropertyNames(document).indexOf('location') === -1
+        };
+      })()
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    const value = JSON.parse(run.result.preview)
+    assert.equal(value.same, true)
+    assert.match(value.afterHref, /nav\.example\.test\/via-href/)
+    assert.match(value.afterDocument, /nav\.example\.test\/via-document/)
+    assert.equal(value.ownLocation, true)
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('navigator scalar descriptors expose named getters', async () => {
+  const sb = await fullSandbox()
+  try {
+    const run = await sb.run(`
+      (function () {
+        var desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator), 'userAgent')
+          || Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+        return {
+          hasGet: typeof desc.get === 'function',
+          name: desc.get && desc.get.name,
+          writable: desc.writable === true
+        };
+      })()
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    const value = JSON.parse(run.result.preview)
+    assert.equal(value.hasGet, true)
+    assert.equal(value.name, 'get userAgent')
+    assert.equal(value.writable, false)
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('credential, gamepad, media-session and lock surfaces exist per engine', async () => {
   const sb = await fullSandbox()
   try {
