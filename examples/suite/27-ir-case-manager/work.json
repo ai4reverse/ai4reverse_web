@@ -1,0 +1,24 @@
+{
+  "id": "27",
+  "slug": "ir-case-manager",
+  "type": "app",
+  "title": "IR Case Manager",
+  "grade": "commercial",
+  "category": "incident-response",
+  "summary": "事件响应案件管理：内容寻址证据库与 SHA-256 去重、P1-P4 SLA 计时、哈希链审计轨迹、样本自动分析归档与 Markdown 案件档案导出。",
+  "capabilities": [
+    "案件创建/流转/关闭",
+    "内容寻址证据存储",
+    "SLA 计时与违约告警",
+    "哈希链审计轨迹",
+    "沙箱分析自动归档",
+    "Markdown 档案导出"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

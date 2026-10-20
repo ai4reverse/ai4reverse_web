@@ -1,0 +1,24 @@
+{
+  "id": "28",
+  "slug": "attack-simulation-range",
+  "type": "app",
+  "title": "Attack Simulation Range",
+  "grade": "commercial",
+  "category": "adversary-simulation",
+  "summary": "确定性攻击模拟靶场：内置 MITRE 风格杀伤链场景，把内联样本逐段跑过无痕沙箱，按判定档位/分数/技术点/IOC/杀伤链断言检测结果并输出 JSON 记分卡。",
+  "capabilities": [
+    "杀伤链场景编排",
+    "MITRE 技术点标注",
+    "检测断言与记分卡",
+    "IOC 覆盖与意外外联识别",
+    "外部场景 JSON 加载",
+    "沙箱销毁与出网拒绝校验"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "26",
+  "slug": "detection-as-code-ci",
+  "type": "app",
+  "title": "Detection-as-code CI",
+  "grade": "commercial",
+  "category": "detection-as-code",
+  "summary": "检测即代码门禁：扫描仓库样本、生成并校验 YARA+Sigma 规则、强制每个恶意样本被规则覆盖，未覆盖或误伤良性即失败（exit 2）。",
+  "capabilities": [
+    "仓库级批量分诊",
+    "fileless 匹配面构造",
+    "YARA 规则生成/解析/匹配",
+    "Sigma 规则生成/解析/匹配",
+    "检测覆盖率门禁",
+    "误报门禁与 stale 告警",
+    "幂等生成",
+    "JSON 输出与自检"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

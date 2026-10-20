@@ -1,0 +1,24 @@
+{
+  "id": "23",
+  "slug": "threat-hunting-query-engine",
+  "type": "app",
+  "title": "Threat Hunting Query Engine",
+  "grade": "commercial",
+  "category": "threat-hunting",
+  "summary": "Sigma 风格狩猎引擎：把 YAML 检测规则编译为谓词，在归一化分析观测表上执行查询，输出命中规则、元数据与逐字段解释。",
+  "capabilities": [
+    "Sigma 子集 YAML 解析与严格校验",
+    "规则编译为谓词（字段/修饰符/布尔条件）",
+    "报告归一化为观测表",
+    "批量查询与去重命中",
+    "逐字段 explain 解释",
+    "JSON/Markdown 输出与自检"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "id": "29",
+  "slug": "sandbox-scheduler",
+  "type": "app",
+  "title": "Sandbox Scheduler",
+  "grade": "military",
+  "category": "orchestration",
+  "summary": "沙箱调度器：优先级队列 + 全局并发上限 + 租户配额与排队上限 + 超时预算 + 指数退避重试，逐次隔离销毁沙箱并聚合租户级指标。",
+  "capabilities": [
+    "优先级准入排序",
+    "全局/租户并发配额",
+    "租户排队上限",
+    "超时预算裁剪",
+    "指数退避重试",
+    "销毁与指标聚合"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

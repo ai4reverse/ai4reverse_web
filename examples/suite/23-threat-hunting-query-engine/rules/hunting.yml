@@ -1,0 +1,161 @@
+# Built-in hunting rule bundle.
+#
+# Every rule selects on the normalised observation vocabulary documented in
+# lib/rules.js (FIELDS). Rules are additive: adding evidence to a report can add
+# matches but never removes one.
+---
+id: hunt-encoded-beacon
+title: Base64-encoded C2 beacon
+description: Sample decodes a base64 payload and then contacts an external URL.
+author: ai4reverse detection team
+status: stable
+level: high
+tags:
+  - c2
+  - encoded
+logsource:
+  product: browser
+  service: javascript
+detection:
+  encoded_decode:
+    kind: obfuscation
+    value: base64-decode
+  outbound:
+    layer: dynamic
+    kind: net
+  url_indicator:
+    layer: ioc
+    category: urls
+  condition: encoded_decode and outbound and url_indicator
+falsepositives:
+  - Analytics SDK that base64-encodes its configuration blob
+---
+id: hunt-suspicious-tld
+title: Indicator on a high-abuse TLD
+description: Extracted domain uses a TLD with a high historical abuse ratio.
+author: ai4reverse detection team
+status: stable
+level: medium
+tags:
+  - infrastructure
+logsource:
+  product: browser
+  service: javascript
+detection:
+  abusive_domain:
+    suspiciousTld: true
+  condition: abusive_domain
+---
+id: hunt-telegram-c2
+title: Telegram bot API used as command channel
+description: Telegram bot endpoints are a common low-cost C2 transport.
+author: ai4reverse detection team
+status: stable
+level: high
+tags:
+  - c2
+  - telegram
+logsource:
+  product: browser
+  service: javascript
+detection:
+  telegram_host:
+    domain: api.telegram.org
+  bot_path:
+    url|contains: /bot
+  condition: telegram_host and bot_path
+---
+id: hunt-wallet-swap
+title: Clipboard wallet substitution
+description: Crypto wallet indicator shipped together with clipboard access.
+author: ai4reverse detection team
+status: stable
+level: critical
+tags:
+  - clipper
+  - financial
+logsource:
+  product: browser
+  service: javascript
+detection:
+  wallet_indicator:
+    layer: ioc
+    category: wallets
+  clipboard_read:
+    api|contains: clipboard.read
+  clipboard_write:
+    api|contains: clipboard.write
+  condition: wallet_indicator and (clipboard_read or clipboard_write)
+---
+id: hunt-dynamic-eval
+title: Dynamic code evaluation from decoded data
+description: The sandbox observed eval-like execution of decoded content.
+author: ai4reverse detection team
+status: stable
+level: high
+tags:
+  - execution
+  - evasion
+logsource:
+  product: browser
+  service: javascript
+detection:
+  eval_payload:
+    kind: eval
+    action: eval.payload
+  dynamic_code:
+    technique: dynamic-code-execution
+  condition: eval_payload and dynamic_code
+---
+id: hunt-storage-persistence
+title: State written to browser storage
+description: Persistence via localStorage/sessionStorage writes.
+author: ai4reverse detection team
+status: stable
+level: medium
+tags:
+  - persistence
+logsource:
+  product: browser
+  service: javascript
+detection:
+  storage_event:
+    layer: dynamic
+    kind: storage
+  storage_api:
+    api|startswith: localstorage
+  condition: storage_event and storage_api
+---
+id: hunt-jsvmp-dispatch
+title: JSVMP interpreter detected
+description: Control flow is hidden behind a virtual machine dispatch loop.
+author: ai4reverse detection team
+status: stable
+level: high
+tags:
+  - obfuscation
+  - jsvmp
+logsource:
+  product: browser
+  service: javascript
+detection:
+  dispatch:
+    action: jsvmp.detected
+  condition: dispatch
+---
+id: hunt-suspicious-verdict
+title: Analyser verdict at or above suspicious
+description: The weighted verdict score reached the suspicious band.
+author: ai4reverse detection team
+status: stable
+level: low
+tags:
+  - triage
+logsource:
+  product: browser
+  service: javascript
+detection:
+  band:
+    layer: verdict
+    score|gte: 25
+  condition: band

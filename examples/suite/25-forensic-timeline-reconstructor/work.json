@@ -1,0 +1,26 @@
+{
+  "id": "25",
+  "slug": "forensic-timeline-reconstructor",
+  "type": "app",
+  "title": "Forensic Timeline Reconstructor",
+  "grade": "commercial",
+  "category": "forensics-timeline",
+  "summary": "把静态分析、动态 trace 与 artifacts 合并为确定性取证时间线：虚拟时钟排序、阶段标记、时间空洞与结构性异常检测，输出 Markdown/JSON。",
+  "capabilities": [
+    "静态/动态/产物三层证据合并",
+    "artifact 按 trace 序号回挂",
+    "虚拟时钟确定性时间线",
+    "可选宿主墙钟旁证",
+    "kill-chain 阶段标记",
+    "时间空洞检测",
+    "结构性异常检测",
+    "Markdown/JSON 输出与自检"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

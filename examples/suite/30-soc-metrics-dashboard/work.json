@@ -1,0 +1,24 @@
+{
+  "id": "30",
+  "slug": "soc-metrics-dashboard",
+  "type": "app",
+  "title": "SOC Metrics Dashboard",
+  "grade": "commercial",
+  "category": "soc-operations",
+  "summary": "SOC 指标看板：摄入分析结果或样本自动生成告警记录，计算 MTTD/MTTC/MTTR、判定分布、SLA 达标率、Top 技术点/IOC 与待处置队列，输出 ASCII/Markdown 看板与 JSON。",
+  "capabilities": [
+    "分析结果摄入",
+    "MTTD/MTTC/MTTR 统计",
+    "判定与级别分布",
+    "SLA 达标与超期判定",
+    "Top 技术点/IOC 聚合",
+    "ASCII/Markdown/JSON 导出"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}
