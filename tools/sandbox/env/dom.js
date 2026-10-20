@@ -1171,7 +1171,12 @@ function domShim(host) {
    */
   function makeAttributeAccessor(key, kind) {
     var source
-    if (kind === 'get') {
+    if (kind === 'get' && key === 'textContent') {
+      // Element text content is computed from the subtree when it was never
+      // written through the setter; CharacterData keeps its own stored value.
+      source =
+        'return function () { var bag = bagFor(this); if (bag && bag["' + key + '"] !== undefined) return bag["' + key + '"]; return aggregateTextContent(this) }'
+    } else if (kind === 'get') {
       source = 'return function () { var bag = bagFor(this); return bag ? bag["' + key + '"] : undefined }'
     } else if (TRACED_TEXT_SETTERS[key]) {
       // The write is recorded (operation + length) after the bag is updated, so
@@ -1182,7 +1187,7 @@ function domShim(host) {
     } else {
       source = 'return function (value) { var bag = bagFor(this); if (bag) bag["' + key + '"] = value }'
     }
-    var accessor = new Function('bagFor', 'traceTextMutation', source)(bagFor, traceTextMutation)
+    var accessor = new Function('bagFor', 'traceTextMutation', 'aggregateTextContent', source)(bagFor, traceTextMutation, aggregateTextContent)
     Object.defineProperty(accessor, 'name', {
       value: (kind === 'get' ? 'get ' : 'set ') + key,
       configurable: true,
@@ -1218,6 +1223,31 @@ function domShim(host) {
     bag.length = value.length
     bag.nodeValue = value
     bag.textContent = value
+  }
+
+  /**
+   * Concatenate the text of every descendant text/CDATA node, like
+   * Node.textContent does in a real browser for elements whose text was
+   * assembled through appendChild (e.g. by the DOMParser shim) rather than
+   * written through the textContent setter. Comments are excluded, matching
+   * the spec. Iterative on purpose: parsed trees can be deep.
+   */
+  function aggregateTextContent(root) {
+    var out = ''
+    var stack = [root]
+    while (stack.length > 0) {
+      var current = stack.pop()
+      if (current === null || typeof current !== 'object') continue
+      if (current.nodeType === 3 || current.nodeType === 4) {
+        out += characterDataOf(current)
+        continue
+      }
+      var state = nodeStates.get(current)
+      var children = state ? state.childNodes : null
+      if (!children) continue
+      for (var index = children.length - 1; index >= 0; index -= 1) stack.push(children[index])
+    }
+    return out
   }
 
   function clampOffset(offset, length) {
@@ -1848,7 +1878,6 @@ function domShim(host) {
       placeholder: '',
       width: 0,
       height: 0,
-      textContent: '',
       innerText: '',
       innerHTML: '',
       outerHTML: '',
@@ -2610,7 +2639,6 @@ function domShim(host) {
       lastChild: null,
       nextSibling: null,
       previousSibling: null,
-      textContent: '',
     }
     return node
   }
