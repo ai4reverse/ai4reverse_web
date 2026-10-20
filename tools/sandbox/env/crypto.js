@@ -1,6 +1,3 @@
-import { createHash, createCipheriv, createDecipheriv, randomUUID as hostRandomUUID } from 'node:crypto'
-import { createSeededRandom } from '../../util/random.js'
-
 /**
  * `crypto` surface.
  *
@@ -10,7 +7,8 @@ import { createSeededRandom } from '../../util/random.js'
  * crypto) because samples hash strings to derive keys and self-check their own
  * source; a wrong digest changes behaviour.
  */
-
+import { createHash, createCipheriv, createDecipheriv, randomUUID as hostRandomUUID } from 'node:crypto'
+import { createSeededRandom } from '../../util/random.js'
 export const meta = { id: 'crypto', order: 80, requires: ['globals'] }
 
 const HASH_ALGORITHMS = new Map([
