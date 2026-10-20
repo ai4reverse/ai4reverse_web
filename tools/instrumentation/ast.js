@@ -149,6 +149,7 @@ export function analyzeSource(source, options = {}) {
         case 'NewExpression':
           facts.calls += 1
           if (node.callee.type === 'Identifier') bump(callNames, `new ${node.callee.name}`)
+          classifyCall(node, facts)
           break
         case 'SwitchStatement':
           if (node.cases.length >= 5) facts.dispatchSwitches += 1
@@ -156,6 +157,15 @@ export function analyzeSource(source, options = {}) {
         case 'ArrayExpression':
           if (node.elements.length >= 8 && node.elements.every((element) => element?.type === 'StringLiteral')) {
             facts.stringArrayDeclarations += 1
+          }
+          break
+        case 'AssignmentExpression':
+          if (
+            node.left?.type === 'MemberExpression' &&
+            node.left.property &&
+            (node.left.property.name === 'innerHTML' || node.left.property.name === 'outerHTML')
+          ) {
+            facts.domInjection = (facts.domInjection ?? 0) + 1
           }
           break
         case 'DebuggerStatement':
@@ -247,6 +257,7 @@ export function detectTechniques(facts) {
   if (facts.longStringBlobs > 0) techniques.add('embedded-payload')
   if (facts.wasmReferences) techniques.add('webassembly')
   if (facts.workerReferences) techniques.add('worker-thread')
+  if (facts.serviceWorkerReferences) techniques.add('service-worker')
   return [...techniques].sort()
 }
 
@@ -263,19 +274,26 @@ function classifyCall(node, facts) {
   if (name === 'fetch') facts.fetchCalls = (facts.fetchCalls ?? 0) + 1
   if (name === 'XMLHttpRequest' || name === 'new XMLHttpRequest') facts.xhrCalls = (facts.xhrCalls ?? 0) + 1
   if (name === 'WebSocket' || name === 'new WebSocket') facts.websocketCalls = (facts.websocketCalls ?? 0) + 1
-  if (name === 'document.write' || name === 'insertAdjacentHTML' || name === 'write') facts.domInjection = (facts.domInjection ?? 0) + 1
+  if (
+    /(?:document\.)?(?:write|writeln|insertAdjacentHTML|createElement|appendChild|insertBefore|replaceChild)$/.test(name)
+  ) {
+    facts.domInjection = (facts.domInjection ?? 0) + 1
+  }
   if (/^document\.cookie/.test(name) || /cookie/.test(name)) facts.cookieAccesses = (facts.cookieAccesses ?? 0) + 1
   if (/localStorage\.(setItem|clear)/.test(name)) facts.storageWrites = (facts.storageWrites ?? 0) + 1
   if (/localStorage\.(getItem|key)/.test(name)) facts.storageReads = (facts.storageReads ?? 0) + 1
   if (/clipboard\./.test(name)) facts.clipboardCalls = (facts.clipboardCalls ?? 0) + 1
   if (/crypto\.subtle/.test(name)) facts.cryptoSubtleCalls = (facts.cryptoSubtleCalls ?? 0) + 1
   if (/crypto\.getRandomValues/.test(name)) facts.getRandomValuesCalls = (facts.getRandomValuesCalls ?? 0) + 1
+  if (/serviceWorker\.(?:register|getRegistrations|ready)/.test(name)) facts.serviceWorkerReferences = (facts.serviceWorkerReferences ?? 0) + 1
   if (/addEventListener/.test(name)) {
     const event = node.arguments[0]?.value
     if (typeof event === 'string' && /^key/.test(event)) facts.keyEventListeners = (facts.keyEventListeners ?? 0) + 1
   }
-  if (name === 'new WebAssembly' || name.startsWith('WebAssembly.')) facts.wasmReferences = (facts.wasmReferences ?? 0) + 1
-  if (name === 'new Worker') facts.workerReferences = (facts.workerReferences ?? 0) + 1
+  if (name === 'new WebAssembly' || name.startsWith('WebAssembly.') || name.startsWith('new WebAssembly')) {
+    facts.wasmReferences = (facts.wasmReferences ?? 0) + 1
+  }
+  if (name === 'new Worker' || name === 'Worker') facts.workerReferences = (facts.workerReferences ?? 0) + 1
   if (SENSITIVE_APIS.has(name)) {
     const category = SENSITIVE_APIS.get(name)
     facts.sensitiveApis = facts.sensitiveApis ?? {}
