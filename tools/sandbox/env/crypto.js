@@ -1,4 +1,4 @@
-import { createHash, randomUUID as hostRandomUUID } from 'node:crypto'
+import { createHash, createCipheriv, createDecipheriv, randomUUID as hostRandomUUID } from 'node:crypto'
 import { createSeededRandom } from '../../util/random.js'
 
 /**
@@ -58,6 +58,158 @@ export function install(bridge) {
   }), { enumerable: true, configurable: true, writable: true })
 
   const subtle = bridge.obj()
+  // CryptoKey objects are opaque to the guest: the raw material lives on the
+  // host and is addressed by a registered (hidden) symbol.
+  const keySymbol = ctx.newSymbolFor('ai4r.crypto.key')
+  let nextKeyId = 0
+  const keyStore = new Map()
+  bridge.onDispose(() => {
+    keyStore.clear()
+    try {
+      keySymbol.dispose()
+    } catch {
+      /* already gone */
+    }
+  })
+
+  const algorithmName = (value) => {
+    if (typeof value === 'string') return value.toUpperCase()
+    if (value && typeof value === 'object') return String(value.name ?? '').toUpperCase()
+    return ''
+  }
+  const readBytesFrom = (handle) => readBytes(ctx, handle)
+  const makeKey = (bytes, algorithm, extractable, usages) => {
+    nextKeyId += 1
+    const keyId = nextKeyId
+    keyStore.set(keyId, { bytes: new Uint8Array(bytes), algorithm, extractable, usages })
+    const key = bridge.obj({
+      type: 'secret',
+      extractable: Boolean(extractable),
+      algorithm: { name: algorithm, length: bytes.length * 8 },
+      usages: bridge.arr(usages),
+    })
+    const idHandle = ctx.newNumber(keyId)
+    ctx.setProp(key, keySymbol, idHandle)
+    idHandle.dispose()
+    return key
+  }
+  const keyFor = (handle) => {
+    try {
+      const idHandle = ctx.getProp(handle, keySymbol)
+      const keyId = ctx.getNumber(idHandle)
+      idHandle.dispose()
+      return keyStore.get(keyId) ?? null
+    } catch {
+      return null
+    }
+  }
+  const promiseOfBuffer = (bytes) => {
+    const deferred = bridge.deferred()
+    deferred.resolve(bridge.toGuest(new Uint8Array(bytes)))
+    return deferred.handle
+  }
+  const cipherName = (algorithm, keyBytes, encrypting) => {
+    const name = algorithmName(algorithm)
+    const bits = keyBytes.length * 8
+    if (name === 'AES-GCM') return `aes-${bits}-gcm`
+    if (name === 'AES-CBC') return `aes-${bits}-cbc`
+    if (name === 'AES-CTR') return `aes-${bits}-ctr`
+    if (name === 'AES-ECB') return `aes-${bits}-ecb`
+    return encrypting ? null : null
+  }
+
+  bridge.install(subtle, 'importKey', bridge.fn('importKey', 5, ({ args }) => {
+    const format = String(bridge.str(args, 0, 'raw'))
+    const algorithm = bridge.value(args, 2)
+    const extractable = Boolean(bridge.value(args, 3))
+    const usages = bridge.list(args[4])
+    if (format !== 'raw') {
+      throw Object.assign(new Error('Only raw key import is supported'), { name: 'NotSupportedError' })
+    }
+    const bytes = readBytesFrom(args[1])
+    const name = algorithmName(algorithm)
+    if (!['AES-GCM', 'AES-CBC', 'AES-CTR', 'AES-ECB'].includes(name)) {
+      throw Object.assign(new Error(`Unsupported algorithm ${name}`), { name: 'NotSupportedError' })
+    }
+    const key = makeKey(bytes, name, extractable, usages)
+    const deferred = bridge.deferred()
+    deferred.resolve(key)
+    return deferred.handle
+  }), { enumerable: true, configurable: true, writable: true })
+
+  bridge.install(subtle, 'exportKey', bridge.fn('exportKey', 2, ({ args }) => {
+    const format = String(bridge.str(args, 0, 'raw'))
+    const key = keyFor(args[1])
+    if (!key) {
+      const deferred = bridge.deferred()
+      deferred.reject(Object.assign(new Error('InvalidAccessError'), { name: 'InvalidAccessError' }))
+      return deferred.handle
+    }
+    if (format !== 'raw') {
+      throw Object.assign(new Error('Only raw key export is supported'), { name: 'NotSupportedError' })
+    }
+    return promiseOfBuffer(key.bytes)
+  }), { enumerable: true, configurable: true, writable: true })
+
+  bridge.install(subtle, 'generateKey', bridge.fn('generateKey', 3, ({ args }) => {
+    const algorithm = bridge.value(args, 0) ?? {}
+    const name = algorithmName(algorithm)
+    const length = Number(algorithm.length ?? 256)
+    const key = makeKey(rng.bytes(length / 8), name, Boolean(bridge.value(args, 1)), bridge.list(args[2]))
+    const deferred = bridge.deferred()
+    deferred.resolve(key)
+    return deferred.handle
+  }), { enumerable: true, configurable: true, writable: true })
+
+  const installCipher = (name, encrypting) => {
+    bridge.install(subtle, name, bridge.fn(name, 3, ({ args }) => {
+      const algorithm = bridge.value(args, 0) ?? {}
+      const key = keyFor(args[1])
+      if (!key) {
+        const deferred = bridge.deferred()
+        deferred.reject(Object.assign(new Error('InvalidAccessError'), { name: 'InvalidAccessError' }))
+        return deferred.handle
+      }
+      const data = readBytesFrom(args[2])
+      let ivBytes = null
+      if (algorithm && algorithm.iv) {
+        const ivHandle = ctx.getProp(args[0], 'iv')
+        try {
+          ivBytes = readBytesFrom(ivHandle)
+        } finally {
+          ivHandle.dispose()
+        }
+      }
+      const cipher = cipherName(algorithm, key.bytes, encrypting)
+      if (!cipher) {
+        throw Object.assign(new Error(`Unsupported algorithm ${algorithmName(algorithm)}`), { name: 'NotSupportedError' })
+      }
+      try {
+        if (encrypting) {
+          const enc = createCipheriv(cipher, key.bytes, cipher.includes('ecb') ? null : ivBytes)
+          const output = Buffer.concat([enc.update(Buffer.from(data)), enc.final()])
+          if (cipher.endsWith('gcm')) return promiseOfBuffer(Buffer.concat([output, enc.getAuthTag()]))
+          return promiseOfBuffer(output)
+        }
+        if (cipher.endsWith('gcm')) {
+          const tag = data.subarray(Math.max(0, data.length - 16))
+          const body = data.subarray(0, Math.max(0, data.length - 16))
+          const dec = createDecipheriv(cipher, key.bytes, ivBytes)
+          dec.setAuthTag(Buffer.from(tag))
+          const output = Buffer.concat([dec.update(Buffer.from(body)), dec.final()])
+          return promiseOfBuffer(output)
+        }
+        const dec = createDecipheriv(cipher, key.bytes, cipher.includes('ecb') ? null : ivBytes)
+        return promiseOfBuffer(Buffer.concat([dec.update(Buffer.from(data)), dec.final()]))
+      } catch (error) {
+        const deferred = bridge.deferred()
+        deferred.reject(Object.assign(new Error(error.message), { name: 'OperationError' }))
+        return deferred.handle
+      }
+    }), { enumerable: true, configurable: true, writable: true })
+  }
+  installCipher('encrypt', true)
+  installCipher('decrypt', false)
   bridge.install(subtle, 'digest', bridge.fn('digest', 2, ({ args }) => {
     const algorithm = normalizeAlgorithm(bridge.str(args, 0, ''))
     const data = readBytes(ctx, args[1])
