@@ -15,10 +15,10 @@ export function install(bridge) {
   const registry = new Map()
   /** Timer ids whose callback is currently on the stack. */
   const active = new Set()
-  const microtasks = []
   // queueMicrotask must share the promise job queue so FIFO ordering with
   // `Promise.resolve().then(...)` is preserved. This guest helper does the
-  // enqueueing inside the engine; the sandbox drains the queue in settle().
+  // enqueueing inside the engine, so the job queue the runtime already drains
+  // is the only queue there is; a second host-side queue would never be fed.
   const microtaskHelper = ctx.unwrapResult(
     ctx.evalCode('(function (fn) { Promise.resolve().then(fn) })', 'ai4r-internal:microtask'),
   )
@@ -294,31 +294,10 @@ export function install(bridge) {
     { enumerable: true, configurable: true, writable: true },
   )
 
-  /** Drain queued microtasks; called by the sandbox between job batches. */
-  bridge.drainMicrotasks = () => {
-    while (microtasks.length > 0) {
-      const handle = microtasks.shift()
-      try {
-        const result = ctx.callFunction(handle, ctx.undefined)
-        if (result.error) {
-          const dumped = bridge.fromGuest(result.error)
-          result.error.dispose()
-          bridge.emit('exception', 'uncaught', { origin: 'microtask', error: dumped })
-        } else {
-          result.value.dispose()
-        }
-      } finally {
-        handle.dispose()
-      }
-    }
-  }
-
   bridge.pendingTimers = () => registry.size
 
   bridge.onDispose(() => {
     for (const entry of registry.values()) entry.handle?.dispose()
     registry.clear()
-    for (const handle of microtasks) handle.dispose()
-    microtasks.length = 0
   })
 }

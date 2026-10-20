@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
+import { createHarness } from './helpers/harness.js'
 
 /**
  * Virtual timer bookkeeping (R1.3).
@@ -138,4 +139,49 @@ test('requestIdleCallback may be cancelled from inside its callback', async () =
   } finally {
     sb.dispose()
   }
+})
+
+test('queued microtasks drain as promise jobs, before the next timer', async () => {
+  // `queueMicrotask` enqueues inside the engine (`Promise.resolve().then`), so
+  // the promise job queue the runtime already drains is the only queue. There is
+  // no host-side microtask list: one existed once and nothing ever fed it, which
+  // is why it is asserted to be absent below.
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(
+      `var order = [];
+       queueMicrotask(function () { order.push('microtask') });
+       Promise.resolve().then(function () { order.push('promise') });
+       setTimeout(function () { console.log('order=' + order.join(',')) }, 1);`,
+      { level: 'off' },
+    )
+    assert.ok(consoleLogs(run).includes('order=microtask,promise'), JSON.stringify(consoleLogs(run)))
+    await assertHealthy(sb, run, 'microtask FIFO order')
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('the timers module exposes no unfed microtask queue', async () => {
+  // A `drainMicrotasks` surface with no writer is dead code that also invites a
+  // caller to believe it drains something; the runtime's promise jobs do that.
+  const harness = await createHarness({ modules: ['globals', 'timers'] })
+  let disposal
+  try {
+    assert.equal(typeof harness.bridge.drainMicrotasks, 'undefined')
+    assert.equal(typeof harness.bridge.pendingTimers, 'function')
+    const result = harness.run(
+      `var seen = [];
+       queueMicrotask(function () { seen.push('microtask') });
+       globalThis.__seen = seen;
+       0`,
+    )
+    assert.equal(result.ok, true, JSON.stringify(result.error))
+    harness.jobs()
+    assert.deepEqual(harness.run('__seen.slice()').value, ['microtask'])
+  } finally {
+    disposal = harness.dispose()
+  }
+  assert.equal(disposal.leaked, false, 'the timers module must not keep guest handles')
+  assert.equal(disposal.ok, true)
 })
