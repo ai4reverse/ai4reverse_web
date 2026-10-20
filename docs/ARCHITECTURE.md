@@ -111,6 +111,47 @@ even attempt the dispose: the runtime is abandoned (`runtimeHandle.abandon()`),
 the module is quarantined, and the run record says
 `disposal { ok:false, leaked:true, stage:'runtime', skipped:true }`.
 
+### 1.3 One stack classification, two engine shapes
+
+QuickJS produces the same overflow in two shapes, and the difference is invisible
+from the guest's side:
+
+1. **Host throw.** The WASM native stack gives out inside `evalCode`,
+   `callFunction` or `executePendingJobs` and a host `RangeError` escapes the
+   trampoline. `runtime.js` `isHostStackExhaustion` recognises it.
+2. **Converted guest error.** The same overflow happens inside a host callback.
+   quickjs-emscripten catches the host exception and rethrows it into the guest
+   as `ctx.newError(...)` — an `Error` that is shape-identical to
+   `throw new RangeError('Maximum call stack size exceeded')`. No host throw
+   reaches the invoker, so a message test would either miss it (F-B4) or accept
+   a forgery (N1).
+
+The platform therefore records the signal **host-side, before the conversion**:
+`runtime.js` `guardHostStackExhaustion` increments a counter
+(`runtime.stackSignals()`) that no guest value can write, and `invoke.js` reads
+it around the branch it just ran (`noteHostStack`). Both shapes then go through
+one record builder (`stackBreachOutcome`), so a run record cannot reveal which
+shape happened: `error.stack === ''` (the frame list grows with recursion depth),
+`limitsHit: ['stack']`, `stackExhaustion: true` and the abandoned-runtime
+disposal.
+
+The guest-side path is used only where no host throw exists — interpreter
+recursion from a reduced `limits.stackBytes` — and it is prototype **identity**
+against the engine's `InternalError.prototype`, captured in `stealth.install()`
+before any env module runs. `env/stack.js` gives its `InternalError` wrapper a
+fresh prototype (same own properties, same `[[Prototype]]`) so a Firefox profile
+keeps a faithful constructor without making the intrinsic reachable; when the
+wrapper cannot be installed, `stealth.revokeStackEvidence()` withdraws the
+guest-side proof for the run and the host witness remains authoritative.
+
+Two consequences worth knowing:
+
+- A guest that **swallows** the converted overflow still classifies: the run is
+  `ok:true` with `limitsHit: ['stack']`, because the counter moved.
+- Each breach costs host memory: the abandoned module's heap stays until the
+  quarantined module is collected (measured ~17–22 MB RSS per breach). The run
+  record states the leak; the process keeps analysing with a fresh module.
+
 ## 2. One dynamic run, step by step
 
 `TracelessSandbox.run(source, options)`:
@@ -147,7 +188,9 @@ the module is quarantined, and the run record says
 9. **Settlement.** Promise jobs (`executePendingJobs`, which is also where
    `queueMicrotask` lands — there is no separate microtask queue) → virtual timers
    (`clock.runDue`), until idle or a cap is reached. Timer/callback errors are
-   recorded, never thrown at the host.
+   recorded, never thrown at the host. Each callback runs inside a host-stack
+   window, so the counter in section 1.3 attributes a converted overflow to the
+   callback that caused it (`settle.error.origin`).
 10. **Integrity + record.** A second intrinsic snapshot is diffed. The run record
     contains result/error/limits, events, facts, VM info, hook audit, integrity,
     console/behaviour inputs, and disposal status.
@@ -185,6 +228,18 @@ the module is quarantined, and the run record says
 Payloads are bounded (strings 2 KB, arrays 100 items) so a malicious sample
 cannot exhaust host memory through traces.
 
+### 3.1 Attribution: the platform's own events are not sample behaviour
+
+Building the environment emits trace events (`document.installed`,
+`api.wrapped`, storage probes, …) whose payloads look exactly like a sample's.
+`tools/analysis/behavior.js` therefore attributes every event
+(`eventOrigin`): guest-originated events feed the behaviour counters, the
+platform's own do not. Report scoring filters platform events as well, so a
+sample cannot gain a `DYNAMIC_DOM` reason from the sandbox's setup, and
+`dynamic.behavior.counts.platform` states how many events were excluded.
+Measured effect on `examples/sample-loader.js`: 71 of 133 events are platform
+events, and its verdict is 54 / `suspicious` instead of 60 / `malicious`.
+
 ## 4. Handle lifetime discipline
 
 quickjs-emscripten aborts the WASM module on `runtime.dispose()` if any handle is
@@ -196,6 +251,22 @@ still alive. The platform therefore routes every creation through:
 - per-run teardown callbacks registered with `bridge.onDispose` (timers, deferred
   promises, store handles),
 - explicit owners in `instrumentation/api.js` and `invoke.js`.
+
+Three owners, and every handle belongs to exactly one (`docs/CONTRACTS.md`
+"Handle ownership"):
+
+| Owner | Lifetime |
+| --- | --- |
+| per-call `HandleBag` | one host callback; disposed in `finally`, even on throw |
+| bridge `owned` set | install-time values from `fn`/`obj`/`arr`/`install`/`nativeConstructor`; disposed once in `disposeAll()` |
+| explicit owner in module state | a `dup()` with a `retain()`/`release()` pair (`canvas.js`, `observers.js`) |
+
+Two transfer rules keep that honest: `bridge.fn`'s trampoline hands a returned
+handle to the guest instead of duplicating it (so returning a bag-owned value is
+safe), and `bridge.deferred` releases its record when the promise settles — on
+the next bridge entry, once the trampoline has duplicated the value — or at
+teardown for a promise that never settles. That is what makes a 20 000-call
+builder loop plateau instead of growing host memory (FINAL-D F2).
 
 `run.disposal.ok` is asserted in tests; a leak surfaces as a failed run
 (`{ ok:false, leaked:true, stage }`) rather than a mysterious process abort. The
