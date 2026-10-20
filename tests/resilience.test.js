@@ -543,12 +543,13 @@ test('a genuine engine InternalError from a reduced stack limit stays classified
 })
 
 /**
- * Reachable-constructor forgery: a Firefox profile keeps `InternalError` as part
- * of the surface (real Firefox has it), and QuickJS builds its own internal
- * errors with that very prototype — so `new InternalError(...)` is
- * indistinguishable from a real overflow by prototype identity alone. While the
- * constructor is guest-reachable the probe therefore refuses to certify, and a
- * sample cannot steer a run onto the quarantine path.
+ * Reachable-constructor forgery, reduced environment.
+ *
+ * With the `stack` module excluded, a Firefox profile keeps the engine's own
+ * `InternalError` as the global binding, so guest code can reach the very
+ * prototype QuickJS stamps on its real overflows and the identity probe must
+ * refuse to certify. (With the full environment installed, `env/stack` re-owns
+ * that prototype instead — see the F-B4 test below.)
  */
 test('a reachable InternalError constructor cannot forge engine stack exhaustion', async () => {
   const sb = await sandbox({ profile: { browser: 'firefox', os: 'linux', locale: 'en-US' } })
@@ -607,4 +608,242 @@ test('forged stack records stay unclassified at a reduced stack limit', async ()
   } finally {
     sb.dispose()
   }
+})
+
+/**
+ * Full-environment determinism (F-B3).
+ *
+ * With every env module installed the *same* recursion used to be classified
+ * two ways in one process: QuickJS usually surfaces the overflow as a host
+ * `RangeError` out of the WASM call (classified), but when the host stack gives
+ * out inside a host callback the trampoline converts it into a guest `Error`
+ * instead — shape-identical to `throw new RangeError('Maximum call stack size
+ * exceeded')`, so it was reported as an ordinary failure with `limitsHit: []`
+ * and a *clean* disposal (measured: 6/20 runs in one process).
+ *
+ * The host witness (`guardHostStackExhaustion`) records the engine signal before
+ * that conversion, so every run classifies, and the record is normalised: one
+ * `error` shape, one `limitsHit`, one disposal shape. The stack frames are
+ * dropped from the reported error because their length depends on how deep the
+ * recursion got before the limit hit.
+ */
+test('40 consecutive recursion runs in the full environment classify identically (F-B3)', async () => {
+  const sb = await sandbox({ env: { strict: true } })
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    const shapes = new Set()
+    for (let i = 1; i <= 40; i += 1) {
+      const run = await sb.run(OVERFLOW)
+      assert.equal(run.ok, false, `run ${i} must fail: ${JSON.stringify(run.error)}`)
+      assert.deepEqual(run.limitsHit, ['stack'], `run ${i}: ${JSON.stringify(run.limitsHit)}`)
+      assert.equal(run.stackExhaustion, true, `run ${i}: engine marker missing`)
+      assert.match(`${run.error?.name}: ${run.error?.message}`, /stack/i, `run ${i}: ${JSON.stringify(run.error)}`)
+      assert.equal(run.error?.stack, '', `run ${i}: the reported stack must be normalised away`)
+      assert.deepEqual(
+        { ...run.disposal, errors: run.disposal.errors.length },
+        { ok: false, errors: 0, leaked: true, stage: 'runtime', skipped: true },
+        `run ${i}: disposal shape`,
+      )
+      shapes.add(JSON.stringify({ ok: run.ok, limitsHit: run.limitsHit, error: run.error, disposal: run.disposal }))
+    }
+    assert.equal(shapes.size, 1, `nondeterministic stack records: ${[...shapes].join('\n')}`)
+
+    // The classification must not cost the process its analysis capability.
+    const followUp = await sb.run('1+1')
+    assert.equal(followUp.ok, true, JSON.stringify(followUp.error))
+    assert.equal(followUp.result.value, 2)
+    assert.deepEqual(followUp.disposal, { ok: true, errors: [] })
+  } finally {
+    restoreEngine()
+    sb.dispose()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted\(/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+})
+
+/**
+ * The same full-environment determinism for the event loop. A callback that
+ * recurses has the same two engine shapes available, and the guest-side shim
+ * reports the converted one as an ordinary uncaught exception — so the settle
+ * phase has to consult the host witness for `limitsHit`, `stackExhaustion` and
+ * `settle.error.origin`, not just the host throw it happens to catch.
+ */
+test('event-loop recursion in the full environment is classified for every callback shape', async () => {
+  const sb = await sandbox({ env: { strict: true } })
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    for (const deformation of EVENT_LOOP_DEFORMATIONS) {
+      const run = await sb.run(deformation.source)
+      assert.equal(run.ok, true, `${deformation.label}: ${JSON.stringify(run.error)}`)
+      assert.deepEqual(run.limitsHit, ['stack'], `${deformation.label}: ${JSON.stringify(run.limitsHit)}`)
+      assert.equal(run.stackExhaustion, true, deformation.label)
+      assert.equal(run.settle?.stackExhaustion, true, deformation.label)
+      assert.equal(run.settle?.error?.origin, deformation.origin, `${deformation.label}: ${JSON.stringify(run.settle)}`)
+      assert.equal(run.settle?.error?.stack, '', `${deformation.label}: stack must be normalised away`)
+      assert.deepEqual(
+        { ...run.disposal, errors: run.disposal.errors.length },
+        { ok: false, errors: 0, leaked: true, stage: 'runtime', skipped: true },
+        deformation.label,
+      )
+      const followUp = await sb.run('1+1')
+      assert.equal(followUp.ok, true, `${deformation.label} follow-up: ${JSON.stringify(followUp.error)}`)
+      assert.deepEqual(followUp.disposal, { ok: true, errors: [] })
+    }
+  } finally {
+    restoreEngine()
+    sb.dispose()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted\(/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+})
+
+/**
+ * Firefox forgery, full environment (F-B4).
+ *
+ * `InternalError` is the class QuickJS builds its own stack overflow with, and a
+ * Firefox profile must keep the constructor (real Firefox has one). `env/stack`
+ * used to wrap it while sharing the engine prototype, so `new InternalError(...)`
+ * was prototype-identical to a real overflow and forced a stack quarantine per
+ * run — the sample chose its own recompile. The wrapper now owns a fresh
+ * prototype (same own properties, `[[Prototype]] === Error.prototype`, so
+ * `instanceof`, `constructor`, `name` and the stack sanitiser are unchanged),
+ * which puts the engine prototype out of the sample's reach.
+ */
+test('a Firefox profile cannot forge engine exhaustion in the full environment (F-B4)', async () => {
+  const sb = await sandbox({ env: { strict: true }, profile: { browser: 'firefox', os: 'linux' } })
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    const surface = await sb.run('typeof InternalError')
+    assert.equal(surface.ok, true, JSON.stringify(surface.error))
+    assert.equal(surface.result.value, 'function', 'Firefox profile must keep the constructor')
+
+    const forgeries = [
+      ['internal error, V8 wording', 'throw new InternalError("Maximum call stack size exceeded")'],
+      ['internal error, engine wording', 'throw new InternalError("stack overflow")'],
+      [
+        'object built on the guest InternalError prototype',
+        'var e = Object.create(InternalError.prototype); e.name = "InternalError"; e.message = "stack overflow"; throw e',
+      ],
+      [
+        'engine prototype grafted onto a real Error',
+        'var e = new Error("stack overflow"); Object.setPrototypeOf(e, InternalError.prototype); e.name = "InternalError"; throw e',
+      ],
+      ['range error with the engine wording', 'throw new RangeError("Maximum call stack size exceeded")'],
+      [
+        'plain object with the engine shape',
+        "throw { name: 'InternalError', message: 'Maximum call stack size exceeded', stack: '' }",
+      ],
+      ['error renamed to InternalError', "var e = new Error('Maximum call stack size exceeded'); e.name = 'InternalError'; throw e"],
+    ]
+    for (const [label, source] of forgeries) {
+      const run = await sb.run(source)
+      assert.equal(run.ok, false, `${label}: the guest error is still reported`)
+      assert.deepEqual(run.limitsHit, [], `${label}: forged stack limit ${JSON.stringify(run.limitsHit)}`)
+      assert.equal(run.stackExhaustion, false, `${label}: forged engine marker`)
+      assert.deepEqual(run.disposal, { ok: true, errors: [] }, `${label}: ${JSON.stringify(run.disposal)}`)
+      assert.equal('leaked' in run.disposal, false, `${label}: a forgery must not report a leak`)
+      assert.equal('skipped' in run.disposal, false, `${label}: a forgery must not skip disposal`)
+    }
+
+    // The guard costs no genuine signal: the same profile still classifies.
+    const real = await sb.run(OVERFLOW)
+    assert.equal(real.ok, false)
+    assert.deepEqual(real.limitsHit, ['stack'], JSON.stringify(real.limitsHit))
+    assert.equal(real.stackExhaustion, true)
+  } finally {
+    restoreEngine()
+    sb.dispose()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted\(/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+})
+
+/**
+ * Reduced `limits.stackBytes` in the full environment: the interpreter's own
+ * check fires before the WASM stack, so the overflow arrives as a guest
+ * `InternalError` with no host throw at all. That path is certified by prototype
+ * identity against a prototype the sample cannot reach (F-B4), and it must stay
+ * classified and stable on both a profile that keeps `InternalError` (Firefox)
+ * and one that removes it (Edge).
+ */
+test('a reduced stack limit classifies deterministically in the full environment', async () => {
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    for (const profile of [
+      { browser: 'firefox', os: 'linux', locale: 'en-US' },
+      { browser: 'edge', os: 'macos', locale: 'en-US' },
+    ]) {
+      const sb = await sandbox({ env: { strict: true }, profile, limits: { stackBytes: 64 * 1024 } })
+      try {
+        const shapes = new Set()
+        for (let i = 1; i <= 6; i += 1) {
+          const run = await sb.run(OVERFLOW)
+          const label = `${profile.browser} run ${i}`
+          assert.equal(run.ok, false, `${label}: ${JSON.stringify(run.error)}`)
+          assert.deepEqual(run.limitsHit, ['stack'], `${label}: ${JSON.stringify(run.limitsHit)}`)
+          assert.equal(run.stackExhaustion, true, label)
+          assert.equal(run.error?.name, 'InternalError', `${label}: ${JSON.stringify(run.error)}`)
+          assert.equal(run.error?.stack, '', `${label}: the reported stack must be normalised away`)
+          assert.deepEqual(
+            { ...run.disposal, errors: run.disposal.errors.length },
+            { ok: false, errors: 0, leaked: true, stage: 'runtime', skipped: true },
+            label,
+          )
+          shapes.add(JSON.stringify({ ok: run.ok, limitsHit: run.limitsHit, error: run.error, disposal: run.disposal }))
+        }
+        assert.equal(shapes.size, 1, `${profile.browser}: nondeterministic stack records`)
+      } finally {
+        sb.dispose()
+      }
+    }
+  } finally {
+    restoreEngine()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted\(/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+})
+
+/**
+ * The entry-point call site has the same two engine shapes (`ctx.callFunction`),
+ * so it must produce the same normalised record — a sample that recurses inside
+ * `window.start(...)` is not a different kind of overflow.
+ */
+test('entry-point recursion is classified with the same normalised record', async () => {
+  const sb = await sandbox({ env: { strict: true } })
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    const shapes = new Set()
+    for (let i = 1; i <= 3; i += 1) {
+      const run = await sb.run('globalThis.start = function (n) { return start(n + 1) }', {
+        entry: 'start',
+        args: [0],
+      })
+      assert.equal(run.ok, false, `entry run ${i}: ${JSON.stringify(run.error)}`)
+      assert.deepEqual(run.limitsHit, ['stack'], `entry run ${i}: ${JSON.stringify(run.limitsHit)}`)
+      assert.equal(run.stackExhaustion, true, `entry run ${i}`)
+      assert.equal(run.error?.stack, '', `entry run ${i}: stack must be normalised away`)
+      assert.deepEqual(
+        { ...run.disposal, errors: run.disposal.errors.length },
+        { ok: false, errors: 0, leaked: true, stage: 'runtime', skipped: true },
+        `entry run ${i}`,
+      )
+      shapes.add(JSON.stringify({ ok: run.ok, limitsHit: run.limitsHit, error: run.error, disposal: run.disposal }))
+    }
+    assert.equal(shapes.size, 1, `nondeterministic entry records: ${[...shapes].join('\n')}`)
+  } finally {
+    restoreEngine()
+    sb.dispose()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted\(/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
 })

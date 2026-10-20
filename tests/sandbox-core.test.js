@@ -273,6 +273,160 @@ test('the engine InternalError prototype is unreachable from the guest', async (
   }
 })
 
+/**
+ * Firefox fidelity with the engine prototype out of reach (F-B4).
+ *
+ * A Firefox profile has to expose `InternalError` (real Firefox does), and QuickJS
+ * stamps that same prototype on the errors it throws itself. `env/stack` therefore
+ * gives the wrapper its own prototype instead of sharing the engine's: same own
+ * properties, `[[Prototype]] === Error.prototype` (exactly what SpiderMonkey has),
+ * `constructor` pointing at the wrapper, and the stack sanitiser still applied.
+ * Every surface a sample can check stays faithful, while the engine's own
+ * prototype — the one an overflow carries — is unreachable.
+ */
+test('a Firefox profile keeps InternalError faithful but not engine-shaped', async () => {
+  const sb = await sandbox({ env: { strict: true }, profile: { browser: 'firefox', os: 'linux', locale: 'en-US' } })
+  try {
+    const run = await sb.run(`
+      (function () {
+        var out = {};
+        out.type = typeof InternalError;
+        out.name = InternalError.name;
+        out.length = InternalError.length;
+        out.protoOwn = Object.getOwnPropertyNames(InternalError.prototype).sort();
+        out.protoIsErrorProto = Object.getPrototypeOf(InternalError.prototype) === Error.prototype;
+        out.constructorSelf = InternalError.prototype.constructor === InternalError;
+        var error = new InternalError('probe');
+        out.own = Object.getOwnPropertyNames(error).sort();
+        out.name_ = error.name;
+        out.message = error.message;
+        out.instanceofInternal = error instanceof InternalError;
+        out.instanceofError = error instanceof Error;
+        out.protoMatches = Object.getPrototypeOf(error) === InternalError.prototype;
+        out.stringifies = Function.prototype.toString.call(InternalError).indexOf('[native code]') >= 0;
+        out.stackHasMarkers = /ai4r-internal|<eval>/.test(String(error.stack));
+        out.seal = Object.prototype.toString.call(error);
+        return JSON.stringify(out);
+      })()
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    const value = JSON.parse(run.result.value)
+    assert.equal(value.type, 'function', 'Firefox profile must keep InternalError')
+    assert.equal(value.name, 'InternalError')
+    assert.deepEqual(value.protoOwn, ['constructor', 'message', 'name'])
+    assert.equal(value.protoIsErrorProto, true, 'InternalError.prototype must inherit Error.prototype')
+    assert.equal(value.constructorSelf, true)
+    assert.deepEqual(value.own, ['message', 'stack'], 'instance shape must match an engine error')
+    assert.equal(value.name_, 'InternalError')
+    assert.equal(value.message, 'probe')
+    assert.equal(value.instanceofInternal, true)
+    assert.equal(value.instanceofError, true)
+    assert.equal(value.protoMatches, true)
+    assert.equal(value.stringifies, true, 'the wrapper must stringify as a native function')
+    assert.equal(value.stackHasMarkers, false, 'the stack sanitiser must still run')
+    assert.equal(value.seal, '[object Error]')
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * The same guarantee under the default (Chromium-like) profile, where the engine
+ * constructor is deleted from the global object: no guest-reachable prototype can
+ * match an engine overflow, on either profile.
+ */
+test('no guest-reachable object matches the engine stack prototype', async () => {
+  for (const profile of [
+    { browser: 'firefox', os: 'linux', locale: 'en-US' },
+    { browser: 'edge', os: 'macos', locale: 'en-US' },
+  ]) {
+    const sb = await sandbox({ env: { strict: true }, profile })
+    try {
+      // A genuine overflow is the only way to an engine prototype; the run is
+      // classified and abandoned, so the record is what carries the proof: the
+      // interpreter-level path is only reachable with a reduced stack limit and
+      // is covered in `tests/resilience.test.js`. Here: guest constructions must
+      // never classify.
+      const forged = await sb.run(`
+        var candidates = [];
+        if (typeof InternalError === 'function') {
+          candidates.push(new InternalError('stack overflow'));
+          candidates.push(Object.create(InternalError.prototype));
+          var grafted = new Error('stack overflow');
+          if (typeof InternalError === 'function') Object.setPrototypeOf(grafted, InternalError.prototype);
+          candidates.push(grafted);
+        }
+        candidates.push(new RangeError('Maximum call stack size exceeded'));
+        candidates.push(new Error('Maximum call stack size exceeded'));
+        for (var i = 0; i < candidates.length; i += 1) {
+          try { candidates[i].stack = '    at f (https://x.test/a.js:1:1)' } catch (e) {}
+        }
+        throw candidates[candidates.length - 1];
+      `)
+      assert.equal(forged.ok, false, `${profile.browser}: ${JSON.stringify(forged.error)}`)
+      assert.deepEqual(forged.limitsHit, [], `${profile.browser}: ${JSON.stringify(forged.limitsHit)}`)
+      assert.deepEqual(forged.disposal, { ok: true, errors: [] }, profile.browser)
+    } finally {
+      sb.dispose()
+    }
+  }
+})
+
+/**
+ * A sample that *catches* the engine overflow must not be handed the engine's
+ * prototype (F-B4 follow-up): the caught error still carries the intrinsic
+ * prototype, and a constructor read from there would be the engine's own class —
+ * enough to forge a classification later in the same run. The wrapper rewrites
+ * that prototype's `constructor` to itself, so `error.constructor` is the global
+ * wrapper and re-constructing through it produces a guest-prototype error.
+ */
+test('a caught engine overflow does not hand the sample the engine constructor', async () => {
+  const sb = await sandbox({
+    env: { strict: true },
+    profile: { browser: 'firefox', os: 'linux', locale: 'en-US' },
+    limits: { stackBytes: 64 * 1024 },
+  })
+  try {
+    const run = await sb.run(`
+      (function () {
+        var out = { caught: false };
+        try {
+          (function f(n) { return f(n + 1) })(0);
+        } catch (error) {
+          out.caught = true;
+          out.name = error.name;
+          out.message = error.message;
+          out.constructorIsGlobal = error.constructor === InternalError;
+          out.constructorNative = Function.prototype.toString.call(error.constructor).indexOf('[native code]') >= 0;
+          var Again = error.constructor;
+          var clone = new Again('stack overflow');
+          out.cloneOnGuestPrototype = Object.getPrototypeOf(clone) === InternalError.prototype;
+          out.cloneOwn = Object.getOwnPropertyNames(clone).sort();
+          out.stackHasMarkers = /ai4r-internal|<eval>/.test(String(error.stack));
+        }
+        return JSON.stringify(out);
+      })()
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    const value = JSON.parse(run.result.value)
+    assert.equal(value.caught, true, 'a reduced stack limit must be catchable inside the guest')
+    assert.equal(value.name, 'InternalError')
+    assert.equal(value.message, 'stack overflow')
+    assert.equal(value.constructorIsGlobal, true, 'error.constructor must be the global wrapper')
+    assert.equal(value.constructorNative, true)
+    assert.equal(value.cloneOnGuestPrototype, true, 're-constructing must not reach the engine prototype')
+    assert.deepEqual(value.cloneOwn, ['message', 'stack'])
+    assert.equal(value.stackHasMarkers, false)
+    // The guest swallowed the overflow, so this run is an ordinary success: no
+    // limit, no abandonment (the engine never reached the host boundary).
+    assert.deepEqual(run.limitsHit, [])
+    assert.equal(run.stackExhaustion, false)
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('a forged stack message in a callback is a guest exception, not a stack limit', async () => {
   const sb = await sandbox()
   try {
