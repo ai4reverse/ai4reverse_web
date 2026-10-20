@@ -87,9 +87,18 @@ function prototypifySurfaces(bridge) {
   const helper = ctx.evalCode(
     `(function (target) {
       if (!target || typeof target !== 'object') return 0;
-      var current = Object.getPrototypeOf(target);
-      var holder = Object.create(current);
-      Object.setPrototypeOf(target, holder);
+      var objectProto = Object.prototype;
+      var current = Object.getPrototypeOf(target) || objectProto;
+      // When a module already installed a dedicated prototype (Navigator.prototype
+      // with accessors), move own props onto that layer instead of inserting a
+      // second prototype that would hide the accessors (ACCEPTANCE H1).
+      var holder;
+      if (current !== objectProto) {
+        holder = current;
+      } else {
+        holder = Object.create(current);
+        Object.setPrototypeOf(target, holder);
+      }
       var names = Object.getOwnPropertyNames(target);
       var moved = 0;
       for (var i = 0; i < names.length; i++) {
@@ -172,16 +181,36 @@ function brandObjects(bridge) {
         if (!target || typeof target !== 'object') return false;
         var holder = target;
         if (usePrototype) {
-          // Keep the existing prototype chain (DOM methods live there) and
-          // insert one brand layer above it.
-          holder = Object.create(Object.getPrototypeOf(target) || objectProto);
-          Object.setPrototypeOf(target, holder);
+          var existing = Object.getPrototypeOf(target);
+          // Brand an existing dedicated prototype in place so accessors on
+          // Navigator.prototype remain own properties of getPrototypeOf(navigator)
+          // (ACCEPTANCE H1).
+          if (existing && existing !== objectProto) {
+            holder = existing;
+          } else {
+            holder = Object.create(existing || objectProto);
+            Object.setPrototypeOf(target, holder);
+          }
         }
         Object.defineProperty(holder, tagSymbol, { value: tag, configurable: true });
         if (ctorName) {
-          Object.defineProperty(holder, 'constructor', {
-            value: makeCtor(ctorName), writable: true, enumerable: false, configurable: true
-          });
+          var ctor = holder.constructor;
+          if (typeof ctor !== 'function' || ctor.name !== ctorName) {
+            ctor = makeCtor(ctorName);
+            Object.defineProperty(holder, 'constructor', {
+              value: ctor, writable: true, enumerable: false, configurable: true
+            });
+          }
+          try {
+            Object.defineProperty(ctor, 'prototype', {
+              value: holder, writable: false, enumerable: false, configurable: false
+            });
+          } catch (_) { /* already non-configurable */ }
+          if (typeof globalThis[ctorName] === 'undefined') {
+            Object.defineProperty(globalThis, ctorName, {
+              value: ctor, writable: true, enumerable: false, configurable: true
+            });
+          }
         }
         return true;
       };

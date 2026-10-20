@@ -17,15 +17,63 @@
 import { createKit } from './platform-kit.js'
 export const meta = { id: 'navigator', order: 58, requires: ['globals', 'storage'] }
 
+/**
+ * Install WebIDL-style named getters on a prototype via guest code so each
+ * scalar does not allocate a host trampoline (quickjs-emscripten handle pressure).
+ * @param {object} bridge
+ * @param {object} proto
+ * @param {Record<string, unknown>} values
+ */
+function installProtoAccessors(bridge, proto, values) {
+  const { ctx } = bridge
+  const compiled = ctx.evalCode(
+    `(function (proto, values) {
+      if (!proto || !values) return 0;
+      var keys = Object.keys(values);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        var value = values[key];
+        if (value === undefined) continue;
+        (function (k, v) {
+          var getter = function () { return v; };
+          try {
+            Object.defineProperty(getter, 'name', {
+              value: 'get ' + k,
+              configurable: true,
+            });
+          } catch (e) {}
+          Object.defineProperty(proto, k, {
+            enumerable: true,
+            configurable: true,
+            get: getter,
+          });
+        })(key, value);
+      }
+      return keys.length;
+    })`,
+    'ai4r-internal:navigator-accessors',
+  )
+  if (compiled.error) {
+    compiled.error.dispose()
+    throw new Error('navigator accessor installer failed to compile')
+  }
+  const valuesHandle = bridge.toGuest(values)
+  const call = ctx.callFunction(compiled.value, ctx.undefined, [proto, valuesHandle])
+  compiled.value.dispose()
+  if (call.error) {
+    const dumped = bridge.fromGuest(call.error)
+    call.error.dispose()
+    throw new Error(`navigator accessors failed: ${dumped?.message ?? dumped}`)
+  }
+  call.value?.dispose?.()
+}
+
 export function install(bridge) {
   const { ctx, profile } = bridge
-  const navigator = bridge.obj()
-
-  // Scalar properties as read-only data properties (assignment is a no-op in
-  // sloppy mode, throws in strict mode only for accessors; browsers throw for
-  // Navigator.prototype accessors, which this approximates).
-  const setReadonly = (target, key, value) =>
-    bridge.install(target, key, value, { enumerable: true, configurable: true, writable: false })
+  // WebIDL shape: scalars are accessors on a dedicated prototype (ACCEPTANCE H1).
+  // `anti-fingerprint` brands this layer in place and installs global `Navigator`.
+  const navigatorProto = bridge.obj()
+  const navigator = bridge.obj({}, navigatorProto)
 
   const values = {
     appCodeName: profile.appCodeName,
@@ -45,25 +93,19 @@ export function install(bridge) {
     onLine: profile.onLine,
     webdriver: profile.webdriver,
     pdfViewerEnabled: profile.pdfViewerEnabled,
+    languages: profile.languages,
   }
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined) continue
-    setReadonly(navigator, key, value)
-  }
-
-  bridge.install(navigator, 'languages', bridge.arr(profile.languages), {
-    enumerable: true,
-    configurable: true,
-    writable: false,
-  })
-
   if (profile.browser === 'firefox') {
-    setReadonly(navigator, 'oscpu', profile.oscpu)
-    setReadonly(navigator, 'buildID', profile.buildID ?? '')
+    values.oscpu = profile.oscpu ?? ''
+    values.buildID = profile.buildID ?? ''
   }
   if (profile.browser === 'chrome' || profile.browser === 'edge') {
-    setReadonly(navigator, 'deviceMemory', profile.deviceMemory)
+    values.deviceMemory = profile.deviceMemory
   }
+  // Guest-side accessors: one host trampoline per scalar would retain WASM
+  // pressure across create/dispose cycles (env-storage SIGSEGV). Named getters
+  // still report `get userAgent` for fingerprint probes (ACCEPTANCE H1).
+  installProtoAccessors(bridge, navigatorProto, values)
 
   bridge.install(
     navigator,
