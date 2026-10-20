@@ -11,6 +11,7 @@ const sandbox = await TracelessSandbox.create({
   seed: 0x5eed,                     // deterministic profile/clock/PRNG
   profile: { locale: 'zh-CN', os: 'windows', browser: 'chrome' },
   limits: { timeoutMs: 5000, maxVirtualMs: 60_000, memoryBytes: 64 << 20 },
+  env: { strict: true },            // default false: see "Environment subset"
   logLevel: 'warn',
 })
 
@@ -22,7 +23,10 @@ const run = await sandbox.run(source, {
   entry: 'start',                                   // optional global function
   args: [{ host: 'c2.test' }],
   network: { policy: 'deny' },
-  hooks: [/* { phase, handler, priority } */],
+  hooks: [
+    { phase: 'api:before', handler, priority: 100 },  // descriptor form
+    ['code:after', handler2],                         // tuple form
+  ],
 })
 
 console.log(run.ok, run.result, run.limitsHit)
@@ -35,6 +39,34 @@ sandbox.dispose()
 
 `run.events` is the structured trace (see `docs/ARCHITECTURE.md`). Set
 `keepTrace: false` when you only need statistics.
+
+### Option validation
+
+`profile` and `limits` are validated, not guessed:
+
+```js
+try {
+  await TracelessSandbox.create({ profile: { browser: 'chromium' } })
+} catch (error) {
+  error.code        // 'SANDBOX_PROFILE'
+  error.message     // profile.browser must be one of chrome, edge, firefox, got "chromium"
+  error.details     // { field, value, accepted }
+}
+
+try {
+  await TracelessSandbox.create({ limits: { maxEvent: 10 } })
+} catch (error) {
+  error.code        // 'SANDBOX_LIMITS'
+  error.message     // unknown limit 'maxEvent'; accepted limits are timeoutMs, …
+}
+```
+
+`normalizeLimits(input, { strict: false, logger })` keeps the lenient path for
+callers that forward foreign option bags and emits one `logger.warn` per ignored
+entry. `registerHooks(bus, registrations)` accepts a descriptor
+`{phase, handler, priority?}`, a tuple `[phase, handler, options?]`, a list of
+either, or a hook set `{registrations}`; a malformed registration throws
+`HookError` instead of being skipped.
 
 ### `run.disposal` — success and failure shapes
 
@@ -65,8 +97,14 @@ A failed teardown is additive; it says *what* leaked and *where*. Two shapes:
 }
 ```
 
-Stages are the reverse acquisition order: `instrumentation`, `bridge`,
-`stealth`, `context`, `runtime`, `clock`. `leaked: true` is a statement about the
+A **classified** stack breach always reports the second shape, with
+`error.stack === ''` (the frame list depends on recursion depth), whichever
+engine shape produced it: `error.name`/`message` keep the engine's wording and
+`run.limitsHit` is `['stack']`. If guest code catches the converted overflow the
+script itself succeeds, so the run is `ok:true` **and** `limitsHit: ['stack']`.
+
+Stages are the reverse acquisition order: `stack-guard`, `instrumentation`,
+`bridge`, `stealth`, `context`, `runtime`, `clock`. `leaked: true` is a statement about the
 engine heap, not about the sample's intent; the module is quarantined in both
 cases and the next run recompiles it. A `skipped` failure also implies
 `leaked: true`.
@@ -132,6 +170,15 @@ console.log(markdown)               // human-readable report
 and carries only the observable outcome (`dynamic.ok`, `dynamic.limitsHit`,
 `dynamic.error`, `report.integrity`).
 
+Report fields that carry evidence rather than volume (`docs/REPORT-SCHEMA.md`):
+
+| Field | Meaning |
+| --- | --- |
+| `dynamic.behavior.counts.platform` | Trace events the platform emitted while building the environment. They are excluded from every behaviour counter and from the verdict, so a sample cannot borrow suspicion from the sandbox's setup. |
+| `tracing.truncated`, `tracing.truncatedBy` | `true` with `code-budget` and/or `event-limit`; derived from the run record, so it stays true when the `code:trace-truncated` marker was evicted from the retained window. |
+| `static.restoration.error` | The restoration pipeline threw; `null` when it ran. Markdown prints `**Restoration error:**`. |
+| `hooks.errors`, `hooks.errorsTruncated` | Newest 50 hook failures (`{hook, phase, message}`); the bus itself keeps 200. |
+
 Static-only: pass `dynamic: false`. It never executes the sample.
 
 ## Restore code
@@ -195,9 +242,14 @@ bus.on('api:before', (payload) => {
 }, { priority: 100, owner: 'my-plugin', traceless: { preservesIdentity: true } })
 ```
 
-Phases: `code:before|after|error`, `api:before|after|error`,
-`exception:throw|catch|uncaught`, `ast:enter|exit|node|transform`,
-`jsvmp:enter|opcode|step|exit`, `lifecycle:*`.
+Phases (21, `HOOK_PHASES`): `code:before|after|error|step`,
+`api:before|after|error`, `exception:throw|catch|uncaught`,
+`ast:enter|exit|node|transform`, `jsvmp:enter|opcode|step|exit`,
+`lifecycle:init|run|dispose`. `code:step` is dispatchable but never traced (the
+per-statement probe already emits a `code` event). A hook trace event uses trace
+phase `emit` (or `transform` for the mutating pipeline) and carries the hook
+phase in `hook`. Throwing handlers are isolated: the bus keeps the newest 200
+failures capped at 64 KiB of text and reports `errorsTruncated`.
 
 ## Instrumentation directly
 
@@ -243,15 +295,21 @@ pino-pretty is used automatically on a TTY (or `--pretty` in the CLI).
 ## CLI
 
 ```
-node tools/cli.js analyze <file> [--json|--out path] [--no-dynamic] [--no-restore]
-                                [--seed N] [--timeout ms] [--virtual-ms ms]
-                                [--level off|function|branch|statement]
-                                [--source-url url] [--entry fn] [--arg JSON]
-                                [--profile JSON] [--mocks JSON] [--pretty]
-node tools/cli.js restore <file>  [--passes a,b] [--exclude c] [--rounds n] [--out path]
-node tools/cli.js run <file>      [--json] [--events]
+node tools/cli.js analyze <file> [options]
+node tools/cli.js restore <file> [options] [--passes a,b] [--exclude c] [--rounds n]
+node tools/cli.js run <file> [--json|--out path] [--events]
 node tools/cli.js passes [--json]
+node tools/cli.js version
+
+shared options (parsed by one strict parser for analyze/restore/run):
+  --json | --out <path|-> | --seed N | --timeout ms | --virtual-ms ms
+  --level off|function|branch|statement | --no-dynamic | --no-restore
+  --run-restored | --source-url url | --entry fn | --arg JSON|string
+  --profile JSON | --mocks JSON | --log-level L | --pretty
 ```
+
+`restore` therefore accepts `--json`, `--seed`, `--out` and `--level` too
+(`--pretty` and `--log-level` apply to its own logging).
 
 Exit codes: `0` success, `1` analysis/run failure, `2` usage error.
 

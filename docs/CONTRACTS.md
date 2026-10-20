@@ -241,13 +241,14 @@ Two ownership-transfer rules make this work:
   handle to the guest instead of duplicating it. Returning a *bag-owned* value
   therefore does not leave a dangling handle, and the caller must not dispose
   what it returned.
-- **A deferred promise releases at settle.** `deferred()` keeps its resolve/reject
-  host functions in the bridge-owned set and releases them when the promise
-  settles, or at the next call for a promise that never settles — so a sample
-  that creates 20 000 promises does not accumulate 20 000 hosts handles.
-  `tests/sandbox-core.test.js` pins the plateau ("a 20k-call builder loop stays
-  on a memory plateau", "bridge.deferred releases its host handles once the
-  promise has settled").
+- **A deferred promise releases at settle.** `deferred()` keeps one record per
+  promise in the bridge-owned set and releases it when the promise settles — on
+  the next bridge entry, because quickjs-emscripten duplicates a returned handle
+  only after the call returns — and at teardown for promises that never settle.
+  A promise-heavy sample therefore does not retain one resolver pair per promise
+  for the whole run. `tests/sandbox-core.test.js` pins this ("bridge.deferred
+  releases its host handles once the promise has settled", "a 20k-call builder
+  loop stays on a memory plateau").
 
 A duplicate taken from a bag and stored for later is a use-after-free; a
 duplicate with no owner is an engine abort at `runtime.dispose()`. Both are
