@@ -303,8 +303,10 @@ $ grep -c Aborted  →  0
   properties (filtered from symbol enumeration) because re-parenting would drop
   DOM methods.
 - No real rendering/layout; canvas/WebGL/audio are deterministic profile values.
-- `crypto.subtle` exposes `digest` and `generateKey`; AES/HMAC/`importKey` are not
-  implemented.
+- `crypto.subtle` is a partial WebCrypto implementation. At the pinned commit it
+  exposes `digest` and `generateKey` (the measured surface); later commits add
+  `importKey`/`exportKey` and AES `encrypt`/`decrypt`. Signing (HMAC, RSA/ECDSA),
+  `deriveKey`/`deriveBits` and `wrapKey` are absent in both.
 - `IndexedDB` is a stub: `open`/`deleteDatabase` return a request whose
   `onerror` fires `NotSupportedError` on the virtual clock; no storage happens.
 - `WebAssembly` execution is unsupported: the surface is a coherent stub, so a

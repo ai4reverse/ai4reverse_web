@@ -50,7 +50,8 @@ Every number in this README is produced by a command named in
 later commits land. Example corpora that are not tracked at `7c1df9c`
 (`examples/products`, `examples/works`, `examples/suite`, `examples/mega`) are
 outside that measurement: they are not described here and are excluded from
-every count in this file.
+every count in this file. Behavioural statements describe that commit, except
+where a later commit is named explicitly (the AES `crypto.subtle` operations).
 
 ## Quick start
 
@@ -457,8 +458,11 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
   is an in-memory mock (`open`/`match`/`put`/`delete` resolve; nothing persists
   and nothing touches disk). `RTCPeerConnection` is good enough for probes but
   opens no media.
-- `crypto.subtle` covers `digest` and `generateKey` only; AES/HMAC/`importKey`
-  are absent and reported as such.
+- `crypto.subtle` is a **partial** WebCrypto implementation: `digest`,
+  `generateKey`, `importKey`/`exportKey` and AES `encrypt`/`decrypt` exist at
+  `HEAD`; signing (`HMAC`, RSA/ECDSA), `deriveKey`/`deriveBits` and `wrapKey` are
+  absent and reported as such. At the pinned commit the surface was `digest` and
+  `generateKey` only; the AES operations landed after it.
 - Canvas, WebGL, audio and font surfaces return **deterministic profile values**,
   not pixels: there is no layout or rendering engine, and
   `getBoundingClientRect` returns profile-derived geometry. `new ImageData(w, h)`

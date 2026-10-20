@@ -205,9 +205,10 @@ These are the limits a reader must know about; each is stated in `README.md`
   auto-upgrade.
 - `Attr`, `Range`, `ShadowRoot` are `undefined`; `DocumentType` exists but is
   never instantiated.
-- `crypto.subtle` covers `digest` and `generateKey`; AES/HMAC and `importKey` are
-  absent. `IndexedDB` is a stub that fires `NotSupportedError` on the virtual
-  clock.
+- `crypto.subtle` is partial: at the pinned commit it covers `digest` and
+  `generateKey`; later commits add `importKey`/`exportKey` and AES
+  `encrypt`/`decrypt`. Signing (HMAC, RSA/ECDSA) is absent throughout.
+  `IndexedDB` is a stub that fires `NotSupportedError` on the virtual clock.
 - Canvas/WebGL/audio are deterministic profile values, not renderers.
 - One guest run at a time per process; real parallelism needs worker processes.
 - Per-run cost is ~28 % above the pre-alignment tree (finding F2 above).
