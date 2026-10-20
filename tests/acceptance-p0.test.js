@@ -5,19 +5,16 @@ import { analyzeSample } from '../tools/analysis/orchestrator.js'
 import { restore } from '../tools/restore/index.js'
 import { createHookBus } from '../tools/hook/hookbus.js'
 import { createTraceRecorder } from '../tools/instrumentation/trace.js'
+import { extractIOCs } from '../tools/analysis/ioc.js'
 
 /**
  * Acceptance P0 contracts lifted from `docs/ACCEPTANCE.md` /
  * `tests/fixtures/acceptance/`.
  *
- * These assert the *secure* forensic contracts. They stay `{ todo: true }` until
- * the matching P0 is fixed: a failing todo keeps `pnpm test` green; a passing
- * todo fails the suite so the flag must be removed.
+ * Wave 1 P0s and Wave 2 H9 hook-bus items are hard asserts.
  */
 
-test('P0-1 Object.assign Proxy set trap cannot steal the instrumentation channel', {
-  todo: 'ACCEPTANCE P0-1 — non-enumerable + non-global channel symbol',
-}, async () => {
+test('P0-1 Object.assign Proxy set trap cannot steal the instrumentation channel', async () => {
   const sb = await TracelessSandbox.create({ logLevel: 'silent', limits: { timeoutMs: 15_000 } })
   try {
     const run = await sb.run(`
@@ -41,9 +38,7 @@ test('P0-1 Object.assign Proxy set trap cannot steal the instrumentation channel
   }
 })
 
-test('P0-1 stolen channel cannot inject forged code:step events', {
-  todo: 'ACCEPTANCE P0-1 — channel unreachable',
-}, async () => {
+test('P0-1 stolen channel cannot inject forged code:step events', async () => {
   const sb = await TracelessSandbox.create({ logLevel: 'silent', limits: { timeoutMs: 15_000 } })
   try {
     const run = await sb.run(`

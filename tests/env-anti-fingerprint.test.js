@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { createHarness } from './helpers/harness.js'
 import { install as installAntiFingerprint, meta as antiFingerprintMeta } from '../tools/sandbox/env/anti-fingerprint.js'
 import { install as installNavigator } from '../tools/sandbox/env/navigator.js'
+import { createCodeInstrumenter } from '../tools/instrumentation/code.js'
 
 /**
  * Anti-fingerprint hardening.
@@ -402,5 +403,63 @@ test('degraded hardening reports the failed stage and never claims success', asy
     // A degraded stage must not leave the failed snippet's handles alive: the
     // engine aborts (and quarantines the WASM module) if it does.
     assert.equal(disposal.leaked, false, `${testCase.label}: degraded install leaked a handle`)
+  }
+})
+
+test('a failed symbol filter does not publish a channel', async () => {
+  const plainModules = MODULES.filter((id) => id !== 'anti-fingerprint')
+  const cases = [
+    {
+      label: 'compile',
+      poison: { evalCode: (_source, filename) => filename.includes('ai4r-internal:symbol-filter') },
+      stage: 'compile',
+    },
+    {
+      label: 'install',
+      poison: { callFunction: (args) => Array.isArray(args) && args.length === 6 },
+      stage: 'install',
+    },
+  ]
+
+  for (const testCase of cases) {
+    const harness = await createHarness({ modules: plainModules })
+    let disposal
+    try {
+      const poisoned = poisoningBridge(harness.bridge, testCase.poison)
+      assert.doesNotThrow(() => installAntiFingerprint(poisoned), testCase.label)
+      const failed = harness.trace.events.filter((event) => event.event === 'anti-fingerprint.symbols-failed')
+      assert.equal(failed.length, 1, `${testCase.label}: ${JSON.stringify(harness.trace.events.map((event) => event.event))}`)
+      assert.equal(failed[0].stage, testCase.stage, testCase.label)
+      assert.match(String(failed[0].error?.message ?? failed[0].error), /blocked by the test/)
+      assert.equal(
+        harness.trace.events.some((event) => event.event === 'anti-fingerprint.symbols-hidden'),
+        false,
+        testCase.label,
+      )
+      assert.equal(poisoned.registerHiddenChannel, undefined, testCase.label)
+      assert.equal(poisoned.symbolHideFailed, true, testCase.label)
+
+      const symbols = runGuest(harness, 'Object.getOwnPropertySymbols(document).length')
+      const names = runGuest(harness, 'Object.getOwnPropertyNames(document).length')
+      const instrumenter = createCodeInstrumenter({
+        ctx: harness.ctx,
+        bridge: poisoned,
+        trace: harness.trace,
+        level: 'statement',
+      })
+      instrumenter.install()
+      assert.equal(instrumenter.instrument('1+1').code, '1+1', testCase.label)
+      assert.equal(runGuest(harness, 'Object.getOwnPropertySymbols(document).length'), symbols, testCase.label)
+      assert.equal(runGuest(harness, 'Object.getOwnPropertyNames(document).length'), names, testCase.label)
+      assert.equal(
+        harness.trace.events.filter((event) => event.event === 'code.channel.withheld').length,
+        1,
+        testCase.label,
+      )
+      instrumenter.dispose()
+    } finally {
+      disposal = harness.dispose()
+    }
+    assert.equal(disposal.leaked, false, `${testCase.label}: symbol-hide failure leaked a handle`)
   }
 })

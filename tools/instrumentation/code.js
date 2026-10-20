@@ -55,6 +55,7 @@ export function createCodeInstrumenter(options) {
   const rank = LEVEL_RANK[level] ?? 3
   let channel = null
   let channelSymbol = null
+  let channelBinder = null
   let channelKey = null
   let bindingSuffix = 'q'
   let channelTarget = null
@@ -72,6 +73,14 @@ export function createCodeInstrumenter(options) {
   const wrap = (code) => `${begin()}${code}${end()}`
 
   function install() {
+    // The symbol filter did not install. Do not publish a channel it cannot hide.
+    if (bridge?.symbolHideFailed) {
+      trace?.emit('sandbox', 'error', {
+        event: 'code.channel.withheld',
+        reason: 'symbol-hide-failed',
+      })
+      return
+    }
     // Register the marker token so the stealth toString masker strips exactly
     // the spans this instrumenter inserts.
     stealth?.registerMarker?.(marker)
@@ -153,18 +162,51 @@ export function createCodeInstrumenter(options) {
 
     channelKey = `ai4r.channel.${nonceFrom(stealth, 0)}`
     bindingSuffix = `${marker}${shortBinding(channelKey)}`
-    channelSymbol = ctx.newSymbolFor(channelKey)
+    // Unregistered symbol: guest cannot reconstruct it via Symbol.for / keyFor.
+    channelSymbol = ctx.newUniqueSymbol(channelKey)
+    const binderKey = `\u200b${channelKey}`
     const documentHandle = safeProp(ctx, ctx.global, 'document')
     try {
-      if (documentHandle && ctx.typeof(documentHandle) === 'object') {
-        ctx.setProp(documentHandle, channelSymbol, channel)
-        channelTarget = 'document'
-        channelExpression = `globalThis.document[Symbol.for("${channelKey}")]`
-      } else {
-        ctx.setProp(ctx.global, channelSymbol, channel)
-        channelTarget = null
-        channelExpression = `globalThis[Symbol.for("${channelKey}")]`
+      const target =
+        documentHandle && ctx.typeof(documentHandle) === 'object' ? documentHandle : ctx.global
+      channelTarget = target === documentHandle ? 'document' : null
+      // Non-enumerable: Object.assign / spread never copy the channel.
+      bridge.install(target, channelSymbol, channel, {
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      })
+      // Closed binder so instrumented source can resolve the unique symbol
+      // without putting it in the global registry.
+      const binderFactory = ctx.unwrapResult(
+        ctx.evalCode(
+          '(function(target, sym){ return function(){ return target[sym]; }; })',
+          'ai4r-internal:channel-binder',
+        ),
+      )
+      let binder
+      try {
+        const binderResult = ctx.callFunction(binderFactory, ctx.undefined, [target, channelSymbol])
+        if (binderResult.error) {
+          const message = bridge.fromGuest?.(binderResult.error) ?? 'channel binder failed'
+          binderResult.error.dispose()
+          throw new Error(typeof message === 'string' ? message : message?.message ?? 'channel binder failed')
+        }
+        binder = binderResult.value
+        bridge.adopt?.(binder, '')
+        bridge.install(target, binderKey, binder, {
+          enumerable: false,
+          configurable: true,
+          writable: false,
+        })
+        channelBinder = binder
+      } finally {
+        binderFactory.dispose()
       }
+      channelExpression = channelTarget
+        ? `globalThis.document[${JSON.stringify(binderKey)}]()`
+        : `globalThis[${JSON.stringify(binderKey)}]()`
+      bridge.registerHiddenChannel?.(channelSymbol, binderKey)
     } finally {
       documentHandle?.dispose?.()
     }
@@ -188,7 +230,11 @@ export function createCodeInstrumenter(options) {
       sourceType = 'script',
     } = options
     const activeRank = LEVEL_RANK[overrideLevel] ?? rank
-    if (activeRank === 0) return { code: source, plan: new Map(), stats: { ...stats, skipped: 1 } }
+    // No channel was published (concealment failed). Splicing a call to it
+    // would throw inside the guest; return the source unchanged.
+    if (activeRank === 0 || bridge?.symbolHideFailed) {
+      return { code: source, plan: new Map(), stats: { ...stats, skipped: 1 } }
+    }
 
     let ast
     let parseError = null
@@ -495,6 +541,11 @@ export function createCodeInstrumenter(options) {
         /* already gone */
       }
       try {
+        channelBinder?.dispose()
+      } catch {
+        /* already gone */
+      }
+      try {
         channelSymbol?.dispose()
       } catch {
         /* already gone */
@@ -510,6 +561,7 @@ export function createCodeInstrumenter(options) {
         /* already gone */
       }
       channel = null
+      channelBinder = null
       channelSymbol = null
       errorGate = null
     },

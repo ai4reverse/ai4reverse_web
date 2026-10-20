@@ -570,41 +570,72 @@ const DOM_INTERFACES_SOURCE = `(function (interfaces, htmlElementProto, htmlDocu
 })`
 
 /**
- * The instrumentation channel is stored under a run-unique registered symbol.
- * Symbols never appear in `Object.getOwnPropertyNames` or `for...in`, but
- * `Object.getOwnPropertySymbols`, `Reflect.ownKeys` and
- * `Object.getOwnPropertyDescriptors` would expose it. Patch those three with
- * native-looking guest functions that filter only symbols whose key starts with
- * `ai4r.channel.`. Every other symbol (including `Symbol.toStringTag`) passes
- * through unchanged, so behaviour stays spec-shaped.
+ * Concealment did not install. Report it the same way a failed element graft
+ * is reported, and leave `registerHiddenChannel` unset.
+ *
+ * @param {object} bridge
+ * @param {{ dispose: Function }} errorHandle
+ * @param {'compile'|'install'} stage
+ * @param {Array<{ dispose: Function }>} handles
+ */
+function abandonSymbolHide(bridge, errorHandle, stage, handles) {
+  const dumped = bridge.fromGuest(errorHandle)
+  errorHandle.dispose()
+  // Set before the remaining disposals: a dispose problem must not look like success.
+  bridge.symbolHideFailed = true
+  for (const handle of handles) handle.dispose()
+  bridge.emit('sandbox', 'error', {
+    event: 'anti-fingerprint.symbols-failed',
+    stage,
+    error: dumped,
+  })
+}
+
+/**
+ * The instrumentation channel is stored under a run-unique unregistered symbol
+ * (plus a non-enumerable binder string key). Enumeration APIs would expose
+ * both; patch them to filter identity-registered symbols/keys and legacy
+ * `Symbol.for('ai4r.*')` entries registered through `registerHiddenChannel`.
  * @param {object} bridge
  */
 function hideChannelSymbols(bridge) {
   const { ctx, stealth } = bridge
+  const hiddenSymbols = ctx.unwrapResult(ctx.evalCode('[]'))
+  const hiddenKeys = ctx.unwrapResult(ctx.evalCode('[]'))
   const factory = ctx.evalCode(
-    `(function (origSymbols, origOwnKeys, origDescriptors) {
+    `(function (origSymbols, origOwnKeys, origDescriptors, origNames, hiddenSyms, hiddenStrKeys) {
       var GLOBAL = globalThis;
       var TAG = Symbol.toStringTag;
       function ours(s, target) {
-        // The Window tag is an own symbol on the global object (QuickJS would
-        // otherwise report the string global); browsers expose it via
-        // Window.prototype, so hide it from enumeration on the global only.
         if (s === TAG && target === GLOBAL) return true;
+        for (var i = 0; i < hiddenSyms.length; i++) { if (s === hiddenSyms[i]) return true; }
         try {
           var key = Symbol.keyFor(s);
           return typeof key === 'string' && key.slice(0, 5) === 'ai4r.';
         } catch (e) { return false; }
+      }
+      function isHiddenKey(k) {
+        if (typeof k !== 'string') return false;
+        for (var i = 0; i < hiddenStrKeys.length; i++) { if (k === hiddenStrKeys[i]) return true; }
+        return false;
       }
       function getOwnPropertySymbols(target) {
         var all = origSymbols(target), out = [];
         for (var i = 0; i < all.length; i++) { if (!ours(all[i], target)) out.push(all[i]); }
         return out;
       }
+      function getOwnPropertyNames(target) {
+        var all = origNames(target), out = [];
+        for (var i = 0; i < all.length; i++) { if (!isHiddenKey(all[i])) out.push(all[i]); }
+        return out;
+      }
       function ownKeys(target) {
         var all = origOwnKeys(target), out = [];
         for (var i = 0; i < all.length; i++) {
-          if (typeof all[i] === 'symbol' && ours(all[i], target)) continue;
-          out.push(all[i]);
+          var k = all[i];
+          if (typeof k === 'symbol' && ours(k, target)) continue;
+          if (isHiddenKey(k)) continue;
+          out.push(k);
         }
         return out;
       }
@@ -615,11 +646,15 @@ function hideChannelSymbols(bridge) {
           for (var i = 0; i < symbols.length; i++) {
             if (ours(symbols[i], target)) { try { delete descriptors[symbols[i]]; } catch (e) {} }
           }
+          for (var j = 0; j < hiddenStrKeys.length; j++) {
+            try { delete descriptors[hiddenStrKeys[j]]; } catch (e) {}
+          }
         }
         return descriptors;
       }
       return {
         getOwnPropertySymbols: getOwnPropertySymbols,
+        getOwnPropertyNames: getOwnPropertyNames,
         ownKeys: ownKeys,
         getOwnPropertyDescriptors: getOwnPropertyDescriptors
       };
@@ -627,7 +662,7 @@ function hideChannelSymbols(bridge) {
     'ai4r-internal:symbol-filter',
   )
   if (factory.error) {
-    factory.error.dispose()
+    abandonSymbolHide(bridge, factory.error, 'compile', [hiddenSymbols, hiddenKeys])
     return
   }
   const objectHandle = ctx.getProp(ctx.global, 'Object')
@@ -636,14 +671,17 @@ function hideChannelSymbols(bridge) {
     ctx.getProp(objectHandle, 'getOwnPropertySymbols'),
     ctx.getProp(reflectHandle, 'ownKeys'),
     ctx.getProp(objectHandle, 'getOwnPropertyDescriptors'),
+    ctx.getProp(objectHandle, 'getOwnPropertyNames'),
   ]
-  const call = ctx.callFunction(factory.value, ctx.undefined, originals)
+  const call = ctx.callFunction(factory.value, ctx.undefined, [
+    ...originals,
+    hiddenSymbols,
+    hiddenKeys,
+  ])
   factory.value.dispose()
   for (const original of originals) original.dispose()
   if (call.error) {
-    call.error.dispose()
-    objectHandle.dispose()
-    reflectHandle.dispose()
+    abandonSymbolHide(bridge, call.error, 'install', [objectHandle, reflectHandle, hiddenSymbols, hiddenKeys])
     return
   }
   const patched = call.value
@@ -654,11 +692,36 @@ function hideChannelSymbols(bridge) {
     fn.dispose()
   }
   install(objectHandle, 'getOwnPropertySymbols')
+  install(objectHandle, 'getOwnPropertyNames')
   install(reflectHandle, 'ownKeys')
   install(objectHandle, 'getOwnPropertyDescriptors')
   patched.dispose()
   objectHandle.dispose()
   reflectHandle.dispose()
+
+  const push = ctx.unwrapResult(ctx.evalCode('(function(arr, value){ arr.push(value); })'))
+  bridge.onDispose(() => {
+    try { push.dispose() } catch { /* already gone */ }
+    try { hiddenSymbols.dispose() } catch { /* already gone */ }
+    try { hiddenKeys.dispose() } catch { /* already gone */ }
+  })
+  bridge.registerHiddenChannel = (symbolHandle, keyString) => {
+    if (symbolHandle) {
+      const result = ctx.callFunction(push, ctx.undefined, [hiddenSymbols, symbolHandle])
+      if (result.error) result.error.dispose()
+      else result.value.dispose()
+    }
+    if (typeof keyString === 'string') {
+      const keyHandle = ctx.newString(keyString)
+      try {
+        const result = ctx.callFunction(push, ctx.undefined, [hiddenKeys, keyHandle])
+        if (result.error) result.error.dispose()
+        else result.value.dispose()
+      } finally {
+        keyHandle.dispose()
+      }
+    }
+  }
   bridge.emit('sandbox', 'emit', { event: 'anti-fingerprint.symbols-hidden' })
   void stealth
 }

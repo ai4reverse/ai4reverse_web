@@ -291,8 +291,10 @@ export function createHostBridge(options) {
 
     /**
      * Install a data property with real descriptor flags.
+     * `key` may be a string or a guest symbol handle (unique or registered).
+     *
      * @param {object} target
-     * @param {string} key
+     * @param {string|object} key
      * @param {unknown} value handle or JS value
      * @param {{enumerable?: boolean, configurable?: boolean, writable?: boolean}} [flags]
      */
@@ -304,12 +306,12 @@ export function createHostBridge(options) {
       ctx.setProp(descriptor, 'configurable', boolHandle(configurable))
       ctx.setProp(descriptor, 'writable', boolHandle(writable))
       ctx.setProp(descriptor, 'value', valueHandle)
-      const keyHandle = temporary(ctx.newString(key))
+      const keyHandle = isHandle(key) ? key : temporary(ctx.newString(key))
       const result = ctx.callFunction(definePropertyFactory, ctx.undefined, [target, keyHandle, descriptor])
       if (result.error) {
         const message = dumpError(result.error)
         result.error.dispose()
-        throw new Error(`install(${key}) failed: ${message}`)
+        throw new Error(`install(${isHandle(key) ? '[symbol]' : key}) failed: ${message}`)
       }
       result.value.dispose()
       return valueHandle
