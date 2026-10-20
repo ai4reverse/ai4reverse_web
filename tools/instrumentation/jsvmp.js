@@ -288,11 +288,18 @@ function offsetAfterDirectives(block) {
 function applyInsertions(source, insertions) {
   if (insertions.length === 0) return source
   insertions.sort((a, b) => b.offset - a.offset || a.priority - b.priority)
-  let output = source
-  for (const insertion of insertions) {
-    output = output.slice(0, insertion.offset) + insertion.text + output.slice(insertion.offset)
+  // Emit in a single pass: rebuilding the whole string per insertion cost
+  // O(k·n) on large dispatch loops.
+  const parts = []
+  let cursor = 0
+  for (let index = insertions.length - 1; index >= 0; index -= 1) {
+    const insertion = insertions[index]
+    parts.push(source.slice(cursor, insertion.offset))
+    parts.push(insertion.text)
+    cursor = insertion.offset
   }
-  return output
+  parts.push(source.slice(cursor))
+  return parts.join('')
 }
 
 function isInsideLoop(path) {

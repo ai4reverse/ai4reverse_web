@@ -280,3 +280,69 @@ test('sensitive APIs reach api:before hooks (clipboard, beacon, subtle, media)',
     sb.dispose()
   }
 })
+
+test('statement instrumentation stays correct on many-statement sources', async () => {
+  const sb = await sandbox()
+  try {
+    const statements = []
+    for (let index = 0; index < 400; index += 1) {
+      statements.push(`acc += ${index};`)
+    }
+    const source = `var acc = 0;\n${statements.join('\n')}\nacc`
+    const run = await sb.run(source, { level: 'statement' })
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.value, 79800)
+    const traced = (run.events ?? []).filter((event) => event.kind === 'code' && event.event === 'statement').length
+    assert.ok(traced >= 400, `expected >=400 traced statements, saw ${traced}`)
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('non-default levels inject the channel binding for top-level probes', async () => {
+  const sb = await sandbox()
+  try {
+    const topLevelCatch = `
+      var observed = 'untouched';
+      try { null.boom } catch (e) { observed = 'caught'; }
+      observed
+    `
+    const fn = await sb.run(topLevelCatch, { level: 'function' })
+    assert.equal(fn.ok, true, JSON.stringify(fn.error))
+    assert.equal(fn.result.value, 'caught')
+    assert.ok((fn.events ?? []).some((event) => event.kind === 'code' && event.event === 'catch'))
+
+    const topLevelLoop = `
+      var total = 0;
+      for (var i = 0; i < 3; i += 1) { total += i; }
+      total
+    `
+    const branch = await sb.run(topLevelLoop, { level: 'branch' })
+    assert.equal(branch.ok, true, JSON.stringify(branch.error))
+    assert.equal(branch.result.value, 3)
+    assert.ok((branch.events ?? []).some((event) => event.kind === 'code' && event.event === 'loop'))
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('catch and throw probes never run guest getters', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(
+      `
+      var marks = 0;
+      function probe() { marks += 1; return 'never-read'; }
+      var caught = null;
+      try {
+        throw { get stack() { return probe(); }, get message() { return probe(); } };
+      } catch (e) { caught = 'handled'; }
+      caught + ':' + marks
+    `,
+    )
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.value, 'handled:0', 'a guest getter ran during trace summarisation')
+  } finally {
+    sb.dispose()
+  }
+})

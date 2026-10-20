@@ -25,6 +25,18 @@ import { traverse } from '../restore/pass-context.js'
 
 const LEVEL_RANK = { off: 0, function: 1, branch: 2, statement: 3 }
 
+/**
+ * Platform-private probe: true when the value's *direct* prototype is one of
+ * the engine's standard error prototypes (captured before guest code runs).
+ * Direct-prototype equality cannot be steered by guest getters, and it closes
+ * the classic detection trick of throwing `{ get stack() { ... } }` or a
+ * subclass whose accessor overrides `stack` — neither is reported as an error.
+ */
+const ERROR_GATE_PROBE_SOURCE =
+  '(function (getProto) { return function (value, protos) { var p; try { p = getProto(value) } catch (e) { return false } ; for (var i = 0; i < protos.length; i += 1) { if (p === protos[i]) return true } return false } })(Object.getPrototypeOf)'
+const ERROR_PROTOS_SOURCE =
+  '[Error.prototype, TypeError.prototype, RangeError.prototype, SyntaxError.prototype, ReferenceError.prototype, EvalError.prototype, URIError.prototype]'
+
 export function createCodeInstrumenter(options) {
   const {
     ctx,
@@ -49,6 +61,7 @@ export function createCodeInstrumenter(options) {
   let channelExpression = null
   let currentPlan = null
   let pendingPlan = new Map()
+  let errorGate = null
   let emitted = 0
   let truncated = false
   let invocation = 0
@@ -62,6 +75,23 @@ export function createCodeInstrumenter(options) {
     // Register the marker token so the stealth toString masker strips exactly
     // the spans this instrumenter inserts.
     stealth?.registerMarker?.(marker)
+    // Capture the engine error prototypes before any guest code can touch
+    // them, so catch/throw probes can tell genuine engine errors from guest
+    // objects without ever running guest getters.
+    try {
+      errorGate = {
+        probe: ctx.unwrapResult(ctx.evalCode(ERROR_GATE_PROBE_SOURCE)),
+        protos: ctx.unwrapResult(ctx.evalCode(ERROR_PROTOS_SOURCE)),
+        // Engine stack-overflow errors use the intrinsic InternalError class,
+        // whose global binding env/globals.js deletes before this install
+        // runs. Stealth captured the class beforehand and classifies its
+        // instances with fail-closed evidence rules, so route through it.
+        intrinsic: stealth?.isIntrinsicStackError?.bind(stealth) ?? null,
+      }
+    } catch (error) {
+      logger?.debug?.({ err: error?.message }, 'error-gate probe unavailable; objects summarise by type')
+      errorGate = null
+    }
     channel = bridge.fn('', 3, ({ args }) => {
       const plan = currentPlan
       if (!plan) return args[2]
@@ -71,7 +101,7 @@ export function createCodeInstrumenter(options) {
       // Never dump arbitrary guest objects here: that would run getters and
       // change observable behaviour. Primitives are summarised; objects are
       // reported by type only.
-      const value = args.length > 2 ? summarizeArgument(ctx, bridge, args[2]) : undefined
+      const value = args.length > 2 ? summarizeArgument(ctx, bridge, args[2], errorGate) : undefined
       if (emitted >= maxEvents) {
         if (!truncated) {
           truncated = true
@@ -264,6 +294,22 @@ export function createCodeInstrumenter(options) {
       },
 
       Program(path) {
+        // The channel binding must be declared whenever any probe that calls
+        // `bindingName()` is active. Catch/throw/eval probes run at
+        // `function` rank and loop probes at `branch` rank — gating the
+        // declaration on `statement` rank left those probes referencing an
+        // undeclared binding at coarser levels (H1).
+        if (activeRank >= LEVEL_RANK.function) {
+          const body = path.node.body ?? []
+          // Program-level channel binding: `let` creates a lexical binding that
+          // is invisible to globalThis enumeration.
+          let offset = 0
+          for (const statement of body) {
+            if (isDirective(statement)) offset = statement.end
+            else break
+          }
+          add(offset, 100, `\nlet ${bindingName()} = ${channelExpression};`)
+        }
         if (activeRank < LEVEL_RANK.statement) return
         const body = path.node.body ?? []
         for (const statement of body) {
@@ -272,14 +318,6 @@ export function createCodeInstrumenter(options) {
           add(statement.start, 70, `${bindingName()}(${kind('statement')},${id});`)
           stats.statements += 1
         }
-        // Program-level channel binding: `let` creates a lexical binding that
-        // is invisible to globalThis enumeration.
-        let offset = 0
-        for (const statement of body) {
-          if (isDirective(statement)) offset = statement.end
-          else break
-        }
-        add(offset, 100, `\nlet ${bindingName()} = ${channelExpression};`)
       },
 
       Loop(path) {
@@ -412,8 +450,19 @@ export function createCodeInstrumenter(options) {
       } catch {
         /* already gone */
       }
+      try {
+        errorGate?.probe?.dispose?.()
+      } catch {
+        /* already gone */
+      }
+      try {
+        errorGate?.protos?.dispose?.()
+      } catch {
+        /* already gone */
+      }
       channel = null
       channelSymbol = null
+      errorGate = null
     },
   }
 }
@@ -430,13 +479,33 @@ const KINDS = {
   throw: 8,
 }
 
-function summarizeArgument(ctx, bridge, handle) {
+function summarizeArgument(ctx, bridge, handle, errorGate) {
   try {
     const type = ctx.typeof(handle)
     if (type === 'string' || type === 'number' || type === 'boolean') return bridge.value([handle], 0)
     if (type === 'undefined') return undefined
-    if (type === 'object') {
-      // Errors are the one object class worth reading (catch/throw tracing).
+    // Only genuine engine errors are summarised further: their `stack`/
+    // `message`/`name` reads go through engine paths, and the catch probe
+    // rewrites the stack in place below. Anything else is reported by type
+    // only — reading properties of arbitrary guest objects would run guest
+    // getters and hand a knowing sample a detection probe: from the guest's
+    // point of view the trace must be read-only. Residual: an own accessor
+    // defined on an exact engine-error instance still runs on read; the
+    // engine binding exposes no property descriptors to close that last gap.
+    if (type === 'object' && errorGate) {
+      let genuine = false
+      try {
+        const verdict = ctx.unwrapResult(ctx.callFunction(errorGate.probe, ctx.undefined, [handle, errorGate.protos]))
+        try {
+          genuine = ctx.dump(verdict) === true
+        } finally {
+          verdict.dispose()
+        }
+      } catch {
+        genuine = false
+      }
+      if (!genuine && errorGate.intrinsic) genuine = errorGate.intrinsic(handle) === true
+      if (!genuine) return { type }
       try {
         const stack = ctx.getProp(handle, 'stack')
         if (ctx.typeof(stack) === 'string') {
@@ -454,7 +523,7 @@ function summarizeArgument(ctx, bridge, handle) {
         }
         stack.dispose()
       } catch {
-        /* not an error */
+        /* not an error after all */
       }
     }
     return { type }
@@ -490,14 +559,26 @@ function summarize(value) {
 function applyInsertions(source, insertions) {
   if (insertions.length === 0) return source
   insertions.sort((a, b) => b.offset - a.offset || a.priority - b.priority)
-  let output = source
-  let lastOffset = Number.POSITIVE_INFINITY
+  // Preserve the original skip semantics, then emit the surviving insertions
+  // in one pass: rebuilding the whole string per insertion cost O(k·n) on
+  // large sources, which dominated instrumentation time on big samples.
+  const applied = []
+  let appliedOffset = Number.POSITIVE_INFINITY
   for (const insertion of insertions) {
-    if (insertion.offset > lastOffset) continue
-    output = output.slice(0, insertion.offset) + insertion.text + output.slice(insertion.offset)
-    lastOffset = insertion.offset
+    if (insertion.offset > appliedOffset) continue
+    applied.push(insertion)
+    appliedOffset = insertion.offset
   }
-  return output
+  const parts = []
+  let cursor = 0
+  for (let index = applied.length - 1; index >= 0; index -= 1) {
+    const insertion = applied[index]
+    parts.push(source.slice(cursor, insertion.offset))
+    parts.push(insertion.text)
+    cursor = insertion.offset
+  }
+  parts.push(source.slice(cursor))
+  return parts.join('')
 }
 
 function safeProp(ctx, target, key) {
