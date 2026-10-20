@@ -1433,7 +1433,8 @@ function domShim(host) {
       this.cancelBubble = true
     },
     composedPath: function composedPath() {
-      return this.target === null || this.target === undefined ? [] : [this.target]
+      if (Array.isArray(this.__path)) return this.__path.slice()
+      return this.target === null || this.target === undefined ? [] : composedPathOf(this.target)
     },
     initEvent: function initEvent(type, bubbles, cancelable) {
       this.type = stringOf(type)
@@ -1514,33 +1515,67 @@ function domShim(host) {
     if (event.__stopImmediate === true) state.immediate = true
   }
 
+  function composedPathOf(target) {
+    var path = []
+    var current = target
+    var seen = new Set()
+    while (current && !seen.has(current)) {
+      seen.add(current)
+      path.push(current)
+      if (current.parentNode) {
+        current = current.parentNode
+        continue
+      }
+      // Window is not a Node; reach it via document.defaultView (ACCEPTANCE H2).
+      if (current.nodeType === 9 && current.defaultView) {
+        path.push(current.defaultView)
+      }
+      break
+    }
+    return path
+  }
+
+  function invokePhaseListeners(target, event, typeName, capture, state) {
+    var list = listeners.get(target)
+    if (!list) return
+    var snapshot = list.slice()
+    for (var index = 0; index < snapshot.length; index += 1) {
+      if (state.immediate || event.__stop === true) break
+      var record = snapshot[index]
+      if (record.capture !== capture) continue
+      if (record.type !== typeName) continue
+      if (list.indexOf(record) < 0) continue
+      if (record.once) removeListenerRecord(target, record)
+      invokeListener(target, event, record, state)
+    }
+  }
+
   function dispatchEventOn(target, event) {
     if (event === null || typeof event !== 'object' || event.type === undefined) {
       throw new TypeError(
         "Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'.",
       )
     }
-    var list = listeners.get(target)
-    var snapshot = list ? list.slice() : []
     var state = { immediate: false }
     var typeName = stringOf(event.type)
+    var path = composedPathOf(target)
     event.target = target
     event.srcElement = target
-    event.currentTarget = target
-    event.eventPhase = 2
-    // A single target has two passes: capture listeners, then bubble listeners.
-    for (var pass = 0; pass < 2; pass += 1) {
-      var capture = pass === 0
-      for (var index = 0; index < snapshot.length; index += 1) {
-        if (state.immediate) break
-        var record = snapshot[index]
-        if (record.capture !== capture) continue
-        if (record.type !== typeName) continue
-        if (list && list.indexOf(record) < 0) continue
-        if (record.once) removeListenerRecord(target, record)
-        invokeListener(target, event, record, state)
-      }
+    event.__path = path
+
+    // Capture phase: window → … → target (exclusive of at-target capture pass).
+    event.eventPhase = 1
+    for (var captureIndex = path.length - 1; captureIndex >= 1; captureIndex -= 1) {
+      if (state.immediate || event.__stop === true) break
+      event.currentTarget = path[captureIndex]
+      invokePhaseListeners(path[captureIndex], event, typeName, true, state)
     }
+
+    // At-target: capture then bubble listeners on the target.
+    event.eventPhase = 2
+    event.currentTarget = target
+    invokePhaseListeners(target, event, typeName, true, state)
+    invokePhaseListeners(target, event, typeName, false, state)
     if (!state.immediate) {
       var handler = target['on' + typeName]
       if (typeof handler === 'function') {
@@ -1551,13 +1586,24 @@ function domShim(host) {
         }
       }
     }
+
+    // Bubble phase toward window when requested (ACCEPTANCE H2).
+    if (event.bubbles === true && !state.immediate && event.__stop !== true) {
+      event.eventPhase = 3
+      for (var bubbleIndex = 1; bubbleIndex < path.length; bubbleIndex += 1) {
+        if (state.immediate || event.__stop === true) break
+        event.currentTarget = path[bubbleIndex]
+        invokePhaseListeners(path[bubbleIndex], event, typeName, false, state)
+      }
+    }
+
     event.eventPhase = 0
     event.currentTarget = null
     host.trace('dom', 'emit', {
       event: 'dispatch',
       target: targetName(target),
       type: typeName,
-      listeners: snapshot.length,
+      listeners: path.length,
       defaultPrevented: event.defaultPrevented === true,
     })
     return event.defaultPrevented === true ? false : true
