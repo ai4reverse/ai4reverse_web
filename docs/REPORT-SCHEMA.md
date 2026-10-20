@@ -91,6 +91,7 @@ decimals, so independent signal families raise confidence.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `passes` | array | `[{id, changed, durationMs, notes}]` |
+| `error` | string \| null | message of the error that made the pipeline throw, `null` when it ran. A failed pipeline is therefore distinguishable from "nothing to restore" |
 | `code` | string | restored source |
 | `sha256` | string | hash of the restored source |
 | `size` | number | restored source size in bytes |
@@ -110,19 +111,41 @@ environment}`
 
 - `result`: `{type, preview}` of the guest's return value.
 - `events`: trace events (see `docs/CONTRACTS.md`).
-- `counts`: `{byKind}` map of trace kind to count.
-- `behavior`: `{apis, network, storage, dom, timers}`; `apis` is
-  `[{name, count}]`, the other fields are summaries produced by the sandbox.
+- `counts`: `{byKind}` map of trace kind to count (raw totals, platform events
+  included).
+- `behavior`: `{apis, network, storage, dom, timers}` plus the additive
+  counters described below; `apis` is `[{name, count}]`, the other fields are
+  summaries produced by the sandbox.
+- `behavior.counts.platform`: number of trace events the platform emitted while
+  building the environment (`document.installed`, `api.wrapped`, storage probes,
+  …). They are excluded from every other behaviour counter **and** from the
+  verdict, so the sandbox's own setup cannot raise a `DYNAMIC_*` reason. On
+  `examples/sample-loader.js` the ratio is 71 of 133 events.
 - `exceptions`: `{uncaught, caught, promiseJobs}`.
 - `environment`: `{profile}` used by the sandbox.
 
 ### `tracing`
 
-`{enabled, events, dropped, jsvmp}` with `jsvmp: {detected, opcodes, steps}`.
+`{enabled, events, dropped, truncated, truncatedBy, jsvmp}` with
+`jsvmp: {detected, opcodes, steps}`.
+
+- `truncated`: `true` when the trace is incomplete for a reason other than ring
+  eviction. Derived by the orchestrator from the run record, so it stays true
+  when the `code:trace-truncated` marker was pushed out of the retained window.
+- `truncatedBy`: non-empty subset of `code-budget` (the instrumentation stopped
+  emitting `code` events at its budget) and `event-limit` (events were dropped by
+  retention). Unknown reasons are dropped, not passed through.
+- `dropped` counts ring-buffer evictions only; it is not the truncation flag.
 
 ### `hooks`
 
-`{active, fired, mocks}` counts.
+`{active, fired, mocks, errors, errorsTruncated}` counts.
+
+- `errors`: the newest **50** hook failures, each `{hook, phase, message}` (the
+  bus keeps 200 and caps the text at 64 KiB; the report keeps the head of that
+  ring and never includes stacks).
+- `errorsTruncated`: `true` when either the bus or the report dropped entries,
+  so "no errors" and "errors we did not keep" are not confused.
 
 ### `artifacts`
 
@@ -169,6 +192,15 @@ with `source: "decoded"`.
 `Static analysis`, `IOCs`, `Dynamic behaviour`, `Tracing/JSVMP`, `Integrity`,
 `Recommendations`. Empty IOC categories are skipped; pipes are escaped in
 tables; missing data renders as `—`, `none` or `0` rather than `undefined`.
+
+Evidence lines that are printed only when they say something:
+
+| Line | Source | Printed when |
+| --- | --- | --- |
+| `**Platform events (not sample behaviour):** N` | `dynamic.behavior.counts.platform` | N > 0 |
+| `**Trace truncated:** yes (code-step budget reached; retention limit reached) — N event(s) dropped` / `no` | `tracing.truncated`/`truncatedBy`/`dropped` | always |
+| `**Restoration error:** message` | `static.restoration.error` | the pipeline threw |
+| `**Hook errors:** N (older failures dropped)` | `hooks.errors`/`errorsTruncated` | at least one failure |
 
 ## Trimmed example
 
@@ -305,7 +337,10 @@ The schema is append-only. The following optional fields are emitted by
 | `dynamic.counts.byKind`, `dynamic.exceptions` | Trace counts per event kind and exception counters. |
 | `tracing.jsvmp.sequence`, `dispatch`, `kind` | Recovered opcode sequence (bounded) and dispatch shape. |
 | `artifacts[].source`, `artifacts[].count` | Provenance (`dynamic:eval@12`, `network:<url>@7`, `static:offset=…`) and duplicate count. |
-| `hooks.errors` | Hook registrations that threw (isolated, never fatal). |
+| `hooks.errors`, `hooks.errorsTruncated` | Newest 50 hook registrations that threw (isolated, never fatal); the flag says entries were dropped. |
+| `static.restoration.error` | Message of the error that aborted the restoration pipeline (`null`/absent when it ran). |
+| `tracing.truncated`, `tracing.truncatedBy` | Explicit truncation flag plus its causes (`code-budget`, `event-limit`). |
+| `dynamic.behavior.counts.platform` | Trace events emitted by the platform, excluded from behaviour and verdict. |
 
 ### Run records returned alongside the report
 
