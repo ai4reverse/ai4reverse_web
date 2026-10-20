@@ -1,4 +1,4 @@
-import { loadQuickJS, createRuntime, isHostStackExhaustion } from './runtime.js'
+import { loadQuickJS, createRuntime, isHostStackExhaustion, guardHostStackExhaustion } from './runtime.js'
 import { normalizeLimits, DEFAULT_LIMITS } from './limits.js'
 import { createProfile, consistencyReport } from './profile.js'
 import { createVirtualClock } from './clock.js'
@@ -235,6 +235,7 @@ export class TracelessSandbox {
     let invoker = null
     let record = null
     let failure = null
+    let releaseStackGuard = null
     const disposalErrors = []
     let leaked = false
     // Set when the runtime is abandoned instead of disposed (stack breach).
@@ -261,6 +262,11 @@ export class TracelessSandbox {
         trace,
       })
       ctx = runtimeHandle.runtime.newContext()
+      // Host-side evidence for the stack path that reaches the invoker as a
+      // guest value: a host stack overflow escaping a host callback is turned
+      // into a guest `Error` by the WASM trampoline, so the engine signal must
+      // be recorded before that conversion (see `guardHostStackExhaustion`).
+      releaseStackGuard = guardHostStackExhaustion(ctx, runtimeHandle)
       stealth = createStealth(ctx, {
         nonce: shortHash(`${runId}:stealth`, 10),
         trace,
@@ -323,6 +329,8 @@ export class TracelessSandbox {
         limits: this.limits,
         hooks,
         instrumentation,
+        // Host stack-overflow witness (see `guardHostStackExhaustion`).
+        stackSignals: () => runtimeHandle.stackSignals(),
       })
 
       const invocation = invoker.invoke(source, {
@@ -408,7 +416,8 @@ export class TracelessSandbox {
       // invoker does not wrap (an env module callback, for example). It is the
       // same engine signal, so record it and let the finally block abandon the
       // runtime instead of trying a dispose that would abort the WASM engine.
-      stackBreach = stackBreach || isHostStackExhaustion(error)
+      stackBreach =
+        stackBreach || isHostStackExhaustion(error) || (runtimeHandle ? runtimeHandle.stackSignals() > 0 : false)
       // Reporting a failure must never mask it: the snapshot is best-effort.
       let profileSnapshot = null
       try {
@@ -463,6 +472,7 @@ export class TracelessSandbox {
       // Reverse acquisition order; every step is independent, so one failing
       // disposal never skips the next one.
       for (const [label, fn] of [
+        ['stack-guard', () => releaseStackGuard?.()],
         ['instrumentation', () => instrumentation?.dispose()],
         ['bridge', () => bridge?.disposeAll()],
         ['stealth', () => stealth?.dispose()],

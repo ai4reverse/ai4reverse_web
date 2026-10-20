@@ -112,12 +112,28 @@ export function createRuntime(options) {
     interrupts: 0,
     startedAt: Date.now(),
     memoryBreach: false,
+    /**
+     * How many times a *host* stack overflow was observed inside this run: out
+     * of the WASM trampoline, or escaping a host callback it wraps. Guest code
+     * cannot write this counter, so it — and only it — may certify the engine
+     * paths that reach us as a guest value (see `guardHostStackExhaustion`).
+     */
+    stackSignals: 0,
+    /** Which host boundary saw the signal last; diagnostics only, not a record. */
+    stackOrigin: null,
   }
 
   runtime.setMemoryLimit(limits.memoryBytes)
   runtime.setMaxStackSize(limits.stackBytes)
 
-  runtime.setInterruptHandler(() => {
+  /**
+   * Interrupt checks are the hottest host call in the run, and QuickJS calls
+   * them from the interpreter loop — i.e. with the WASM stack as deep as the
+   * guest recursion is. When the *host* stack gives out here, the V8
+   * `RangeError` is the engine's own evidence; record it before the exception
+   * unwinds (and before the WASM trampoline may turn it into a guest value).
+   */
+  const interrupt = () => {
     state.interrupts += 1
     // Guest-visible time advances deterministically from traced statements
     // (clock.tick() in the instrumentation channel), never from host speed.
@@ -131,6 +147,15 @@ export function createRuntime(options) {
       return true
     }
     return false
+  }
+
+  runtime.setInterruptHandler(() => {
+    try {
+      return interrupt()
+    } catch (error) {
+      noteHostStackExhaustion(state, error, 'interrupt')
+      throw error
+    }
   })
 
   let disposed = false
@@ -140,6 +165,17 @@ export function createRuntime(options) {
     state,
     limits,
     module,
+    /**
+     * Number of host stack-overflow signals observed in this run.
+     *
+     * A monotonically increasing count lets the caller attribute a signal to
+     * the phase or callback it happened in without reading a host path, so the
+     * record stays a pure function of the sample.
+     * @returns {number}
+     */
+    stackSignals() {
+      return state.stackSignals
+    },
     /** Stop guest execution at the next interrupt check. */
     poison(reason = 'aborted') {
       state.poisoned = true
@@ -213,10 +249,18 @@ export function createRuntime(options) {
  * `throw new Error('stack overflow')` — which is why host throws, and only host
  * throws, may be read as proof that the stack is gone.
  *
+ * The same overflow does not always arrive the same way: when the host stack
+ * gives out *inside* a host callback, quickjs-emscripten catches the JS
+ * exception and rethrows it into the guest as `ctx.newError(error)` — a guest
+ * `Error` carrying the host name and message, shape-identical to a sample's own
+ * forgery. `guardHostStackExhaustion` records that signal host-side before the
+ * conversion, so both shapes classify as one (see `tools/invocation/invoke.js`).
+ *
  * A reduced `limits.stackBytes` lets QuickJS' own interpreter check fire first,
- * which surfaces `InternalError: stack overflow` as a *guest* value instead.
- * That value carries no provenance, so it is classified in
- * `tools/invocation/stealth.js` from intrinsic identity, never from this text.
+ * which surfaces `InternalError: stack overflow` as a *guest* value with no host
+ * throw at all. That value carries no provenance, so it is classified in
+ * `tools/invocation/stealth.js` from intrinsic identity — against a prototype the
+ * guest cannot reach — and never from this text.
  */
 const ENGINE_STACK_MESSAGE = /maximum call stack size exceeded|stack overflow/i
 
@@ -254,5 +298,95 @@ export function isHostStackExhaustion(thrown) {
   // `Error` is accepted because emscripten wraps some aborts in a plain Error.
   if (name !== 'RangeError' && name !== 'Error') return false
   return isEngineStackMessage(thrown)
+}
+
+/**
+ * Stricter predicate for the *callback boundary* (`isHostStackExhaustion` is
+ * fine where a host throw escapes the WASM call, because no host code can put
+ * guest text into it).
+ *
+ * At a host callback boundary the message can be guest-influenced: env shims
+ * throw ``new RangeError(`Invalid key : ${key}`)``, so a sample that picks `key`
+ * can bury the engine's wording inside a host error. Only an *exact* match is
+ * beyond that reach, so there the phrase must be the whole message.
+ *
+ * @param {unknown} thrown host value caught at a callback boundary
+ * @returns {boolean}
+ */
+function isCallbackStackExhaustion(thrown) {
+  if (!thrown || typeof thrown !== 'object') return false
+  if (thrown.name !== 'RangeError') return false
+  const message = thrown.message
+  if (typeof message !== 'string') return false
+  // Exact comparison only. This runs with the host stack already exhausted, so
+  // it must not compile a RegExp, build a template string or allocate at all —
+  // V8 answers `new RegExp(/…/)` there with a *second* RangeError
+  // ("Invalid regular expression: …: Maximum call stack size exceeded"), which
+  // would replace the engine's own evidence with a fabricated one.
+  return message === 'Maximum call stack size exceeded' || message === 'stack overflow'
+}
+
+/**
+ * Record a host stack-overflow signal on the run.
+ * @param {{stackSignals: number, stackOrigin: string|null}} state
+ * @param {unknown} thrown
+ * @param {string} origin boundary that saw it
+ * @returns {boolean} true when `thrown` really was the signal
+ */
+function noteHostStackExhaustion(state, thrown, origin) {
+  if (!isCallbackStackExhaustion(thrown)) return false
+  state.stackSignals += 1
+  state.stackOrigin = origin
+  return true
+}
+
+/**
+ * Wrap every host callback the guest can reach so that a stack overflow the WASM
+ * trampoline is about to convert into a guest value is recorded host-side
+ * first.
+ *
+ * Why a wrapper: `quickjs-emscripten` catches a JS exception escaping a host
+ * function and rethrows it into the guest as `ctx.newError(error)` — a guest
+ * `Error` carrying the host `name`/`message`. That value is shape-identical to
+ * a sample's own forgery, so the engine's evidence would be lost. The counter
+ * written here is not reachable from guest code, and the invoker classifies
+ * from it (see `tools/invocation/invoke.js`). The exception is rethrown
+ * unchanged, so the trampoline keeps its own behaviour.
+ *
+ * Must be called once per context, *before* any environment module installs a
+ * host function.
+ *
+ * @param {object} ctx QuickJS context
+ * @param {object} run runtime wrapper from `createRuntime`
+ * @returns {() => void} restore hook
+ */
+export function guardHostStackExhaustion(ctx, run) {
+  const state = run?.state
+  const original = ctx?.newFunctionWithOptions
+  if (!state || typeof original !== 'function') return () => {}
+  const guarded = function guardedNewFunctionWithOptions(args) {
+    const fn = args?.fn
+    if (typeof fn !== 'function') return original.call(this, args)
+    const wrapped = function guardedHostCallback(...callArgs) {
+      try {
+        return fn.apply(this, callArgs)
+      } catch (error) {
+        noteHostStackExhaustion(state, error, 'callback')
+        throw error
+      }
+    }
+    // quickjs-emscripten derives the guest-visible `name`/`length` from these.
+    try {
+      Object.defineProperty(wrapped, 'name', { value: fn.name, configurable: true })
+      Object.defineProperty(wrapped, 'length', { value: fn.length, configurable: true })
+    } catch {
+      /* the explicit options below still define the guest-visible function */
+    }
+    return original.call(this, { ...args, fn: wrapped })
+  }
+  ctx.newFunctionWithOptions = guarded
+  return () => {
+    if (ctx.newFunctionWithOptions === guarded) ctx.newFunctionWithOptions = original
+  }
 }
 

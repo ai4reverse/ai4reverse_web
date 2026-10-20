@@ -13,6 +13,15 @@
  * Engine-generated errors (e.g. `null.x` → TypeError) bypass the constructor;
  * the AST catch instrumentation sanitises those in place before guest code can
  * read them, and the host boundary sanitises uncaught ones.
+ *
+ * One constructor is deliberately not identity-shared: `InternalError` is the
+ * class QuickJS uses for its own stack overflow, so a wrapper built on the
+ * intrinsic prototype would let a sample forge engine exhaustion with
+ * `new InternalError('stack overflow')` (`tools/invocation/stealth.js` decides
+ * that classification by prototype identity). The wrapper therefore owns a
+ * fresh prototype with the same own properties and the same `[[Prototype]]`
+ * (`Error.prototype`, exactly as in Firefox), which keeps every faithful
+ * surface while making the intrinsic prototype unreachable.
  */
 
 export const meta = { id: 'stack', order: 27, requires: ['globals'] }
@@ -29,22 +38,46 @@ export function install(bridge) {
   const factory = ctx.evalCode(
     `(function (OrigError, sanitize) {
       var global = globalThis;
+      var setProto = Object.setPrototypeOf;
+      var getProto = Object.getPrototypeOf;
+      var ownNames = Object.getOwnPropertyNames;
+      var ownDescriptor = Object.getOwnPropertyDescriptor;
+      var define = Object.defineProperty;
+      var create = Object.create;
 
-      function wrap(name, Orig, arity) {
+      function wrap(name, Orig, arity, reown) {
         if (typeof Orig !== 'function') return null;
         function Wrapped(message, options) {
           var error = arguments.length > 0 ? new Orig(message, options) : new Orig();
+          // The engine constructor always stamps its own prototype, so a
+          // re-owned wrapper has to move the instance onto the fresh one — that
+          // is what keeps the intrinsic prototype out of guest reach. setProto
+          // is captured now, before guest code can replace it.
+          if (reown) {
+            try { setProto(error, Wrapped.prototype); } catch (e) {}
+          }
           try {
             if (error && typeof error.stack === 'string') error.stack = sanitize(error.stack);
           } catch (e) {}
           return error;
         }
-        Wrapped.prototype = Orig.prototype;
+        Wrapped.prototype = reown ? reownPrototype(Orig, Wrapped) : Orig.prototype;
         try {
-          Object.defineProperty(Orig.prototype, 'constructor', {
+          define(Wrapped.prototype, 'constructor', {
             value: Wrapped, writable: true, enumerable: false, configurable: true
           });
         } catch (e) {}
+        if (reown) {
+          // A real engine error still carries the intrinsic prototype, and a
+          // sample that catches one reads its constructor from there. Point that
+          // at the wrapper too, so the intrinsic constructor stays unreachable
+          // (and error.constructor keeps answering the global constructor).
+          try {
+            define(Orig.prototype, 'constructor', {
+              value: Wrapped, writable: true, enumerable: false, configurable: true
+            });
+          } catch (e) {}
+        }
         try { Object.defineProperty(Wrapped, 'name', { value: name, configurable: true }); } catch (e) {}
         try { Object.defineProperty(Wrapped, 'length', { value: arity, configurable: true }); } catch (e) {}
         // Copy engine statics (stackTraceLimit, captureStackTrace where present).
@@ -55,6 +88,28 @@ export function install(bridge) {
           try { Wrapped[key] = Orig[key]; } catch (e) {}
         }
         return Wrapped;
+      }
+
+      // A wrapper normally reuses the engine prototype, so every identity check
+      // a sample can run stays true.  That is wrong for one constructor only:
+      // QuickJS builds its *own* stack overflow with the intrinsic
+      // InternalError.prototype, so a sample holding that same prototype could
+      // forge engine exhaustion.  A fresh prototype — same own properties, same
+      // [[Prototype]] (Error.prototype, exactly as in Firefox) — keeps every
+      // faithful surface and makes the intrinsic prototype unreachable, so the
+      // stealth probe can trust an InternalError's identity again.
+      function reownPrototype(Orig, Wrapped) {
+        var source = Orig.prototype;
+        var fresh = create(getProto(source));
+        var keys = ownNames(source);
+        for (var i = 0; i < keys.length; i++) {
+          if (keys[i] === 'constructor') continue;
+          try {
+            var descriptor = ownDescriptor(source, keys[i]);
+            if (descriptor) define(fresh, keys[i], descriptor);
+          } catch (e) {}
+        }
+        return fresh;
       }
 
       function wrapAggregate(Orig) {
@@ -79,7 +134,12 @@ export function install(bridge) {
 
       var out = {};
       out.Error = wrap('Error', OrigError, 1);
-      var names = ['EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'InternalError'];
+      // InternalError is the engine's stack-overflow class (see runtime.js), so
+      // it is the one constructor whose prototype must not be shared.
+      out.InternalError = typeof global.InternalError === 'function'
+        ? wrap('InternalError', global.InternalError, global.InternalError.length, true)
+        : null;
+      var names = ['EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError'];
       for (var i = 0; i < names.length; i++) {
         var original = global[names[i]];
         if (typeof original === 'function') out[names[i]] = wrap(names[i], original, original.length);
@@ -110,6 +170,7 @@ export function install(bridge) {
   const wrappers = call.value
   const names = ['Error', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'InternalError', 'AggregateError']
   let installed = 0
+  const installedNames = new Set()
   for (const name of names) {
     const handle = ctx.getProp(wrappers, name)
     if (ctx.typeof(handle) !== 'function') {
@@ -120,6 +181,7 @@ export function install(bridge) {
     bridge.install(ctx.global, name, handle, { enumerable: false, configurable: true, writable: true })
     handle.dispose()
     installed += 1
+    installedNames.add(name)
   }
   wrappers.dispose()
 
@@ -168,6 +230,25 @@ export function install(bridge) {
     const removed = ctx.evalCode('delete globalThis.InternalError', 'ai4r-internal:stack-shim')
     if (removed.error) removed.error.dispose()
     else removed.value.dispose()
+  }
+
+  // The wrapper above gives InternalError its own prototype, which is what keeps
+  // the engine's stack-overflow class out of a sample's reach (see the guest
+  // code and `revokeStackEvidence`). If that wrapper is missing — an engine
+  // without the constructor, or a shim call that failed — the global binding is
+  // the *intrinsic* one and a sample can build a prototype-identical forgery, so
+  // the stealth probe must stop certifying from guest dumps for this run. The
+  // host-throw witness is unaffected: no guest value takes part in it.
+  if (!installedNames.has('InternalError')) {
+    const present = ctx.evalCode('typeof globalThis.InternalError === "function"', 'ai4r-internal:stack-shim')
+    let exposed = false
+    if (present.error) {
+      present.error.dispose()
+    } else {
+      exposed = ctx.dump(present.value) === true
+      present.value.dispose()
+    }
+    if (exposed) bridge.stealth?.revokeStackEvidence?.('InternalError prototype exposed unwrapped')
   }
 
   bridge.emit('sandbox', 'emit', { event: 'stack.virtualized', installed, browser: profile.browser })

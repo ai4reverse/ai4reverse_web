@@ -43,6 +43,15 @@ export function createStealth(ctx, options = {}) {
   let intrinsicStackMatch = null
   let intrinsicStackReachable = null
   let stackProbeAttempted = false
+  /**
+   * Reason the engine's stack identity may no longer be trusted, or null.
+   *
+   * Set by an environment module that leaves the engine's `InternalError`
+   * prototype reachable (`env/stack.js` reports it when it cannot replace the
+   * constructor with a fresh prototype). While a guest can obtain that prototype
+   * it can also *build* an object with it, so identity proves nothing.
+   */
+  let stackEvidenceRevoked = null
 
   const beginFor = (token) => `/*#${token}*/`
   const endFor = (token) => `/*#/${token}*/`
@@ -77,7 +86,7 @@ export function createStealth(ctx, options = {}) {
       }
       try {
         intrinsicStackMatch = safeProp(built.value, 'isIntrinsicStackError')
-        intrinsicStackReachable = safeProp(built.value, 'isConstructorReachable')
+        intrinsicStackReachable = safeProp(built.value, 'isPrototypeReachable')
       } finally {
         built.value.dispose()
       }
@@ -264,9 +273,14 @@ export function createStealth(ctx, options = {}) {
      * real engine exhaustion — abandoning a healthy runtime and writing a false
      * leak marker. This predicate is true only for an object whose prototype
      * chain contains the *captured* intrinsic `InternalError.prototype`, and it
-     * refuses evidence while the guest can still reach that constructor itself
+     * refuses evidence while the guest can still reach that prototype
      * (`new InternalError(...)` is prototype-identical to the engine's own
-     * throw, so reachability cancels the proof).
+     * throw, so reachability cancels the proof — see `revokeStackEvidence`).
+     *
+     * This is the only guest-derived classification channel; it is used for the
+     * interpreter-level overflow a reduced `limits.stackBytes` produces, which
+     * no host throw ever announces. Every other engine shape is certified
+     * host-side (`isHostStackExhaustion`, `guardHostStackExhaustion`).
      *
      * The handle stays owned by the caller: nothing is consumed or disposed.
      *
@@ -274,11 +288,31 @@ export function createStealth(ctx, options = {}) {
      * @returns {boolean}
      */
     isIntrinsicStackError(handle) {
+      if (stackEvidenceRevoked) return false
       if (!handle || typeof handle.dispose !== 'function') return false
       const { match, reachable } = ensureStackProbe()
       if (!match) return false
       if (callProbe(reachable)) return false
       return callProbe(match, [handle])
+    },
+
+    /**
+     * Withdraw guest-dump certification for the rest of the run.
+     *
+     * Called by an environment module that knows it left the engine's
+     * `InternalError` prototype reachable from guest code: from then on a
+     * `new InternalError(...)` (or `Object.create(InternalError.prototype)`) is
+     * prototype-identical to the engine's own overflow, so a dump-shaped check
+     * would let a sample force a stack quarantine (and a WASM recompile) per run.
+     * The host-throw witness stays authoritative — it is not derived from guest
+     * data at all.
+     *
+     * @param {string} [reason] why the evidence is unsound (diagnostics)
+     */
+    revokeStackEvidence(reason = 'guest-constructible') {
+      if (stackEvidenceRevoked) return
+      stackEvidenceRevoked = String(reason)
+      trace?.emit('sandbox', 'emit', { event: 'stack.evidence.revoked', reason: stackEvidenceRevoked })
     },
 
     /**
@@ -394,6 +428,7 @@ export function createStealth(ctx, options = {}) {
       }
       intrinsicStackMatch = null
       intrinsicStackReachable = null
+      stackEvidenceRevoked = null
     },
   }
 
@@ -411,11 +446,21 @@ export function createStealth(ctx, options = {}) {
  *    own error class? Walks the prototype chain against the captured
  *    `target.prototype` instead of using `instanceof`, so guest mutation of
  *    `Symbol.hasInstance` or `InternalError.prototype` cannot steer it.
- *  - `isConstructorReachable()`: can the guest still reach `target` through the
- *    global object? QuickJS builds its own internal errors with that same
- *    prototype, so while the constructor is in reach, a guest-constructed
+ *  - `isPrototypeReachable()`: can the guest still reach `target.prototype`
+ *    through the global object? QuickJS builds its own internal errors with
+ *    that same prototype, so while it is in reach a guest-constructed
  *    `new InternalError(...)` is indistinguishable from a real overflow and the
  *    identity proof is void.
+ *
+ *    The question is about the *prototype*, not the constructor binding: a
+ *    wrapper (or any other installer) can hide the intrinsic constructor while
+ *    still exposing its prototype as `InternalError.prototype`, which is exactly
+ *    the shape `env/stack.js` used to have — it wrapped the constructor but kept
+ *    `Wrapped.prototype = Orig.prototype`, so `new InternalError(...)` produced a
+ *    prototype-identical forgery. `env/stack.js` now gives the wrapper its own
+ *    prototype (a faithful chain: `InternalError.prototype.__proto__` is
+ *    `Error.prototype`), so the intrinsic prototype is unreachable and the
+ *    identity proof holds.
  */
 const STACK_PROBE_SOURCE = `(function (target) {
   var proto = target.prototype
@@ -434,9 +479,11 @@ const STACK_PROBE_SOURCE = `(function (target) {
         return false
       }
     },
-    isConstructorReachable: function () {
+    isPrototypeReachable: function () {
       try {
-        return globalThis.InternalError === target
+        var ctor = globalThis.InternalError
+        if (ctor === undefined || ctor === null) return false
+        return ctor.prototype === proto
       } catch (error) {
         return true
       }

@@ -30,9 +30,27 @@ export function createInvoker(options) {
     limits,
     hooks,
     instrumentation,
+    stackSignals,
   } = options
 
   let invocationCount = 0
+
+  /**
+   * Host stack-overflow counter for this run (0 when the caller has no witness).
+   *
+   * The number only ever increases, and only a host throw can increment it, so
+   * comparing it around one branch attributes the signal to that branch without
+   * reading any guest-controlled value. See `guardHostStackExhaustion` in
+   * `tools/sandbox/runtime.js`.
+   * @returns {number}
+   */
+  const hostStackCount = () => {
+    try {
+      return typeof stackSignals === 'function' ? Number(stackSignals()) || 0 : 0
+    } catch {
+      return 0
+    }
+  }
 
   function resolveFilename({ sourceUrl, filename, kind = 'script', source } = {}) {
     if (filename) return filename
@@ -93,6 +111,7 @@ export function createInvoker(options) {
       : { code: text, plan: new Map(), facts: null, vm: null, stats: { insertions: 0 } }
 
     const startedAt = Date.now()
+    const stackSignalsBefore = hostStackCount()
     let evalResult
     try {
       evalResult = ctx.evalCode(prepared.code, filename, { type: mode })
@@ -103,40 +122,34 @@ export function createInvoker(options) {
       // A script that merely says `throw new Error('stack overflow')` arrives
       // below as a dumped guest error and is reported as an ordinary failure.
       if (!isHostStackExhaustion(error)) throw error
-      const dumped = stackLimitError()
-      instrumentation?.exceptions?.reportUncaught(dumped, 'eval', { filename, limitsHit: ['stack'] })
-      trace?.emit('code', 'error', { event: 'invoke.stack-overflow', filename })
-      return {
-        ok: false,
-        error: dumped,
-        limitsHit: ['stack'],
-        // Explicit engine marker. `limitsHit`, the abandon decision and the
-        // reported leak are all derived from it, so only the engine can push a
-        // run onto the runtime-recompile path.
-        stackExhaustion: true,
-        timedOut: false,
-        filename,
-        prepared,
-        facts: prepared.facts,
-        vm: prepared.vm,
-        durationMs: Date.now() - startedAt,
-        virtualMs: Math.round(clock.elapsedMs),
-      }
+      return stackBreachOutcome({ filename, prepared, startedAt, mode })
     }
     const durationMs = Date.now() - startedAt
 
     if (evalResult.error) {
-      // Intrinsic identity, read from the live handle: the dumped record is
-      // guest data, so `{ name: 'InternalError', message: 'Maximum call stack
-      // size exceeded' }` or an `Error` renamed to `InternalError` can never
-      // decide that the engine's stack is gone.
-      const engineStack = isEngineStackError(stealth, evalResult.error)
+      // Two engine shapes, one classification:
+      //  - a host `RangeError` out of the WASM call (caught above), and
+      //  - the same overflow escaping a host callback, which the trampoline
+      //    rethrows into the guest as an `Error` — shape-identical to
+      //    `throw new RangeError('Maximum call stack size exceeded')`.
+      // The second shape is certified by the host-side counter, which guest
+      // code cannot write; the intrinsic-identity probe covers the interpreter
+      // path (a reduced `stackBytes`), where no host throw exists.
+      const hostEvidence = hostStackCount() > stackSignalsBefore
+      // Identity, not the dump: a sample can throw
+      // `{ name: 'InternalError', message: 'Maximum call stack size exceeded' }`
+      // or rename its own `Error`, and no dumped field may decide this.
+      const guestEvidence = isEngineStackError(stealth, evalResult.error)
       const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(evalResult.error)) : ctx.dump(evalResult.error)
       evalResult.error.dispose()
-      const classified = classifyLimit(dumped, runtime, limits, engineStack)
-      // Only the engine's own `InternalError` produces `stack` here; a forged
-      // guest message stays a plain error (see `classifyLimit`).
-      const stackExhaustion = classified === 'stack'
+      const classified = hostEvidence ? 'stack' : classifyLimit(dumped, runtime, limits, guestEvidence)
+      if (classified === 'stack') {
+        // Same record, same trace event and the same (skipped) hooks as the
+        // host-throw path above: the two engine shapes must not be tellable
+        // apart in a run record. `dumped` only contributes the engine's own
+        // name/message; its frame list depends on the recursion depth.
+        return stackBreachOutcome({ filename, prepared, startedAt, mode, dumped })
+      }
       if (instrumentation?.exceptions) {
         instrumentation.exceptions.reportUncaught(dumped, mode === 'module' ? 'module' : 'eval', { filename })
       }
@@ -153,7 +166,7 @@ export function createInvoker(options) {
         ok: false,
         error: dumped,
         limitsHit: classified ? [classified] : [],
-        stackExhaustion,
+        stackExhaustion: false,
         timedOut: classified === 'timeout' || classified === 'virtual-time',
         filename,
         prepared,
@@ -188,6 +201,12 @@ export function createInvoker(options) {
       const raw = entryResult?.ok ? entryResult.handle : valueHandle
       const dumped = ctx.dump(raw)
       const summary = summarizeResult(dumped)
+      // The evaluation itself can also burn the host stack without failing: a
+      // guest `try { recurse() } catch {}` swallows the error the trampoline
+      // converted. The host witness survives the catch, so the run is still
+      // classified (and abandoned) the same way — one input, one record.
+      const lateHostStack = hostStackCount() > stackSignalsBefore
+      const lateStackError = lateHostStack ? stackBreachRecord(null) : null
       trace?.emit('code', 'after', {
         event: 'invoke.ok',
         filename,
@@ -196,19 +215,27 @@ export function createInvoker(options) {
         instrumented: prepared.stats?.insertions ?? 0,
         virtualMs: Math.round(clock.elapsedMs),
       })
+      if (lateStackError) {
+        // Same event as the failing shapes, so the trace does not depend on
+        // whether the guest swallowed the converted overflow.
+        trace?.emit('code', 'error', { event: 'invoke.stack-overflow', filename })
+      }
       hooks?.emit('code:after', {
         source: text,
         filename,
         result: summary,
         prepared,
         ok: true,
-        limitsHit: [],
+        limitsHit: lateStackError ? ['stack'] : [],
       })
       return {
         ok: true,
         result: summary,
         value: summary.value,
-        stackExhaustion: false,
+        // Additive: the guest returned, but the engine's stack is gone.
+        error: lateStackError,
+        limitsHit: lateStackError ? ['stack'] : [],
+        stackExhaustion: Boolean(lateStackError),
         filename,
         prepared,
         facts: prepared.facts,
@@ -235,6 +262,42 @@ export function createInvoker(options) {
   }
 
   /**
+   * The single record shape for an engine stack-overflow classification.
+   *
+   * Both engine shapes (host throw out of the WASM call, and the trampoline's
+   * guest-error conversion of the same overflow inside a host callback) go
+   * through here, so `error`, `limitsHit`, the exception report and the trace
+   * event are identical and a run record cannot reveal which one happened.
+   *
+   * @param {{filename: string, prepared: object, startedAt: number, mode: string, dumped?: object|null}} args
+   * @returns {object} invocation record
+   */
+  function stackBreachOutcome({ filename, prepared, startedAt, mode, dumped = null }) {
+    // Explicit engine marker. `limitsHit`, the abandon decision and the
+    // reported leak are all derived from it, so only the engine can push a run
+    // onto the runtime-recompile path.
+    const error = stackBreachRecord(dumped)
+    instrumentation?.exceptions?.reportUncaught(error, mode === 'module' ? 'module' : 'eval', {
+      filename,
+      limitsHit: ['stack'],
+    })
+    trace?.emit('code', 'error', { event: 'invoke.stack-overflow', filename })
+    return {
+      ok: false,
+      error,
+      limitsHit: ['stack'],
+      stackExhaustion: true,
+      timedOut: false,
+      filename,
+      prepared,
+      facts: prepared.facts,
+      vm: prepared.vm,
+      durationMs: Date.now() - startedAt,
+      virtualMs: Math.round(clock.elapsedMs),
+    }
+  }
+
+  /**
    * Call a global function after evaluation. Used for entry-point samples
    * (`window.start(...)`, `_0x1234()`), invoked from the host without wrappers.
    * @param {string} name
@@ -257,6 +320,7 @@ export function createInvoker(options) {
       }
     }
     const argHandles = []
+    const signalsBefore = hostStackCount()
     try {
       for (const arg of args) argHandles.push(bridge.toGuest(arg))
       let result
@@ -273,14 +337,20 @@ export function createInvoker(options) {
         return { ok: false, error: dumped, stackExhaustion: true }
       }
       if (result.error) {
-        // Same intrinsic-identity evidence as in `invoke()`: the engine's own
-        // `InternalError` is a *guest* value here, so the name it carries proves
-        // nothing.
-        const engineStack = isEngineStackError(stealth, result.error)
+        // Same evidence as in `invoke()`: the host witness for the converted
+        // shape, prototype identity for the interpreter shape — never a dumped
+        // name or message.
+        const hostEvidence = hostStackCount() > signalsBefore
+        const guestEvidence = isEngineStackError(stealth, result.error)
         const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
         result.error.dispose()
-        instrumentation?.exceptions?.reportUncaught(dumped, 'call', { entry: name })
-        return { ok: false, error: dumped, stackExhaustion: engineStack }
+        const breach = hostEvidence || guestEvidence
+        const reported = breach ? stackBreachRecord(dumped) : dumped
+        instrumentation?.exceptions?.reportUncaught(reported, 'call', {
+          entry: name,
+          ...(breach ? { limitsHit: ['stack'] } : {}),
+        })
+        return { ok: false, error: reported, stackExhaustion: breach }
       }
       trace?.emit('code', 'after', { event: 'entry.called', name, args: args.length })
       return { ok: true, handle: result.value }
@@ -353,6 +423,29 @@ export function createInvoker(options) {
       return true
     }
 
+    /**
+     * Same classification for the *converted* shape of the same overflow.
+     *
+     * When the host stack gives out inside a callback, the WASM trampoline
+     * rethrows the V8 `RangeError` into the guest and the guest shim reports it
+     * as an ordinary uncaught exception — no host throw ever reaches this loop.
+     * The host witness (`runtime.stackSignals()`) still did, so the branch that
+     * was running when the counter moved owns the origin. Comparing the counter
+     * around one branch keeps `settle.error.origin` a pure function of the
+     * sample, not of which engine shape happened.
+     *
+     * @param {string} origin
+     * @param {number} before counter value read before the branch ran
+     * @returns {boolean} true when this branch saw the engine signal
+     */
+    const noteHostStack = (origin, before) => {
+      if (stackExhaustion || hostStackCount() <= before) return false
+      stackExhaustion = true
+      stackError = { origin, ...stackLimitError() }
+      trace?.emit('sandbox', 'error', { event: 'settle.stack-overflow', origin })
+      return true
+    }
+
     for (let guard = 0; guard < 100_000; guard += 1) {
       if (stackError) break
       if (runtime.hasPendingJob()) {
@@ -360,6 +453,7 @@ export function createInvoker(options) {
           exhausted = true
           break
         }
+        const signalsBefore = hostStackCount()
         let result
         try {
           result = runtime.executePendingJobs(100)
@@ -373,9 +467,12 @@ export function createInvoker(options) {
           const engineStack = isEngineStackError(stealth, result.error)
           const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
           result.error.dispose()
+          if (noteHostStack('promise-job', signalsBefore)) break
           if (noteStack('promise-job', dumped, engineStack)) break
           instrumentation?.exceptions?.reportPromiseJob(dumped)
           pendingRejections += 1
+        } else if (noteHostStack('promise-job', signalsBefore)) {
+          break
         } else {
           jobs += typeof result.value === 'number' ? result.value : 1
           result.value?.dispose?.()
@@ -394,6 +491,7 @@ export function createInvoker(options) {
         exhausted = true
         break
       }
+      const signalsBefore = hostStackCount()
       const run = clock.runDue({ maxCallbacks: remaining, maxVirtualMs })
       timerCallbacks += run.executed
       for (const error of run.errors) {
@@ -412,6 +510,10 @@ export function createInvoker(options) {
       }
       if (stackError) break
       if (run.stackExhaustion) break
+      // The callback's overflow can also reach us as a guest report (see
+      // `noteHostStack`); attribute it to this batch and stop before the next
+      // callback runs on a runtime whose engine stack is gone.
+      if (noteHostStack('timer', signalsBefore)) break
       if (run.executed === 0) break
     }
 
@@ -497,6 +599,26 @@ function isEngineStackError(stealth, handle) {
  */
 function stackLimitError() {
   return { name: 'RangeError', message: 'Maximum call stack size exceeded', stack: '' }
+}
+
+/**
+ * Canonical report for a classified stack breach.
+ *
+ * The engine names the same condition two ways (a host `RangeError` with V8's
+ * wording when the WASM stack goes, an `InternalError` with QuickJS' wording
+ * when the interpreter check fires). Whatever the engine produced, the record
+ * keeps its name and message but drops the stack: the frame list grows with the
+ * recursion depth the sample reached before the limit hit, so it would make two
+ * runs of the same input disagree.
+ *
+ * @param {{name?: unknown, message?: unknown}|null|undefined} dumped guest dump, when there is one
+ * @returns {{name: string, message: string, stack: string}}
+ */
+function stackBreachRecord(dumped) {
+  const name = typeof dumped?.name === 'string' && dumped.name ? dumped.name : 'RangeError'
+  const message =
+    typeof dumped?.message === 'string' && dumped.message ? dumped.message : 'Maximum call stack size exceeded'
+  return { name, message, stack: '' }
 }
 
 function summarizeResult(dumped) {
