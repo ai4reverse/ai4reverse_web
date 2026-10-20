@@ -492,7 +492,10 @@ export function createInvoker(options) {
         break
       }
       const signalsBefore = hostStackCount()
-      const run = clock.runDue({ maxCallbacks: remaining, maxVirtualMs })
+      // One timer callback per settle turn: the job-queue branch at the top of
+      // this loop then drains guest microtasks before the next callback, which
+      // is the ordering real browsers guarantee between same-due timers.
+      const run = clock.runDue({ maxCallbacks: 1, maxVirtualMs })
       timerCallbacks += run.executed
       for (const error of run.errors) {
         // A callback that exhausted the stack is classified, not retried: the

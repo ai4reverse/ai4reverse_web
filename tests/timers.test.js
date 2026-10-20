@@ -185,3 +185,27 @@ test('the timers module exposes no unfed microtask queue', async () => {
   assert.equal(disposal.leaked, false, 'the timers module must not keep guest handles')
   assert.equal(disposal.ok, true)
 })
+
+test('microtasks drain between same-batch timer callbacks like a browser', async () => {
+  const sb = await TracelessSandbox.create({ logLevel: 'silent', env: { strict: false, only: ['globals', 'console', 'timers', 'encoding', 'time', 'stack', 'random', 'storage', 'anti-fingerprint'] } })
+  try {
+    const run = await sb.run(
+      `
+      var order = [];
+      setTimeout(function () {
+        order.push('t1');
+        Promise.resolve().then(function () { order.push('m1'); });
+      }, 5);
+      setTimeout(function () { order.push('t2'); }, 5);
+      setTimeout(function () { console.log('ORDER:' + order.join(',')); }, 10);
+      0
+    `,
+    )
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    const logged = (run.events ?? []).find((event) => event.kind === 'api' && event.api === 'console.log' && String(event.text ?? '').startsWith('ORDER:'))
+    assert.ok(logged, 'marker log missing')
+    assert.equal(logged.text, 'ORDER:t1,m1,t2', `browser order violated: ${logged.text}`)
+  } finally {
+    sb.dispose()
+  }
+})

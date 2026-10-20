@@ -131,6 +131,10 @@ export function createVirtualClock(options = {}) {
       let advanced = 0
       let exhausted = false
       let stackExhaustion = false
+      // Errors thrown during THIS batch only. The lifetime `errors` array stays
+      // for stats; returning it made every settle iteration re-report all
+      // earlier batches' errors (once per batch, growing unboundedly).
+      const batchErrors = []
 
       while (executed < maxCallbacks) {
         let next = null
@@ -160,11 +164,13 @@ export function createVirtualClock(options = {}) {
           // trampoline; a guest `throw new RangeError('…stack…')` is an ordinary
           // callback error and never reaches this predicate as host evidence.
           const isStackThrow = isHostStackExhaustion(error)
-          errors.push({
+          const entry = {
             timerId: next.id,
             message: error?.message ?? String(error),
             stackExhaustion: isStackThrow,
-          })
+          }
+          errors.push(entry)
+          batchErrors.push(entry)
           logger?.debug?.({ timerId: next.id, err: error?.message }, 'timer callback threw')
           if (isStackThrow) {
             stackExhaustion = true
@@ -173,7 +179,7 @@ export function createVirtualClock(options = {}) {
         }
       }
 
-      return { executed, advancedMs: advanced, errors, exhausted, stackExhaustion }
+      return { executed, advancedMs: advanced, errors: batchErrors, exhausted, stackExhaustion }
     },
 
     /** Advance to the next pending timer even if it is far in the future, then run it. */
