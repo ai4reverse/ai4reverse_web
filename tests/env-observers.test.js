@@ -385,3 +385,32 @@ test('a target whose tagName getter throws is described as unknown', async () =>
     harness.dispose()
   }
 })
+
+test('observer targets and instances are released, so the runtime disposes cleanly', async () => {
+  const harness = await observerHarness()
+  try {
+    runGuest(
+      harness,
+      `var mo = new MutationObserver(function () {})
+       mo.observe(document.body, { childList: true })
+       var io = new IntersectionObserver(function () {})
+       io.observe(document.createElement('div'))
+       var ro = new ResizeObserver(function () {})
+       ro.observe(document.createElement('div'))
+       var take = new MutationObserver(function () {})
+       take.observe(document.body); take.takeRecords()
+       var gone = new MutationObserver(function () {})
+       gone.observe(document.body); gone.unobserve(document.body); gone.disconnect()
+       var boom = new MutationObserver(function () { throw new Error('callback') })
+       boom.observe(document.body);`,
+    )
+    deliver(harness)
+    // The duplicate target taken in observe() must not outlive delivery: a leak
+    // here would make runtime.dispose() abort the WASM module.
+    const disposal = harness.dispose()
+    assert.equal(disposal.ok, true, JSON.stringify(disposal))
+    assert.equal(disposal.leaked, false, JSON.stringify(disposal))
+  } finally {
+    harness.dispose()
+  }
+})

@@ -49,7 +49,14 @@ export function install(bridge) {
       const buildEntries = () => {
         const records = pending
         pending = []
-        return records.map((record) => entryFactory(bridge, record.target, null))
+        try {
+          return records.map((record) => entryFactory(bridge, record.target, null))
+        } finally {
+          // `entryFactory` copies the target into the entry, so the duplicate
+          // taken in `observe()` is ours to release. Without this the duplicate
+          // outlives its owner and `runtime.dispose()` aborts on a leaked handle.
+          for (const record of records) record.target?.dispose?.()
+        }
       }
 
       bridge.onDispose(() => {
