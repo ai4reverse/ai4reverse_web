@@ -816,6 +816,13 @@ export interface Stealth {
     message: string
     stack: string
   }
+  /**
+   * True only when the live guest value is the engine's own stack-overflow
+   * error: a prototype-identity match against the captured intrinsic
+   * `InternalError.prototype`, refused while the guest can still reach that
+   * constructor itself. The handle stays owned by the caller.
+   */
+  isIntrinsicStackError(handle: object): boolean
   stats(): StealthStats
   dispose(): void
   [key: string]: unknown

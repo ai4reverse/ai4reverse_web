@@ -195,3 +195,20 @@ test('the run record types the event-loop settle outcome and its abandon marker'
 
   assert.match(bodyOf('SandboxDisposal'), /skipped\?: boolean/, 'SandboxDisposal.skipped must be declared')
 })
+
+/**
+ * Stealth member drift gate.
+ *
+ * `Stealth` carries `[key: string]: unknown`, so a member that is not declared
+ * is not a compile error — it is an `unknown` the consumer cannot call. The
+ * runtime's intrinsic stack-overflow probe (`createStealth().isIntrinsicStackError`)
+ * is used by the invocation layer to tell a real engine overflow from a crafted
+ * error object, so it has to be callable through the public type.
+ */
+test('the Stealth declaration types the intrinsic stack-error probe', async () => {
+  const source = await readTypes('ai4reverse.d.ts')
+  const start = source.indexOf('export interface Stealth {')
+  assert.ok(start >= 0, 'types/ai4reverse.d.ts must declare Stealth')
+  const body = source.slice(start, source.indexOf('\n}', start))
+  assert.match(body, /\bisIntrinsicStackError\(handle: object\): boolean/, 'Stealth must declare isIntrinsicStackError')
+})
