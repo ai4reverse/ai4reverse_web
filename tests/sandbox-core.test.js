@@ -451,10 +451,15 @@ test('memory limit is enforced', async () => {
   try {
     const run = await sb.run('var s = "x"; for (var i = 0; i < 30; i++) { s = s + s } s.length')
     assert.equal(run.ok, false)
-    assert.ok(
-      run.limitsHit.includes('memory') || /memory|allocation|stack/i.test(`${run.error?.name} ${run.error?.message}`),
-      `unexpected failure: ${JSON.stringify(run.error)}`,
-    )
+    assert.deepEqual(run.limitsHit, ['memory'])
+    assert.equal(run.stackExhaustion, false)
+    assert.equal(run.timedOut, false)
+    assert.equal(run.disposal.ok, true)
+    const followUp = await sb.run('21 * 2')
+    assert.equal(followUp.ok, true)
+    assert.equal(followUp.result.value, 42)
+    assert.deepEqual(followUp.limitsHit, [])
+    assert.equal(followUp.disposal.ok, true)
   } finally {
     sb.dispose()
   }

@@ -2,6 +2,9 @@ import { shortHash } from '../util/hash.js'
 import { limitMessage } from '../engine/limits.js'
 import { isHostStackExhaustion } from '../engine/runtime.js'
 
+const MAX_JOB_BATCH = 100
+const ENGINE_MEMORY_MESSAGE = /^(out of memory|allocation failed|string too long|array too long|memory limit)$/
+
 /**
  * Traceless invocation.
  *
@@ -31,6 +34,7 @@ export function createInvoker(options) {
     hooks,
     instrumentation,
     stackSignals,
+    limitReason = () => runtime.state?.reason,
   } = options
 
   let invocationCount = 0
@@ -138,11 +142,11 @@ export function createInvoker(options) {
       const hostEvidence = hostStackCount() > stackSignalsBefore
       // Identity, not the dump: a sample can throw
       // `{ name: 'InternalError', message: 'Maximum call stack size exceeded' }`
-      // or rename its own `Error`, and no dumped field may decide this.
-      const guestEvidence = isEngineStackError(stealth, evalResult.error)
+      // or rename its own `Error`; no dumped field may establish provenance.
+      const guestEvidence = isIntrinsicEngineError(stealth, evalResult.error)
       const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(evalResult.error)) : ctx.dump(evalResult.error)
       evalResult.error.dispose()
-      const classified = hostEvidence ? 'stack' : classifyLimit(dumped, runtime, limits, guestEvidence)
+      const classified = classifyLimit(dumped, limitReason(), guestEvidence, hostEvidence)
       if (classified === 'stack') {
         // Same record, same trace event and the same (skipped) hooks as the
         // host-throw path above: the two engine shapes must not be tellable
@@ -187,13 +191,14 @@ export function createInvoker(options) {
           return {
             ok: false,
             error: entryResult.error,
-            limitsHit: stackExhaustion ? ['stack'] : [],
+            limitsHit: entryResult.limitsHit ?? (stackExhaustion ? ['stack'] : []),
             stackExhaustion,
+            timedOut: Boolean(entryResult.timedOut),
             filename,
             prepared,
             facts: prepared.facts,
             vm: prepared.vm,
-            durationMs,
+            durationMs: Date.now() - startedAt,
             virtualMs: Math.round(clock.elapsedMs),
           }
         }
@@ -338,19 +343,24 @@ export function createInvoker(options) {
       }
       if (result.error) {
         // Same evidence as in `invoke()`: the host witness for the converted
-        // shape, prototype identity for the interpreter shape — never a dumped
-        // name or message.
+        // shape, intrinsic identity for engine errors, and the actual interrupt
+        // reason to distinguish a timeout from stack exhaustion.
         const hostEvidence = hostStackCount() > signalsBefore
-        const guestEvidence = isEngineStackError(stealth, result.error)
+        const guestEvidence = isIntrinsicEngineError(stealth, result.error)
         const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
         result.error.dispose()
-        const breach = hostEvidence || guestEvidence
+        const classified = classifyLimit(dumped, limitReason(), guestEvidence, hostEvidence)
+        const breach = classified === 'stack'
         const reported = breach ? stackBreachRecord(dumped) : dumped
-        instrumentation?.exceptions?.reportUncaught(reported, 'call', {
-          entry: name,
-          ...(breach ? { limitsHit: ['stack'] } : {}),
-        })
-        return { ok: false, error: reported, stackExhaustion: breach }
+        const limitsHit = classified ? [classified] : []
+        instrumentation?.exceptions?.reportUncaught(reported, 'call', { entry: name, limitsHit })
+        return {
+          ok: false,
+          error: reported,
+          limitsHit,
+          stackExhaustion: breach,
+          timedOut: classified === 'timeout' || classified === 'virtual-time',
+        }
       }
       trace?.emit('code', 'after', { event: 'entry.called', name, args: args.length })
       return { ok: true, handle: result.value }
@@ -394,6 +404,7 @@ export function createInvoker(options) {
     let stackExhaustion = false
     /** @type {{origin: string, name: string, message: string, stack: string}|null} */
     let stackError = null
+    let resourceLimit = null
 
     /**
      * Record an engine stack signal once; later callback failures are noise.
@@ -402,13 +413,12 @@ export function createInvoker(options) {
      * WASM trampoline, or the record the virtual clock returns for a timer
      * callback that did (`stackExhaustion: true`) — the clock inspects the host
      * throw itself, so no caller has to match a message. `guestEvidence` is the
-     * one guest-derived signal allowed through, and it is never a dump: the
-     * caller passes the verdict of `stealth.isIntrinsicStackError()` on the live
-     * handle (see `isEngineStackError`).
+     * shared classifier's verdict after probing the live intrinsic identity
+     * and ruling out interrupts and allocation failures.
      *
      * @param {string} origin
      * @param {unknown} value
-     * @param {boolean} [guestEvidence] intrinsic-identity verdict for a guest error
+     * @param {boolean} [guestEvidence] classified intrinsic stack-error verdict
      * @returns {boolean} true when the value was the stack signal
      */
     const noteStack = (origin, value, guestEvidence = false) => {
@@ -448,6 +458,10 @@ export function createInvoker(options) {
 
     for (let guard = 0; guard < 100_000; guard += 1) {
       if (stackError) break
+      resourceLimit = classifyLimit(null, limitReason())
+      // A promise reaction may turn an interrupt into a rejection, so the
+      // pending-job API can return success even though the runtime interrupted.
+      if (resourceLimit) break
       if (runtime.hasPendingJob()) {
         if (jobs >= maxJobs) {
           exhausted = true
@@ -456,7 +470,7 @@ export function createInvoker(options) {
         const signalsBefore = hostStackCount()
         let result
         try {
-          result = runtime.executePendingJobs(100)
+          result = runtime.executePendingJobs(Math.min(MAX_JOB_BATCH, maxJobs - jobs))
         } catch (error) {
           // QuickJS surfaces job-queue stack exhaustion as a host RangeError
           // escaping the WASM trampoline rather than as a guest exception.
@@ -464,13 +478,18 @@ export function createInvoker(options) {
           break
         }
         if (result.error) {
-          const engineStack = isEngineStackError(stealth, result.error)
+          const engineStack = isIntrinsicEngineError(stealth, result.error)
           const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
           result.error.dispose()
           if (noteHostStack('promise-job', signalsBefore)) break
-          if (noteStack('promise-job', dumped, engineStack)) break
+          const classified = classifyLimit(dumped, limitReason(), engineStack)
+          if (classified === 'stack' && noteStack('promise-job', null, true)) break
           instrumentation?.exceptions?.reportPromiseJob(dumped)
           pendingRejections += 1
+          if (classified) {
+            resourceLimit = classified
+            break
+          }
         } else if (noteHostStack('promise-job', signalsBefore)) {
           break
         } else {
@@ -530,7 +549,8 @@ export function createInvoker(options) {
       exhausted,
       pendingTimers: bridge.pendingTimers?.() ?? clock.pending(),
       virtualMs: Math.round(clock.elapsedMs),
-      limitsHit: stackExhaustion ? ['stack'] : [],
+      limitsHit: stackExhaustion ? ['stack'] : resourceLimit ? [resourceLimit] : [],
+      timedOut: resourceLimit === 'timeout' || resourceLimit === 'virtual-time',
       // Explicit engine marker: the sandbox abandons the runtime from this, not
       // from `limitsHit`, so a guest cannot steer the disposal path.
       stackExhaustion,
@@ -558,33 +578,31 @@ function safeProp(ctx, target, key) {
   }
 }
 
-function classifyLimit(dumped, runtime, limits, engineStack = false) {
-  const message = String(dumped?.message ?? '')
-  if (runtime.state?.reason === 'timeout') return 'timeout'
-  if (runtime.state?.reason === 'virtual-time') return 'virtual-time'
-  if (/interrupted/i.test(message)) return 'timeout'
-  if (/out of memory|allocation failed|string too long|array too long|memory limit/i.test(message)) return 'memory'
-  // Never the message and never the dumped name: a sample can throw
-  // `RangeError('Maximum call stack size exceeded')`, an object that looks like
-  // `{name: 'InternalError'}`, or an `Error` renamed to `InternalError` (and
-  // does, to force a WASM recompile per run). Only `engineStack` — the verdict
-  // of an intrinsic-identity probe on the live handle — counts as the engine's
-  // own stack exhaustion.
-  if (engineStack === true) return 'stack'
-  if (/source/i.test(message) && /too large/i.test(message)) return 'source-size'
-  void limits
+function classifyLimit(dumped, reason, intrinsicError = false, hostStack = false) {
+  // A witnessed host stack breach requires quarantine even if the deadline
+  // also elapsed. Interrupt state then takes precedence over intrinsic identity.
+  if (hostStack) return 'stack'
+  if (reason === 'timeout' || reason === 'virtual-time') return reason
+  if (!intrinsicError) return null
+  // Text only distinguishes intrinsic-shaped engine errors; ordinary guest
+  // text is not evidence. A caught engine error can expose its prototype for
+  // reuse, so this guard is not a host allocator-failure witness.
+  if (ENGINE_MEMORY_MESSAGE.test(dumped?.message ?? '')) return 'memory'
+  if (dumped?.message === 'stack overflow') return 'stack'
   return null
 }
 
 /**
- * Ask the stealth layer whether a live guest error is the engine's own stack
- * overflow. Missing stealth (unit callers) or a missing probe means "no".
+ * Ask whether a live guest error carries the hidden engine InternalError
+ * prototype. It is evidence for classification, not proof of a stack breach:
+ * interrupts and allocation failures use the same intrinsic. Missing stealth
+ * (unit callers) or a missing probe means "no".
  *
  * @param {object|undefined} stealth
  * @param {object} handle guest error handle, still owned by the caller
  * @returns {boolean}
  */
-function isEngineStackError(stealth, handle) {
+function isIntrinsicEngineError(stealth, handle) {
   if (typeof stealth?.isIntrinsicStackError !== 'function') return false
   try {
     return stealth.isIntrinsicStackError(handle) === true

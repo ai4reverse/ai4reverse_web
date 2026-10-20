@@ -444,7 +444,10 @@ export function createSurfaceBindings(bridge) {
         if (pending) callGuestOnce(pending)
       },
     })
-    if (handle) scheduled.set(timerId, handle)
+    if (handle) {
+      if (timerId === 0) handle.dispose()
+      else scheduled.set(timerId, handle)
+    }
     return ctx.newNumber(timerId)
   })
 

@@ -174,11 +174,7 @@ function installUrlSearchParams(bridge, kit) {
       const result = ctx.callFunction(callback, thisArg, [valueHandle, nameHandle, thisHandle])
       valueHandle.dispose()
       nameHandle.dispose()
-      if (result.error) {
-        const dumped = bridge.fromGuest(result.error)
-        result.error.dispose()
-        throw Object.assign(new Error(dumped?.message ?? 'callback failed'), { name: dumped?.name ?? 'Error' })
-      }
+      if (result.error) return { error: result.error }
       result.value.dispose()
     }
     return ctx.undefined

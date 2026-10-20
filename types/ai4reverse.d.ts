@@ -335,10 +335,11 @@ export interface EnvModule {
 }
 
 export interface EnvironmentInstallResult {
-  installed: { id: string; order: number }[]
-  skipped: string[]
-  failed: { id: string; message: string }[]
-  missing: string[]
+  installed: { id: string; order: number; ms: number }[]
+  missing: { id: string; reason: string }[]
+  requested: string[]
+  tookMs: number
+  complete: boolean
 }
 
 /* -------------------------------------------------------------------------- */
@@ -556,6 +557,7 @@ export interface SandboxSettleDrained {
   promiseErrors: number
   /** A job/timer/virtual-time budget ran out before the queues were empty. */
   exhausted: boolean
+  timedOut: boolean
   pendingTimers: number
   virtualMs: number
   limitsHit: string[]
@@ -1256,6 +1258,7 @@ export declare function createStealth(ctx: QuickJSContext, options?: StealthOpti
 export declare function createInvoker(options: {
   ctx: QuickJSContext
   runtime: QuickJSRuntime
+  limitReason?: () => string | null | undefined
   bridge: HostBridge
   stealth?: Stealth | null
   profile: Profile

@@ -185,7 +185,8 @@ export function createHostBridge(options) {
      *
      * The implementation receives a single object
      * `{ args, thisHandle, bag, bridge }`. Returned handles are transferred to
-     * the guest; primitives and plain objects are converted automatically.
+     * the guest; `{ error: handle }` transfers a guest exception unchanged.
+     * Primitives and plain objects are converted automatically.
      *
      * @param {string} name guest-visible function name
      * @param {number} length guest-visible arity
@@ -572,7 +573,12 @@ export function createHostBridge(options) {
           settle('resolve', bridge.toGuest(value))
         },
         reject(value) {
-          settle('reject', bridge.toGuest(value))
+          // Error name/message are non-enumerable, so generic object conversion
+          // would erase them. Construct a guest Error without copying host stack.
+          const handle = value instanceof Error
+            ? temporary(ctx.newError({ name: value.name, message: sanitizeHostMessage(value.message) }))
+            : bridge.toGuest(value)
+          settle('reject', handle)
         },
         dispose() {
           settled = true
@@ -629,6 +635,12 @@ export function createHostBridge(options) {
 
   function normalizeReturn(result, bag) {
     if (result === undefined) return undefined
+    if (result && isHandle(result.error)) {
+      // The QuickJS trampoline consumes the live exception handle after this
+      // callback returns. Preserve guest identity, never copy it into a host Error.
+      bag.keep(result.error)
+      return { error: result.error }
+    }
     if (isHandle(result)) {
       // Keep, never own: quickjs-emscripten's trampoline duplicates the value
       // for the guest and then disposes this handle. Owning it here would

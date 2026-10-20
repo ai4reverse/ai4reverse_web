@@ -122,6 +122,7 @@ export async function installEnvironment(bridge, options = {}) {
             details: { requires: entry.meta.requires, installed: [...installedIds] },
           })
         }
+        missing.push({ id: entry.meta.id, reason })
         logger?.warn?.({ module: entry.meta.id, reason }, 'environment requirement missing')
       }
     }

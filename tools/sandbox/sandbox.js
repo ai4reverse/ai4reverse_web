@@ -336,6 +336,7 @@ export class TracelessSandbox {
         instrumentation,
         // Host stack-overflow witness (see `guardHostStackExhaustion`).
         stackSignals: () => runtimeHandle.stackSignals(),
+        limitReason: () => runtimeHandle.state.reason,
       })
 
       const invocation = invoker.invoke(source, {
@@ -376,7 +377,7 @@ export class TracelessSandbox {
         limitsHit,
         // Additive, explicit engine marker (see `disposal.skipped`).
         stackExhaustion: stackBreach,
-        timedOut: Boolean(invocation.timedOut),
+        timedOut: Boolean(invocation.timedOut || settle?.timedOut),
         filename: invocation.filename,
         durationMs: invocation.durationMs ?? 0,
         virtualMs: settle?.virtualMs ?? Math.round(clock.elapsedMs),
