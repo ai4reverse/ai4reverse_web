@@ -4,9 +4,10 @@ Five independent read-only reviews were run against the finished tree. The
 reviewers had no shell tool, so their findings were derived from source reading
 and each carried a reproducer; every reproducer below was executed by the
 supervisor, fixed where needed, and turned into a regression test. After all
-dispositions the full suite is green: **600 tests, 0 failures**; a sixth,
-evidence-based review of `tools/` and its subsequent alignment are recorded as
-Review 6 below.
+dispositions the full suite is green: **612 tests, 0 failures** on commit
+`7c1df9c`, the commit these counts are pinned to (`docs/VERIFICATION.md` records
+every command). A sixth, evidence-based review of `tools/`, its alignment, and
+the final audit round are recorded as Review 6 and Review 7 below.
 
 Legend: **Fixed** = code changed and a regression test covers it; **Accepted** =
 documented limitation in README ("Known limitations") with the reason recorded.
@@ -119,13 +120,14 @@ evidence was missing at review time. Its material findings were addressed:
 
 ## Re-validation
 
-Snapshot at Review 6 (the current tree is measured in "Re-validation after
-Review 6" below: 600 tests / 46 files):
+Snapshot at Review 6 was 484 tests. The tree this file describes is measured in
+"Re-validation after Review 6" below: **612 tests / 42 files, pinned to commit
+`7c1df9c`**:
 
 ```
-$ pnpm test
-ℹ tests 484
-ℹ pass 484
+$ node --test --test-concurrency=1 $(git ls-files 'tests/*.test.js')   # 7c1df9c
+ℹ tests 612
+ℹ pass 612
 ℹ fail 0
 ```
 
@@ -149,15 +151,15 @@ recorded in `README.md` ("Known limitations") or `docs/SECURITY-MODEL.md`.
 
 | Id | Severity | Finding (short) | Disposition | Evidence |
 | --- | --- | --- | --- | --- |
-| D1 | S1 | A stack overflow leaked the shared WASM heap and poisoned the module for the process. | **Fixed** | `7836126` quarantines a module whose disposal failed and re-acquires a healthy one; `9e9f3cf` **abandons** the runtime on a stack breach instead of disposing it; `94b1638` classifies the breach from the engine signal only. `tests/resilience.test.js` 15/15 (12 consecutive overflows, then `ok:true`), `tests/sandbox-core.test.js` 20/20, `0` `Aborted` lines. |
+| D1 | S1 | A stack overflow leaked the shared WASM heap and poisoned the module for the process. | **Fixed** | `7836126` quarantines a module whose disposal failed and re-acquires a healthy one; `9e9f3cf` **abandons** the runtime on a stack breach instead of disposing it; `94b1638` classifies the breach from the engine signal only; `5ef930e` adds the host-callback witness and one record for both engine shapes. `tests/resilience.test.js` 23/23 (12 consecutive overflows, then `ok:true`; 40 runs in the full environment → one record), `tests/sandbox-core.test.js` 44/44, `0` `Aborted` lines. |
 | D2 | S1 | Acquisition failures escaped as `QuickJSUnwrapError` and leaked the runtime. | **Fixed** | `75eb922` moves runtime/context/stealth/bridge acquisition inside the guarded region; `sandbox.js` wraps every escaping error in `SandboxError` with `code: SANDBOX_INIT\|SANDBOX_RUN`, a non-empty message and `cause`. `tests/resilience.test.js` init-failure, post-acquisition and "no unhandled rejection" cases. |
 | D3 | S2 | `anti-fingerprint.prototypified` reported a handle address (e.g. 47 242 776) instead of a count, breaking determinism. | **Fixed** | `2ecd382` reads the count with `bridge.num` and clamps to 0…1000. `tests/determinism.test.js` 2/2: `moved` is an integer in `(0, 10000)` and identical across same-seed runs; `examples/network-c2.js` produces byte-identical dynamic events after removing `wall`. |
-| D4 | S2 | No-op hook phases flooded the trace budget (`hook` 48 vs `code` 45 in a 20-iteration loop) and hook errors were unbounded. | **Fixed** | `3118a60`: unlistened phases are neither traced nor counted, `code:step` is declared and dispatchable but never traced, errors kept to the newest 200 with `errorsTruncated`. `tests/trace-budget.test.js` 5/5 (`byKind.hook = 2`, `code = 45`; strict bus accepts every declared phase, rejects typos). |
+| D4 | S2 | No-op hook phases flooded the trace budget (`hook` 48 vs `code` 45 in a 20-iteration loop) and hook errors were unbounded. | **Fixed** | `3118a60`: unlistened phases are neither traced nor counted, `code:step` is declared and dispatchable but never traced; `4ad8c42` keeps hook trace events inside the trace schema (`phase: emit|transform`, hook phase in `hook`), validates `kind` in every mode, and bounds errors by **200 entries and 64 KiB** (2 KiB per message) with `errorsTruncated`. `tests/trace-budget.test.js` 9/9 (`byKind.hook = 2`, `code = 45`; strict bus accepts every declared phase, rejects typos). |
 | D5 | S2 | Pass `changed` was not evidence-bound (a byte-identical rewrite still reported a change) and generated output was never re-parsed. | **Fixed** | `a8b7e85` compares generated text (`compareGeneratedText`) before claiming a change; `9578faf` re-parses the output strictly and returns the input with `outputValid:false`/`outputError`/a note instead of unparseable code, plus the exported `validateOutput`. `tests/restore-accuracy.test.js` 10/10 (0/11 pipeline and 0/121 per-pass fixed-point failures). |
 | D6 | S1 | Missing or incoherent browser surfaces: no `WebAssembly`, no `SharedArrayBuffer`/`Atomics` policy, no `HTMLElement` hierarchy, no `customElements`, no `DOMParser`/`EventSource`, and element own properties were enumerable. | **Fixed** | `26ff5cb` (WebAssembly stub + isolation triple), `7896d0b` (HTMLElement, 39 tag interfaces, customElements), `24d4670` (bounded DOMParser/XMLSerializer, EventSource on the virtual network), `736e177` (`Object.keys(div).length === 0`), `d9a3d60`/`479d758` (real prototype chains, XMLDocument), `c5eaf6c` (wrappers keep descriptors, so `Object.keys(WebAssembly) === []`), `b28cba4`/`c41a172` (`consistencyReport().checked` derived → 20). `env-fidelity` 15/15, `env-surface` 18/18, `env-dom` 16/16, `env-misc` 13/13. |
-| D7 | S2 | The CLI silently succeeded on typos and invalid values (`--rounds abc`, `--passes bogus`, `--nonsense` all exited 0). | **Fixed** | `09eae89` makes every closed-set option a usage error and `--out` write failures exit 2; `faa0cb1` pins the matrix. `tests/cli.test.js` 30/30: 21 invalid invocations → exit 2, message on stderr, empty stdout; valid invocations unchanged; `--json` stdout pure; `--out -` writes to stdout. |
-| D8 | S3 | Documentation and contracts had drifted from the code (bridge signatures, trace options, 24 vs 28 env modules, 361 vs 441 tests, `z3-solver`, DST residual, no `Dn` dispositions). | **Fixed** | This review's alignment commit rewrites `docs/CONTRACTS.md` against `bridge.js`/`trace.js`/`hookbus.js`/`env/index.js`/`restore/index.js`, regenerates every count in `docs/VERIFICATION.md` (484 tests, 28 modules, 68 barrel exports, 43 test files, coverage row — superseded by the last wave: 600 tests, 46 files), corrects `README.md`/`API.md`/`ARCHITECTURE.md`/`SECURITY-MODEL.md`, and appends the disposition matrix. |
-| D9 | S3 | No `LICENSE`, no `files` whitelist, no subpath `exports`, `z3-solver` unused but lockfile-pinned, no type declarations, `tools/cli.js` not executable. | **Fixed** | `207e170` (ISC LICENSE, `files`, 11 subpath `exports`), `6319a5a` (z3 removed from `package.json` and `pnpm-lock.yaml`), `3334341` (`types/*.d.ts`). `git ls-files -s tools/cli.js` → `100755`; `npm pack --dry-run` → **114 files** (91 tools + 9 docs + 11 types + `README.md` + `LICENSE` + `package.json`), only `tools/ docs/ types/ README.md LICENSE package.json`; `tests/types.test.js` 5/5. |
+| D7 | S2 | The CLI silently succeeded on typos and invalid values (`--rounds abc`, `--passes bogus`, `--nonsense` all exited 0). | **Fixed** | `09eae89` makes every closed-set option a usage error and `--out` write failures exit 2; `faa0cb1` pins the matrix. `tests/cli.test.js` 30/30: **39** invalid invocations through `assertUsageError` (+4 `assert.rejects` cases) → exit 2, message on stderr, empty stdout; valid invocations unchanged; `--json` stdout pure; `--out -` writes to stdout. |
+| D8 | S3 | Documentation and contracts had drifted from the code (bridge signatures, trace options, 24 vs 28 env modules, 361 vs 441 tests, `z3-solver`, DST residual, no `Dn` dispositions). | **Fixed** | This review's alignment commit rewrites `docs/CONTRACTS.md` against `bridge.js`/`trace.js`/`hookbus.js`/`env/index.js`/`restore/index.js`, regenerates every count in `docs/VERIFICATION.md` from a pinned commit (612 tests, 42 test files, 28 modules, 68 barrel exports, both coverage scopes), corrects `README.md`/`API.md`/`ARCHITECTURE.md`/`SECURITY-MODEL.md`, and appends the disposition matrix. |
+| D9 | S3 | No `LICENSE`, no `files` whitelist, no subpath `exports`, `z3-solver` unused but lockfile-pinned, no type declarations, `tools/cli.js` not executable. | **Fixed** | `207e170` (ISC LICENSE, `files`, 11 subpath `exports`), `6319a5a` (z3 removed from `package.json` and `pnpm-lock.yaml`), `3334341` (`types/*.d.ts`). `git ls-files -s tools/cli.js` → `100755`; `npm pack --dry-run` → **114 files** (91 tools + 9 docs + 11 types + `README.md` + `LICENSE` + `package.json`), only `tools/ docs/ types/ README.md LICENSE package.json`; `tests/types.test.js` 6/6. |
 | D10 | S3 | Dead exports and stubs (`PASS_BY_ID`, `isPrimitiveLiteral`, `literalValue`, `parseExpression`, `parseFirstSuccessful`, `summarizeValue`, `adoptPrototype`, `nativeTextForFor`, `bridge.call`, `LimitationError`, `PassError`). | **Fixed** | `a57c785`, `c63f8bb`, `ff1732a`, `6187217`, `e98353e`: all removed; `TRACE_PHASES`, `resetQuickJS`, `restoreCode`, `scopeLogger` kept **because** they gained a consumer or a test. `tests/api-surface.test.js` 9/9 pins the removals (as absence assertions) and the kept names. |
 | D11 | S3 | `env/misc.js` (2 282 lines) owned several surfaces, so subset selection silently lost `URL`/`Blob`/navigator capabilities. | **Fixed** | `62c130d` splits `url`, `blob`, `navigator` and the shared `platform-kit` (a non-module), followed by `dom-parser` and `eventsource`. `ENV_MODULE_IDS` = 28 = the `(order,id)` install order, zero `requires` violations, 28/28 strict install, and an unsatisfied requirement is a loud `SandboxError` instead of a silent drop. |
 | D12 | S3 | `rename` deferral was implicit, and `bridge.fn` had a misaligned `catch`/`finally`. | **Fixed** | `b126492` declares `meta.deferred` and `isDeferredPass` consumes it (id fallback for old passes); `6187217` fixes the indentation and removes `bridge.call`/`adoptPrototype`. CLI `passes --json` reports `deferred` per pass; `tests/restore-accuracy.test.js` asserts the deferral behaviour. |
@@ -210,37 +212,73 @@ These are the limits a reader must know about; each is stated in `README.md`
 - One guest run at a time per process; real parallelism needs worker processes.
 - Per-run cost is ~28 % above the pre-alignment tree (finding F2 above).
 - Coverage is reported on two scopes: the `tools/` scope (`--test-coverage-exclude='examples/**'`,
-  93.02 % lines / 83.05 % branches / 91.48 % functions) is the one the review
+  92.99 % lines / 82.68 % branches / 90.62 % functions) is the one the review
   baseline (88.08 / 75.26 / 80.33) was measured on, and it is above that baseline
-  on all three metrics. The whole-tree scope (97.22 / 74.41 / 90.43) is lower on
-  branches because `examples/` adds sample code the tests execute rather than
-  assert on; it is recorded as an accepted, documented gap, not a re-based gate.
+  on all three metrics. The whole committed tree (90.32 / 78.88 / 86.92) is also
+  above it; both numbers are recorded in `docs/VERIFICATION.md`.
 
 ### Re-validation after Review 6
 
 ```
-$ node --test --test-concurrency=1 tests/*.test.js
-ℹ tests 600
-ℹ pass 600
+$ node --test --test-concurrency=1 $(git ls-files 'tests/*.test.js')   # 7c1df9c
+ℹ tests 612
+ℹ pass 612
 ℹ fail 0
-ℹ duration_ms 80256.719
+ℹ duration_ms 57872.820208
 
 $ grep -c 'Aborted(' <captured log>   # engine heap assertions
 0
 ```
 
-46 test files, 0 failures, **0 engine aborts**: the last wave closed the remaining
-handle-lifetime leaks (L1–L5 above), so the suite is now quiet on stderr as well
-as green. Coverage, on the two recorded scopes:
+42 test files, 0 failures, **0 engine aborts**: the follow-up wave closed the
+remaining handle-lifetime leaks (L1–L5 above) and the final wave closed the
+classification gaps (Review 7 below), so the suite is quiet on stderr as well as
+green. Coverage, on the two recorded scopes:
 
 | Scope | Lines | Branches | Functions | vs baseline (88.08 / 75.26 / 80.33) |
 | --- | --- | --- | --- | --- |
-| whole tree | 97.22 % | 74.41 % | 90.43 % | branches below — accepted (example suites) |
-| `tools/` only | **93.02 %** | **83.05 %** | **91.48 %** | **above on all three** (the gate scope) |
+| whole tree | 90.32 % | 78.88 % | 86.92 % | above on all three |
+| `tools/` only | **92.99 %** | **82.68 %** | **90.62 %** | **above on all three** (the gate scope) |
 
 Four independent auditors reproduced the original `Dn` reproducers on the
 aligned tree: AUDIT-A (D1–D3) **PASS** with N1 fixed afterwards, AUDIT-B (D4, D5,
 D7) **PASS**, AUDIT-C (D6, D9–D12) **PASS** on substance (its documentation half
 is what this alignment delivers), AUDIT-D (D8 + regression sweep) **FAIL** on
-D8 only — the blocking item this alignment closes — with no correctness
-regression in `tools/`.
+D8 only. A final round (FINAL-A…FINAL-D) then found four blocking defects — the
+documents' numbers were measured on a working tree, stack classification was
+nondeterministic in the full environment (F-B4) and still forgeable through the
+`stack` env module (F-B3), three browser brands were missing, and the reports
+dropped evidence — all closed by the wave recorded as Review 7.
+
+## Review 7 — final audit round (documents, stack model, report evidence)
+
+Three independent final auditors re-ran the platform after the alignment and the
+handle-lifetime wave. Their reports are `.pi/audits/FINAL-A-docs-truth.md`,
+`AUDIT-FINAL-B-gates.md`, `FINAL-C-regression-sweep.md` and
+`FINAL-D-fresh-review.md`. Every finding below has a reproducer in the report and
+a regression check in the tree; commits are in `5ef930e..7c1df9c`.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| FINAL-A F1–F21 | Doc | Every count (600 tests / 46 files, both coverage scopes, `result.value = 55`, `21` invalid CLI cases, `5/5` types, `47` commits, `136` trace events) had been measured on a working tree containing untracked example corpora, and four corpora were documented as shipped features. | **Fixed**: all counts regenerated from `git archive 7c1df9c` and pinned to that commit with the producing command; corpus claims removed; the remaining mentions state that such corpora are outside the pinned measurement. |
+| F-B3 | S2 | The N1 forgery defence was defeated by the `stack` env module: the Firefox wrapper's prototype *was* the intrinsic, so `new InternalError(...)` passed the reachability test and forced a quarantine per run. | **Fixed** `5ef930e`: the wrapper owns a fresh prototype (same own properties, same `[[Prototype]]`), which keeps the intrinsic unreachable while the surface stays faithful; if the wrapper cannot be installed, `stealth.revokeStackEvidence()` withdraws guest-dump certification. Regression: "a Firefox profile cannot forge engine exhaustion in the full environment", "a reachable InternalError constructor cannot forge engine stack exhaustion". |
+| F-B4 | S2 | Stack breaches were classified in only some runs: when the host stack gave out inside a host callback, the trampoline converted the overflow into a guest `Error` and the run reported `limitsHit: []` with a clean disposal. | **Fixed** `5ef930e`: `guardHostStackExhaustion` records the signal host-side (a counter the guest cannot write), the invoker reads it around the branch, and both shapes produce one normalised record (`error.stack === ''`, one `limitsHit`, one disposal). Regression: 40 consecutive full-environment runs → exactly one distinct record; every `EVENT_LOOP_DEFORMATIONS` shape in the settle phase. |
+| F1 (C) | S2 | Consequence of F-B4: ~5 % of stack runs lost the classification and 7/20 same-seed reports differed (score 18 vs 8). | **Fixed** by the same commits; the 40-run loop asserts byte-identical records. |
+| F2 (C) | S2 | `DOMParser`, `XMLSerializer` and `EventSource` branded as `[object Object]`, and `CustomElementRegistry` was `undefined` — four one-line tells. | **Fixed** `5e40603`; `env-fidelity` 16/16, `env-surface` 18/18. Documented deviation: `customElements instanceof CustomElementRegistry` is `false`. |
+| F3 (C) | S3 | A strict recorder rejected the hook phases the bus forwards (`unknown trace phase: init|run|dispose`), and non-strict recorders stopped validating `kind`. | **Fixed** `4ad8c42`: hook events use trace phases `emit`/`transform` with the hook phase in `hook`; `kind` is validated in every mode. |
+| F4 (C) | S3 | `classifyLimit` disappeared from the module surface with no recorded reason. | **Accepted**: it stays internal; the classification behaviour is covered end-to-end and the exported surface is pinned by `api-surface`. |
+| F5 (C) | S3 | Each breach costs ~17 MB RSS for the rest of the process. | **Accepted and documented**: measured 21.7 MB per breach here; `README.md` and `SECURITY-MODEL.md` state the cost and recommend worker processes for long batches. |
+| F1 (D) | S2 | The verdict scored the platform's own installation events: every sample gained `DYNAMIC_DOM` and `alert(1)` gained an `anti-analysis` family. | **Fixed** `127ac98`: events are attributed (`eventOrigin`), scoring filters platform events, `dynamic.behavior.counts.platform` reports them. Regression: "platform-emitted events never score as sample behaviour", "guest-originated DOM behaviour still scores". |
+| F2 (D) | S2 | Per-call guest objects were retained until run teardown, so guest call counts grew host heap past `memoryBytes` (+159 MB for 20 000 calls). | **Fixed** `eca5305`: the call bag is released with the call, `bridge.fn` transfers the returned handle, `bridge.deferred` releases at settle. Regression: "per-call value builders die with the call", "a 20k-call builder loop stays on a memory plateau". Residual documented: no host-heap cap. |
+| F3 (D) | S3 | Hook errors were count-bounded but size-unbounded (~838 MB with large messages), `errorsTruncated` never reached a record, and the report dropped `hooks.errors`. | **Fixed** `4ad8c42` + `127ac98`: 200 entries **and** 64 KiB total (2 KiB per message), the report keeps the newest 50 with `errorsTruncated` and prints a Markdown line. |
+| F4 (D) | S2 | "A subset install either works or fails loudly" was false with the default options (`strict: false` in `TracelessSandbox.create`). | **Fixed (doc)**: both `README.md` and `ARCHITECTURE.md` now state the two defaults and how to opt into strictness. |
+| F5 (D) | S3 | An unknown `profile.browser` threw a bare `TypeError`; unknown `limits` keys were silently ignored. | **Fixed** `9112141`: `SandboxError` with `code: SANDBOX_PROFILE` naming accepted values, and `SANDBOX_LIMITS` for limit typos; `normalizeLimits(input, {strict:false})` keeps the lenient path and warns. |
+| F6 (D) | S3 | A malformed hook registration was discarded silently; `[phase, handler]` registered nothing. | **Fixed** `7c1df9c`: descriptor and tuple forms are both accepted, anything else throws `HookError`. |
+| F7 (D) | S3 | Dead internal helpers and write-only counters survived D10. | **Fixed** `7d17a65`: `symbolKey`, `functionDepth` and `previousName` removed; `bridge.stats` kept because it is typed public API with a test. |
+| F8 (D) | S3 | A restoration *failure* was indistinguishable from "nothing to restore" in the report. | **Fixed** `127ac98`: `static.restoration.error` carries the message and Markdown prints `**Restoration error:**`. |
+| F9 (D) | S3 | Trace truncation was invisible in the report, and `tracing.dropped` understated a hard 20 000-observation cap by three orders of magnitude. | **Fixed** `127ac98` + `7692660`: `tracing.truncated`/`truncatedBy` are derived from the run record (not from the possibly-evicted marker) and the Markdown line names the cause. |
+
+The final round's audit status was FAIL on documents and PARTIAL on two
+`tools/` contracts at the time; after this wave the documents are pinned and
+every reproducer above is covered by a committed test. `docs/VERIFICATION.md`
+carries the commands and the current numbers.
