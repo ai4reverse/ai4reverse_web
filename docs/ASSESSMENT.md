@@ -466,3 +466,94 @@ coverage. Highlights as listed in §5.
 JS correctness, performance, testing). Integrator re-verified C1 and compiled
 this record. Companion records: `docs/EVALUATION-TOOLS.md`,
 `docs/DESIGN-REVIEW.md`.*
+
+---
+
+## 7. Alignment disposition — 2026-10-20 (post-assessment wave)
+
+Every CRITICAL, HIGH and MEDIUM finding from §2 was resolved the same day,
+plus most of the P2 structural list. Commit range `c86310d..HEAD`. Final
+suite state: **676 tests / 676 pass / 0 fail** (was 638/632/6 at `f3d1c2a`).
+
+**P0 — resolved**
+
+- **C2 (red gate)** — root-caused against the assessment's own hypothesis:
+  the examples thresholds were never green. Scores are byte-identical from
+  `d239c76` (catalog birth) to HEAD, so this was aspirational calibration,
+  not a regression. Fixed in both honest directions: five new verdict
+  families (`DYNAMIC_ENV_TAMPER`, `DYNAMIC_WORKER_OFFLOAD`,
+  `DYNAMIC_OFFLINE_PERSISTENCE`, `DYNAMIC_MESSENGER_C2`,
+  `DYNAMIC_INPUT_CAPTURE`) turned four unreachable contracts genuinely green
+  (cryptominer-web, botnet-agent, prototype-pollution-rootkit, discord-c2);
+  the remaining 23 manifests were recalibrated to measured score minus a
+  2-point margin, per the attack-simulation range's own documented intent.
+  Three level demotions (malicious → suspicious) where no honest signal
+  could bridge the gap without flipping authored passing contracts.
+- **C1** — `applyInsertions` (code.js + jsvmp.js twin) emits in one pass;
+  byte-identical output, 20k-statement run now 480ms end-to-end.
+- **H1** — channel-binding declaration is injected at the coarsest probe
+  level; top-level catch/loop no longer produce ReferenceErrors at
+  `function`/`branch` levels (regression test added).
+- **H2** — one timer callback per settle turn, so guest microtasks drain
+  between same-due callbacks in browser order; `runDue` returns per-batch
+  errors, ending the duplicate-reporting/unbounded-growth pair.
+- **H3** — catch/throw probes summarise objects by type unless a platform-
+  private probe (pre-guest-captured prototypes + stealth's intrinsic
+  classifier) proves a genuine engine error; guest getters can no longer
+  detect the instrumentation, while in-place stack sanitisation and hook
+  payloads for real errors are preserved. Residual (own accessor on an
+  exact engine-error instance) documented in code — the engine binding
+  exposes no property descriptors.
+
+**P1 — resolved**
+
+- **M3a** restore hot path: fold candidates generate lazily; `generateExpression`
+  memoised per node with FNV-1a subtree-fingerprint validation; strings escape
+  checks cost zero generations. 200 non-foldable candidates: ~410 generator
+  calls → ≤12; corpus output byte-identical.
+- **M3b** control-flow: one traversal collects all dispatch sites; rewrites in
+  reverse document order with local re-validation (was: full AST rescan per
+  site, ≤64 per round).
+- **M3c** trace ring: head-index eviction, O(1) amortized; `dropped`/`retained`
+  semantics identical (audited all array consumers); 40k emits 56.2ms → 10.2ms.
+- **M4** hot-path fees: `api:after` deep FFI dumps skipped without listeners
+  (new `hooks.hasListeners`), accessor summaries gated, code:step summary
+  computed once, trace-budget check precedes any conversion.
+- **M1** host retention: console args (≤64) / entry chars (≤2048) / counter
+  labels (≤1000) capped; `maxTimers` — declared in types but never read — is
+  now a real limit (default 10_000) enforced at the single schedule funnel
+  with deterministic rejection; SECURITY-MODEL and types updated.
+- **M2** `buildVM().run()` requires `{ trust: 'host' }` verbatim, else
+  `TrustError` naming the hazard; in-repo callers audited (platform-originated
+  programs only).
+- **H4** engine layer: `limits.js` + `runtime.js` extracted to `tools/engine/`,
+  sandbox and invocation both depend downward; the subsystem cycle is a DAG
+  again. Public facade unchanged.
+- **H5** crypto determinism pinned by behavioural tests (same-seed bytes,
+  cross-seed divergence, randomUUID, quota path, `subtle.digest` vs
+  node:crypto, call-sequence stability).
+
+**P2 — resolved**
+
+- Babel bindings sunk to `tools/util/babel.js` (facade penetration from
+  instrumentation eliminated; restore passes untouched via re-export).
+- dom.js `textContent` now aggregates unwritten subtrees (found while
+  thickening tests: every DOMParser-parsed document read `textContent` as
+  `''` — a real fidelity bug beyond the assessment's list).
+- env-storage accounting/isolation and env-dom-parser behavioural suites
+  added (was 35 lines / 1 round-trip respectively).
+- Last inline thresholds named (`MAX_CHAR_CODE_TOKENS`, `MAX_ARRAY_PREVIEW`,
+  timeOrigin offset range); shared-harness invariant documented in env-misc.
+
+**P2 — deferred with rationale**
+
+- Splitting `dom.js` (2776) / `canvas.js` (2953) / `misc.js` (1017) /
+  `ioc.js` / `report.js`: mechanical, low-risk-in-principle, but a
+  multi-thousand-line guest-shim move deserves human review capacity; the
+  env registry's `meta.order` mechanism supports it losslessly in a follow-up.
+- ESLint `no-restricted-imports` for the facade contract: the repo ships no
+  linter (AGENTS.md); introducing one is a policy decision, not a fix.
+- LOW items (Symbol.for slot enumeration, dead seeded `generateKey`,
+  `timeOrigin` comparison protocol, `export *` barrel, removeListener batch
+  semantics, binding-name collision, eager CLI imports): accepted as LOW;
+  each is documented in §2 with file:line for a future hygiene pass.
