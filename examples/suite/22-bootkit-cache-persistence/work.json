@@ -1,0 +1,39 @@
+{
+  "id": "22",
+  "slug": "bootkit-cache-persistence",
+  "type": "virus",
+  "title": "Cache Bootkit Persistence",
+  "grade": "commercial",
+  "category": "persistence",
+  "summary": "缓存 bootkit：注册 Service Worker、污染 app-shell 缓存、注入恶意更新并持久化版本标记与心跳。",
+  "capabilities": [
+    "SW 注册/更新",
+    "Cache 污染",
+    "app-shell 劫持",
+    "心跳持久化",
+    "版本标记"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 35,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer",
+      "dom"
+    ]
+  }
+}

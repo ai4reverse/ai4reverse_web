@@ -1,0 +1,77 @@
+{
+  "id": "19",
+  "slug": "stego-canvas-c2",
+  "type": "virus",
+  "title": "Steganographic Canvas C2",
+  "grade": "commercial",
+  "category": "steganographic-c2",
+  "summary": "画布隐写信道：把任务下发编码进图片像素 LSB，本地用 ImageData 逐位还原并执行阶段二，外传数据同样藏回像素后以 dataURL 回传。",
+  "capabilities": [
+    "画布载体生成",
+    "LSB 位级嵌入",
+    "像素任务解包",
+    "ImageData 读写",
+    "像素外传载体",
+    "阶段二执行",
+    "本地帧状态"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls",
+      "domains"
+    ],
+    "artifactsAny": [
+      "decoded-string",
+      "eval-payload",
+      "console-output"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "encoded-string-decoding",
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "dom",
+      "storage",
+      "timer"
+    ],
+    "networkRoutes": [
+      {
+        "match": "collect.stego.example.net/carrier",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"received\":true,\"queue\":\"carrier\"}"
+        }
+      },
+      {
+        "match": "cdn.stego.example.test/tile/frame-",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"frame\":2,\"width\":64,\"height\":32,\"pixels\":\"gIGBgYGAgYGAgIGAgICBgICBgYCAgYGAgIGBgYCAgYCAgYGAgICAgYCBgYCBgYCBgIGBgICBgIGAgIGAgICBgICAgYGBgIGAgICBgYCAgYCAgIGAgYGAgICAgYCAgIGAgIGBgYCBgICAgYGAgICAgYCBgYGAgIGBgIGBgIGAgYGAgYGBgICBgYCAgYCAgIGAgICBgYGAgYCAgYCBgYCBgYCBgYGBgIGBgICBgICAgYCAgYGAgYGBgYCBgYGAgICAgICBgICAgYCAgIGBgYCBgICAgYCAgIGAgIGBgYCAgYGAgYGBgIGAgICBgYCAgICBgIGBgICBgYGAgYGAgIGAgYCAgYCAgIGAgICBgIGBgICAgIGAgICBgICBgYGAgIGBgIGBgYCBgICAgYGAgICAgYCBgYCAgYGBgIGBgICBgIGAgIGAgICBgICAgYGBgIGAgICBgICAgYCAgYCBgYCAgYCAgYGAgIGAgICBgYGAgIGAgYGBgIGAgYCBgYCAgIGBgICBgYCAgYCAgIGBgYCAgYCBgYGAgIGBgIGAgYGAgYCAgYCBgICBgYCAgYGAgYCBgIGBgYCAgYGAgYGAgICBgICAgYGAgIGAgIGBgICAgYGAgYGAgYGBgYCBgICBgIGAgICBgYCAgIGAgYGBgIGAgICBgIGAgYCAgIGAgYCBgYCAgYCAgIGAgYCBgIGAgYGAgIGAgIGAgICAgYCBgIGAgICBgYGBgICBgICBgYCAgICAgYGBgYCAgICBgICBgYGBgIGAgYCBgYCAgIGBgICAgICBgYCAgYGBgIGBgICAgYGAgIGBgICBgYCBgIGAgIGAgIGBgIGAgICAgYCBgYCBgICAgYGAgIGAgIGAgYCBgIGAgYGBgYCAgYCBgICBgICBgIGAgIGAgICAgYCBgICBgICBgYCBgICAgIGBgICAgYGAgIGBgICBgICBgYGAgYCAgIGBgYCAgICAgYGAgICBgICBgYCBgYCBgIGBgICAgYGAgYGAgIGBgYCBgYCAgIGBgIGBgIGBgIGAgYCBgIGBgICBgYCBgIGAgIGBgICAgYCAgIGBgICBgYCBgIGBgIGAgIGBgIGBgICAgYGAgICBgYCBgYCBgYCBgIGAgYCBgYCAgYGAgYCBgYCBgICBgICBgIGAgICBgYGAgYCBgYCBgICBgYGBgICBgIGBgICAgYCAgIGBgICBgICAgYGAgICAgIGBgICBgYGAgYCBgIGAgICBgICAgYGAgIGAgIGBgYCAgYCAgICBgYCBgICBgIGAgIGBgYGAgIGAgYGAgYCBgYCAgYGAgYGBgIGAgYGAgYCAgYCAgIGBgYCAgYGBgICBgIGBgIGAgYCAgYGAgIGAgICBgIGAgYGBgICBgYCAgIGAgYGAgYGAgICBgYCAgIGAgIGBgIGBgYCAgYCBgICAgYCBgYGAgYCBgIGAgYGAgYCAgYCAgIGBgYCAgYGBgICBgIGBgIGAgYCAgYGAgIGAgICBgIGAgYGBgICBgYCAgIGAgYGAgYGAgICBgYCAgIGAgIGBgIGBgYCAgYCBgICBgICBgICAgYGAgIGBgICAgYCAgYCAgIGBgYCBgIGAgYGAgIGBgYCBgICAgYCBgYCBgICBgIGAgYGBgICBgYCBgIGAgIGBgICAgICBgICBgIGAgIGBgIGAgIGAgYCBgYCBgICBgYCBgIGBgIGBgICAgYCAgIGBgICBgICBgICBgYGAgICBgYCAgIGAgYGAgICBgICBgIGAgYGBgIGAgYCBgYCAgYGBgIGAgYCBgYCAgYCAgIGAgICAgYGAgIGBgIGAgYCBgYCBgIGBgIGBgICAgYCAgIGBgICBgICBgICBgYGAgICBgYCAgIGAgYGAgICBgICBgIGAgYGBgIGAgYCBgYCAgYGBgIGAgYCBgYCAgYCAgIGAgICBgIGAgYCBgIGBgICBgYGAgIGBgIGAgYGAgYCAgYCBgIGBgYCAgYGAgICBgIGBgIGBgICAgYGAgICBgICBgYCBgYGAgIGAgYCAgIGAgYGBgIGAgYCBgYCAgIGBgICBgYCAgYCAgYCBgIGBgICAgYGAgICAgIGAgYCAgIGAgYCBgYCAgICBgIGAgIGAgICBgYCAgICAgYGAgICBgYCBgYCBgYCBgIGBgIGBgICAgYGAgYCAgYCBgYCAgYCAgIGAgYGAgICAgYCBgICBgICBgYCBgYCAgIGAgIGAgYGAgYCAgICBgYCBgYCAgYCAgIGBgIGAgYGAgYCBgYCAgYCBgIGBgICAgIGAgYCAgYCAgYGAgYCAgICBgICBgYCAgIGAgYGAgICAgYCAgYGBgICAgYGAgICAgIGAgYGAgYCAgYCBgIGBgYCBgYCAgYCAgIGBgYCBgYCAgYCAgYCBgICBgYGBgICBgIGBgYCBgYGAgYGAgYGBgICBgICBgYCBgIGAgYCAgYGAgYGAgICBgYCBgYGAgICAgIGAgIGBgYGAgYGBgIGBgYCAgYGBgYCBgICBgYGBgIGAgIGAgICBgICBgYGBgYCBgIGAgYGBgIGAgYGBgYGAgQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"}"
+        }
+      },
+      {
+        "match": "cdn.stego.example.test/ack/frame",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"ok\":true,\"frame\":\"accepted\"}"
+        }
+      }
+    ]
+  }
+}

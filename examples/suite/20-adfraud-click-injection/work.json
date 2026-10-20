@@ -1,0 +1,40 @@
+{
+  "id": "20",
+  "slug": "adfraud-click-injection",
+  "type": "virus",
+  "title": "Ad-Fraud Click Injection",
+  "grade": "commercial",
+  "category": "ad-fraud",
+  "summary": "广告欺诈点击注入：隐藏 iframe 广告位、合成点击、Cookie 填充与收益回传，形成可计量的点击农场。",
+  "capabilities": [
+    "隐藏 iframe",
+    "合成点击",
+    "Cookie 填充",
+    "收益统计",
+    "参数轮换"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer",
+      "dom"
+    ]
+  }
+}

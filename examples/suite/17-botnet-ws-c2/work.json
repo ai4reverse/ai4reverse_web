@@ -1,0 +1,87 @@
+{
+  "id": "17",
+  "slug": "botnet-ws-c2",
+  "type": "virus",
+  "title": "Botnet WebSocket C2 Node",
+  "grade": "commercial",
+  "category": "botnet-client",
+  "summary": "僵尸网络节点：注册节点指纹、接入 WebSocket 指令通道、按优先级队列把 flood/click/stage 任务分派到 worker 池执行，并用带退避的心跳回传吞吐。",
+  "capabilities": [
+    "节点注册与指纹上报",
+    "WebSocket 指令通道",
+    "优先级任务队列",
+    "worker 池任务分派",
+    "flood/click/stage 任务执行",
+    "心跳退避与吞吐上报"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "malicious",
+    "minScore": 70,
+    "requireIocs": [
+      "urls",
+      "domains"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string",
+      "console-output"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "worker-thread",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "timer",
+      "storage",
+      "dom",
+      "api"
+    ],
+    "networkRoutes": [
+      {
+        "match": "panel.botnet.example.test/socket",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"frame\":7,\"tasks\":[{\"op\":\"flood\",\"priority\":3,\"target\":\"https://victim-portal.example.net/checkout\",\"rounds\":2},{\"op\":\"click\",\"priority\":2,\"target\":\"https://clickfarm.example.test/landing\"},{\"op\":\"stage\",\"priority\":4,\"stage\":\"Y29uc29sZS5sb2coJ1tCT1RORVQtMTddIHN0YWdlMiBmbG9vZCBlbmdpbmUgb25saW5lJyk7ZG9jdW1lbnQuYm9keSYmZG9jdW1lbnQuYm9keS5zZXRBdHRyaWJ1dGUoJ2RhdGEtYm4tbm9kZScsJzEnKTs=\"}]}"
+        }
+      },
+      {
+        "match": "panel.botnet.example.test/api/tasks",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"tasks\":[{\"op\":\"click\",\"priority\":1,\"target\":\"https://clickfarm.example.test/cache\"}]}"
+        }
+      },
+      {
+        "match": "panel.botnet.example.test/api/node/register",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"node\":\"bn-accepted\",\"interval\":250,\"pool\":4}"
+        }
+      },
+      {
+        "match": "panel.botnet.example.test/api/node/stats",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"ok\":true,\"command\":\"continue\"}"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "11",
+  "slug": "apt-dns-implant",
+  "type": "virus",
+  "title": "APT DNS Implant",
+  "grade": "commercial",
+  "category": "apt-implant",
+  "summary": "APT DNS 植入体：以 DNS 子域标签分片下发任务、抖动信标、DGA 回退与结果外传。",
+  "capabilities": [
+    "DNS 隧道分片",
+    "抖动信标",
+    "DGA 回退",
+    "任务解析与 eval 执行",
+    "主机信息采集",
+    "结果外传",
+    "本地状态持久化"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 50,
+    "requireIocs": [
+      "urls",
+      "domains"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "encoded-string-decoding",
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "timer",
+      "storage",
+      "dom"
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "id": "14",
+  "slug": "credential-phishing-webauthn",
+  "type": "virus",
+  "title": "WebAuthn Credential Phishing",
+  "grade": "commercial",
+  "category": "credential-phishing",
+  "summary": "WebAuthn 凭据钓鱼：克隆 passkey 提示、劫持 navigator.credentials.get/create、转发 challenge 与凭据材料，并提供密码回退表单。",
+  "capabilities": [
+    "伪造 passkey UI",
+    "凭据 API 劫持",
+    "challenge/凭据转发",
+    "合成凭据材料",
+    "密码回退采集",
+    "会话存储标记",
+    "紧迫倒计时"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 42,
+    "requireIocs": [
+      "urls",
+      "domains",
+      "emails"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dom-injection",
+      "network-communication",
+      "web-storage",
+      "keylogging",
+      "encoded-string-decoding"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "dom",
+      "storage",
+      "timer"
+    ]
+  }
+}

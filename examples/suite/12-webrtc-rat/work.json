@@ -1,0 +1,46 @@
+{
+  "id": "12",
+  "slug": "webrtc-rat",
+  "type": "virus",
+  "title": "WebRTC RAT",
+  "grade": "commercial",
+  "category": "remote-access-trojan",
+  "summary": "WebRTC RAT：数据通道 C2、远程命令分发、屏幕/剪贴板/按键采集，失败时轮换端点并指数退避重连。",
+  "capabilities": [
+    "WebRTC 数据通道 C2",
+    "命令分发",
+    "远程 eval",
+    "屏幕/剪贴板采集",
+    "键盘记录",
+    "指纹摘要",
+    "端点轮换与退避"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 52,
+    "requireIocs": [
+      "urls",
+      "domains"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "web-storage",
+      "clipboard-access",
+      "cryptography",
+      "keylogging"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "timer",
+      "storage",
+      "dom"
+    ]
+  }
+}

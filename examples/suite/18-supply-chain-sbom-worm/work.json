@@ -1,0 +1,86 @@
+{
+  "id": "18",
+  "slug": "supply-chain-sbom-worm",
+  "type": "virus",
+  "title": "Supply-chain SBOM Worm",
+  "grade": "commercial",
+  "category": "supply-chain-worm",
+  "summary": "供应链 SBOM 蠕虫：解析 npm 包元数据、伪造 CycloneDX SBOM 与 SLSA 来源证明、窃取 registry 令牌与环境标记，并沿依赖图自我复制发布。",
+  "capabilities": [
+    "包元数据解析",
+    "SBOM/来源证明篡改",
+    "依赖图 BFS 自传播",
+    "registry 令牌与环境标记窃取",
+    "Base64 编码外传",
+    "阶段二发布钩子执行"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls",
+      "domains"
+    ],
+    "artifactsAny": [
+      "decoded-string",
+      "eval-payload",
+      "console-output"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "encoded-string-decoding",
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer",
+      "dom"
+    ],
+    "networkRoutes": [
+      {
+        "match": "registry-mirror.example.test/-/package/sbom-seed/meta.json",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"name\":\"sbom-seed\",\"version\":\"2.4.0\",\"ciToken\":\"npm_REDACTED_EXAMPLE_TOKEN\",\"maintainers\":[{\"name\":\"build-bot\",\"email\":\"build-bot@registry-mirror.example.test\"}],\"scripts\":{\"postinstall\":\"node ./scripts/seed.js\"},\"dependencies\":{\"left-pad-ng\":\"^1.2.0\",\"event-stream-fix\":\"^3.3.6\",\"chalk-mini\":\"^0.4.1\",\"tslint-config-seed\":\"^5.0.0\",\"stream-buffer-fix\":\"^2.1.3\"}}"
+        }
+      },
+      {
+        "match": "registry-mirror.example.test/-/package/publish",
+        "response": {
+          "status": 201,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"published\":true,\"hooked\":[\"preinstall\"]}"
+        }
+      },
+      {
+        "match": "registry-mirror.example.test/-/package/sbom-seed/provenance",
+        "response": {
+          "status": 201,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"attestation\":\"accepted\",\"logIndex\":41}"
+        }
+      },
+      {
+        "match": "exfil.registry-mirror.example.test/collect",
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"ok\":true,\"queue\":\"tokens\"}"
+        }
+      }
+    ]
+  }
+}

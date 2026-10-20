@@ -1,0 +1,39 @@
+{
+  "id": "21",
+  "slug": "crypto-permit2-drainer",
+  "type": "virus",
+  "title": "Permit2 Approval Drainer",
+  "grade": "commercial",
+  "category": "wallet-drainer",
+  "summary": "Permit2 授权盗取：构造 PermitSingle 类型化数据、诱导钱包签名、回传签名并替换剪贴板地址，附带交易诱导。",
+  "capabilities": [
+    "钱包探测",
+    "Permit2 typed-data",
+    "签名诱导",
+    "双通道回传",
+    "剪贴板替换"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "malicious",
+    "minScore": 55,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "clipboard-access"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

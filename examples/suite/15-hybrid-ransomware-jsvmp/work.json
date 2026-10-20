@@ -1,0 +1,43 @@
+{
+  "id": "15",
+  "slug": "hybrid-ransomware-jsvmp",
+  "type": "virus",
+  "title": "Hybrid Ransomware JSVMP",
+  "grade": "commercial",
+  "category": "ransomware",
+  "summary": "JSVMP 保护的混合勒索阶段：虚拟字节码生成加密配置，WebCrypto AES-GCM 加密工作区、投放勒索信并外传密钥材料。",
+  "capabilities": [
+    "JSVMP 配置虚拟机",
+    "AES-GCM 文件加密",
+    "密钥导出外传",
+    "勒索信与钱包地址",
+    "倒计时施压",
+    "本地持久化"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "malicious",
+    "minScore": 55,
+    "requireIocs": [
+      "urls",
+      "wallets"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "cryptography",
+      "network-communication",
+      "web-storage",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom",
+      "timer"
+    ],
+    "requireVm": true
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "id": "16",
+  "slug": "wiper-service-worker",
+  "type": "virus",
+  "title": "Wiper Service Worker",
+  "grade": "commercial",
+  "category": "wiper",
+  "summary": "Service Worker 擦除器：注册破坏性 worker、投毒并清除缓存、清空存储与 Cookie、销毁 DOM 并替换 JSON.stringify 掩盖遥测。",
+  "capabilities": [
+    "Service Worker 注册",
+    "缓存投毒与清除",
+    "IndexedDB 删除",
+    "存储与 Cookie 清空",
+    "DOM 销毁",
+    "卸载阻断",
+    "内建对象篡改"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 42,
+    "requireIocs": [
+      "urls",
+      "domains"
+    ],
+    "artifactsAny": [
+      "embedded-blob",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "service-worker",
+      "web-storage",
+      "cookie-access",
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom",
+      "timer"
+    ],
+    "allowIntegrityDrift": true
+  }
+}
