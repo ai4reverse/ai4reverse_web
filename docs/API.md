@@ -88,8 +88,14 @@ cases and the next run recompiles it. A `skipped` failure also implies
 ```
 
 `run.stackExhaustion` mirrors the marker at the top level. It is set only from a
-real engine signal, so a guest cannot steer the disposal path by throwing an
-error that merely *says* "stack overflow".
+real engine signal — a host-thrown `RangeError` out of the engine, or a guest
+error whose prototype chain contains the engine's own captured
+`InternalError.prototype` while that constructor is unreachable from the guest
+(`stealth.isIntrinsicStackError`). A forged `{ name: 'InternalError', … }`
+record, a renamed `Error` and a prototype stand-in therefore do not classify, so
+a guest cannot steer the disposal path by throwing an error that merely *says*
+"stack overflow". The one caveat (a reduced `limits.stackBytes`) is in
+`docs/SECURITY-MODEL.md`.
 
 ### Concurrency
 

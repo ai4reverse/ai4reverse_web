@@ -25,7 +25,8 @@ tools/
 │   └── env/                  28 platform-surface modules (+ loader + platform-kit)
 │
 ├── invocation/
-│   ├── stealth.js            native branding, marker masking, stack sanitiser
+│   ├── stealth.js            native branding, marker masking, stack sanitiser,
+│   │                         intrinsic stack-error probe
 │   └── invoke.js             script/module/entry invocation, event-loop settle
 │
 ├── instrumentation/
@@ -124,8 +125,10 @@ the module is quarantined, and the run record says
    never advance the clock (that is the code channel's job), so guest-observed
    time is a deterministic function of executed statements.
 4. **Context + stealth.** `Function.prototype.toString` is replaced by a native
-   masker before any other code runs. Shim sources registered later are mapped to
-   `[native code]`.
+   masker before any other code runs, and the engine's `InternalError` is captured
+   before an env module can delete it — that captured prototype is what classifies
+   a genuine stack breach later (`stealth.isIntrinsicStackError`). Shim sources
+   registered later are mapped to `[native code]`.
 5. **Bridge.** Owns handle lifetime: host functions (`fn`), objects (`obj`),
    deep conversion (`toGuest`/`fromGuest`), promises (`deferred`), accessors, and
    a teardown list. Every handle it creates is disposed once.
@@ -141,9 +144,10 @@ the module is quarantined, and the run record says
    statement/function instrumentation; the source is evaluated as a global
    script with a realistic filename. Optional entry call goes through the guest
    function.
-9. **Settlement.** Microtasks → promise jobs (`executePendingJobs`) → virtual
-   timers (`clock.runDue`), until idle or a cap is reached. Timer/microtask
-   errors are recorded, never thrown at the host.
+9. **Settlement.** Promise jobs (`executePendingJobs`, which is also where
+   `queueMicrotask` lands — there is no separate microtask queue) → virtual timers
+   (`clock.runDue`), until idle or a cap is reached. Timer/callback errors are
+   recorded, never thrown at the host.
 10. **Integrity + record.** A second intrinsic snapshot is diffed. The run record
     contains result/error/limits, events, facts, VM info, hook audit, integrity,
     console/behaviour inputs, and disposal status.
@@ -152,7 +156,11 @@ the module is quarantined, and the run record says
     `{ stage, message }`. A failed disposal is reported
     (`disposal.ok === false`, `leaked`, `stage`); a stack breach skips the runtime
     stage entirely (`skipped: true`) because it was abandoned. Any *non-stack*
-    WASM leak assertion is a platform bug.
+    WASM leak assertion is a platform bug. Handles that outlive their bridge call
+    are owned rather than borrowed: the canvas module retains duplicated faces and
+    scheduled task handles and releases them, and the observers module builds
+    delivery-time entries from queued descriptors instead of keeping call-bag
+    handles.
 
 ## 3. Trace event schema
 
