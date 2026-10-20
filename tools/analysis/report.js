@@ -14,6 +14,7 @@
 
 import { createRequire } from 'node:module'
 import { extractIOCs } from './ioc.js'
+import { isPlatformEvent } from './behavior.js'
 
 const require = createRequire(import.meta.url)
 
@@ -111,6 +112,17 @@ const SCREEN_KEYS = Object.freeze(['width', 'height', 'availWidth', 'availHeight
 
 const LEVEL_BENIGN_MAX = 24
 const LEVEL_SUSPICIOUS_MAX = 59
+
+/** Hook failures are evidence, but a report never carries an unbounded list. */
+const MAX_REPORTED_HOOK_ERRORS = 50
+
+/** Truncation causes the report understands; anything else is dropped. */
+const TRACE_TRUNCATION_REASONS = Object.freeze(['code-budget', 'event-limit'])
+
+const TRACE_TRUNCATION_LABELS = Object.freeze({
+  'code-budget': 'code-step budget reached',
+  'event-limit': 'retention limit reached',
+})
 
 /**
  * Build the canonical report object.
@@ -330,9 +342,16 @@ export function scoreVerdict(input) {
   // --- Dynamic behaviour ---------------------------------------------------
   const counts = obj(obj(dynamicSection.counts).byKind ?? dynamicSection.counts)
   const events = asArray(dynamicSection.events)
-  const eventCount = (kind) => events.filter((event) => obj(event).kind === kind).length
+  // Attribution: only guest-originated events describe the sample, so the
+  // platform's own installation events (`document.installed`, `api.wrapped`,
+  // …) can never raise a behavioural reason. When the caller supplies no event
+  // list at all (a hand-built fixture with counters only) the counters are the
+  // only evidence available and are used as-is.
+  const guestEvents = events.filter((event) => !isPlatformEvent(obj(event)))
+  const eventCount = (kind) => guestEvents.filter((event) => obj(event).kind === kind).length
+  const counted = (kind, counter) => (events.length > 0 ? eventCount(kind) : toCount(counter))
 
-  const networkEvents = Math.max(toCount(counts.net), eventCount('net'))
+  const networkEvents = counted('net', counts.net)
   if (networkEvents > 0) {
     add(
       'DYNAMIC_NETWORK',
@@ -342,12 +361,12 @@ export function scoreVerdict(input) {
     )
   }
 
-  const storageEvents = Math.max(toCount(counts.storage), eventCount('storage'))
+  const storageEvents = counted('storage', counts.storage)
   if (storageEvents > 0) {
     add('DYNAMIC_STORAGE', weights.dynamicStorage, `${storageEvents} storage access(es)`, 'persistence')
   }
 
-  const domEvents = Math.max(toCount(counts.dom), eventCount('dom'))
+  const domEvents = counted('dom', counts.dom)
   if (domEvents > 0) {
     add(
       'DYNAMIC_DOM',
@@ -357,7 +376,7 @@ export function scoreVerdict(input) {
     )
   }
 
-  const evalEvents = Math.max(toCount(counts.eval), eventCount('eval'))
+  const evalEvents = counted('eval', counts.eval)
   if (evalEvents > 0) {
     add(
       'DYNAMIC_EVAL',
@@ -469,6 +488,7 @@ export function renderMarkdown(report) {
   if (parseErrors.length > 0) lines.push(`- **Parse errors:** ${parseErrors.length}`)
   const passes = asArray(restoration.passes)
   lines.push(`- **Restoration passes:** ${passes.length}`)
+  if (restoration.error != null) lines.push(`- **Restoration error:** ${escapeText(restoration.error)}`)
   if (passes.length > 0) {
     lines.push('', '| Pass | Changed | Duration (ms) | Notes |', '| --- | --- | ---: | --- |')
     for (const pass of passes) {
@@ -503,6 +523,14 @@ export function renderMarkdown(report) {
   lines.push(`- **Limits hit:** ${joinValues(dynamicSection.limitsHit)}`)
   lines.push(`- **Result:** ${renderResult(result)}`)
   lines.push(`- **Event counts:** ${formatCounts(counts)}`)
+  // `counts.byKind` is the raw trace histogram, which includes the events the
+  // platform emits while it builds the environment. The behaviour counters
+  // exclude them, so state the gap instead of showing two unexplained numbers.
+  const attributed = obj(behavior.counts)
+  const platformEvents = toCount(attributed.platform)
+  if (platformEvents > 0) {
+    lines.push(`- **Platform events (not sample behaviour):** ${formatNumber(platformEvents)}`)
+  }
   const apis = asArray(behavior.apis)
   if (apis.length > 0) {
     lines.push('', '| API | Count |', '| --- | ---: |')
@@ -527,11 +555,18 @@ export function renderMarkdown(report) {
   lines.push('## Tracing/JSVMP', '')
   lines.push(`- **Tracing enabled:** ${formatBoolean(tracing.enabled)}`)
   lines.push(`- **Events:** ${formatNumber(tracing.events)} (${formatNumber(tracing.dropped)} dropped)`)
+  lines.push(`- **Truncated:** ${renderTraceTruncation(tracing)}`)
   lines.push(`- **JSVMP detected:** ${formatBoolean(jsvmp.detected)}`)
   lines.push(`- **Opcodes:** ${formatNumber(jsvmp.opcodes)}; steps: ${formatNumber(jsvmp.steps)}`)
   lines.push(
     `- **Hooks:** ${formatNumber(hooks.active)} active, ${formatNumber(hooks.fired)} fired, ${formatNumber(hooks.mocks)} mocked`,
   )
+  const hookErrors = asArray(hooks.errors)
+  if (hookErrors.length > 0) {
+    lines.push(
+      `- **Hook errors:** ${hookErrors.length}${hooks.errorsTruncated === true ? ' (older failures dropped)' : ''}`,
+    )
+  }
   lines.push('')
 
   // Integrity
@@ -655,6 +690,19 @@ function renderResult(result) {
     return `${type} — ${escapeText(result.preview)}`
   }
   return type
+}
+
+/**
+ * Render the trace-completeness line. Truncation is stated with its cause so an
+ * analyst can tell "the sample was bigger than the code-step budget" from "the
+ * retained window is smaller than the trace".
+ * @param {object} tracing
+ */
+function renderTraceTruncation(tracing) {
+  if (tracing.truncated !== true) return 'no'
+  const reasons = asArray(tracing.truncatedBy).map((reason) => TRACE_TRUNCATION_LABELS[reason] ?? String(reason))
+  const cause = reasons.length > 0 ? ` (${reasons.join('; ')})` : ''
+  return `yes${cause} — ${formatNumber(tracing.dropped)} event(s) dropped`
 }
 
 /**
@@ -881,12 +929,28 @@ function normalizeRestoration(input, sourceCode) {
   })
   const code = str(input.code) || sourceCode
   return {
+    // A failing pipeline is evidence: the raw source is what got analysed, and
+    // the failure message says why. Dropping it silently hid the failure.
+    error: normalizeError(input.error),
     passes,
     code,
     sha256: str(input.sha256),
     size: Number.isFinite(input.size) ? input.size : code.length,
     reducedBy: num(input.reducedBy),
   }
+}
+
+/**
+ * Flatten the several error shapes the pipeline stages use to one message.
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizeError(value) {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string') return value.length > 0 ? value : null
+  const input = obj(value)
+  const message = str(input.message ?? input.name ?? '')
+  return message.length > 0 ? message : null
 }
 
 /** @param {unknown} value */
@@ -978,10 +1042,21 @@ function normalizeResult(value) {
 function normalizeTracing(value) {
   const input = obj(value)
   const jsvmp = obj(input.jsvmp)
+  // Truncation is derived by the orchestrator from the run record, so it stays
+  // true even when the `code:trace-truncated` marker was pushed out of the
+  // retained event window.
+  const truncated = input.truncated === true || input.traceTruncated === true
+  const truncatedBy = truncated
+    ? asArray(input.truncatedBy)
+        .map((reason) => str(reason))
+        .filter((reason) => TRACE_TRUNCATION_REASONS.includes(reason))
+    : []
   return {
     enabled: input.enabled === true,
     events: toCount(input.events),
     dropped: toCount(input.dropped),
+    truncated,
+    truncatedBy: [...new Set(truncatedBy)],
     jsvmp: {
       detected: jsvmp.detected === true,
       opcodes: toCount(jsvmp.opcodes),
@@ -993,10 +1068,21 @@ function normalizeTracing(value) {
 /** @param {unknown} value */
 function normalizeHooks(value) {
   const input = obj(value)
+  const rawErrors = asArray(input.errors)
+  const errors = rawErrors.slice(0, MAX_REPORTED_HOOK_ERRORS).map((entry) => {
+    const item = obj(entry)
+    return {
+      hook: str(item.hook),
+      phase: str(item.phase),
+      message: str(item.message),
+    }
+  })
   return {
     active: toCount(input.active),
     fired: toCount(input.fired),
     mocks: toCount(input.mocks),
+    errors,
+    errorsTruncated: input.errorsTruncated === true || rawErrors.length > errors.length,
   }
 }
 

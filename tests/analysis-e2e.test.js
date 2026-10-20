@@ -58,6 +58,118 @@ test('benign sample stays benign and reports no C2', async () => {
   assert.equal(result.report.verdict.level, 'benign', JSON.stringify(result.report.verdict.reasons))
   assert.equal(result.report.static.iocs.urls.length, 0)
   assert.equal(result.report.dynamic.ok, true)
+  // console output is high volume but not behaviour, and the platform's own
+  // installation events are not the sample's: nothing here may score.
+  assert.equal(result.report.verdict.score, 0, JSON.stringify(result.report.verdict.reasons))
+  assert.deepEqual(result.report.verdict.reasons, [])
+})
+
+test('an inert sample scores nothing: platform events are not behaviour', async () => {
+  const result = await analyzeSample('var x = 1;', {
+    name: 'inert.js',
+    logLevel: 'silent',
+    env: { strict: false },
+  })
+  const { report, behavior } = result
+
+  assert.equal(report.verdict.score, 0, JSON.stringify(report.verdict.reasons))
+  assert.deepEqual(report.verdict.families, [])
+  assert.equal(report.verdict.level, 'benign')
+  assert.equal(report.verdict.reasons.some((reason) => reason.code === 'DYNAMIC_DOM'), false)
+  assert.equal(report.verdict.reasons.some((reason) => reason.code === 'HOOKS_MOCKED'), false)
+
+  // Evidence is filtered, not hidden: the installation events stay in the trace.
+  assert.ok(
+    report.dynamic.events.some((event) => event.api === 'document.installed'),
+    'document.installed must remain in the trace',
+  )
+  assert.equal(behavior.counts.dom, 0, 'no guest DOM event occurred')
+  assert.ok(behavior.counts.platform > 0, JSON.stringify(behavior.counts))
+  assert.equal(report.tracing.truncated, false)
+})
+
+test('examples/benign.js stays benign with no platform-injected DOM reason', async () => {
+  const source = await readFile(`${ROOT}examples/benign.js`, 'utf8')
+  const result = await analyzeSample(source, {
+    name: 'benign.js',
+    logLevel: 'silent',
+    env: { strict: false },
+  })
+
+  assert.equal(result.report.verdict.level, 'benign')
+  assert.equal(result.report.verdict.score, 0, JSON.stringify(result.report.verdict.reasons))
+  assert.equal(result.report.verdict.reasons.some((reason) => reason.code === 'DYNAMIC_DOM'), false)
+})
+
+test('real DOM manipulation still scores', async () => {
+  const result = await analyzeSample("document.write('<div id=\"x\">hi</div>')", {
+    name: 'dom.js',
+    logLevel: 'silent',
+    env: { strict: false },
+  })
+
+  const reason = result.report.verdict.reasons.find((entry) => entry.code === 'DYNAMIC_DOM')
+  assert.ok(reason, JSON.stringify(result.report.verdict.reasons))
+  assert.match(reason.detail, /DOM mutation/)
+})
+
+test('a restoration failure is recorded instead of erased (F8)', async () => {
+  const result = await analyzeSample('var x = 1;', {
+    name: 'inert.js',
+    logLevel: 'silent',
+    dynamic: false,
+    restoreHooks: {
+      pipeline() {
+        throw new Error('pass exploded')
+      },
+    },
+  })
+
+  assert.equal(result.report.static.restoration.error, 'pass exploded')
+  assert.equal(result.report.static.restoration.code, 'var x = 1;')
+  assert.ok(
+    result.report.recommendations.some((line) => /restoration failed/i.test(line)),
+    JSON.stringify(result.report.recommendations),
+  )
+  assert.match(result.markdown, /Restoration error:\*\* pass exploded/)
+})
+
+test('trace-budget truncation is explicit and survives the lost marker (F9)', async () => {
+  // A loop big enough to exceed a tiny code-step budget, so the instrumenter
+  // stops emitting and posts its `code:trace-truncated` marker.
+  const source = 'var total = 0; for (var i = 0; i < 400; i += 1) { total += i }'
+  const result = await analyzeSample(source, {
+    name: 'loop.js',
+    logLevel: 'silent',
+    env: { strict: false },
+    instrumentation: { code: { maxEvents: 100 } },
+  })
+
+  assert.equal(result.report.dynamic.ok, true, JSON.stringify(result.report.dynamic.error))
+  assert.equal(result.traceTruncation.truncated, true, JSON.stringify(result.traceTruncation))
+  assert.ok(result.traceTruncation.truncatedBy.includes('code-budget'), JSON.stringify(result.traceTruncation))
+  assert.equal(result.report.tracing.truncated, true)
+  assert.ok(result.report.tracing.truncatedBy.includes('code-budget'))
+  assert.match(result.markdown, /Truncated:\*\* yes/)
+  assert.match(result.markdown, /code-step budget reached/)
+})
+
+test('the retained-window limit also reports truncation', async () => {
+  const source = 'var total = 0; for (var i = 0; i < 60; i += 1) { total += i }'
+  const result = await analyzeSample(source, {
+    name: 'loop.js',
+    logLevel: 'silent',
+    env: { strict: false },
+    limits: { maxEvents: 40 },
+  })
+
+  assert.ok(result.report.tracing.dropped > 0, JSON.stringify(result.report.tracing))
+  assert.equal(result.report.tracing.truncated, true)
+  assert.ok(result.report.tracing.truncatedBy.includes('event-limit'))
+  assert.ok(
+    result.report.recommendations.some((line) => /Trace truncated/.test(line)),
+    JSON.stringify(result.report.recommendations),
+  )
 })
 
 test('static-only analysis skips execution but keeps static sections', async () => {

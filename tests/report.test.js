@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { buildReport, renderMarkdown, scoreVerdict, VERDICT_WEIGHTS } from '../tools/analysis/report.js'
+import { summarizeBehavior } from '../tools/analysis/behavior.js'
 
 const maliciousIocs = {
   urls: [
@@ -179,7 +180,15 @@ test('buildReport produces the full top-level schema', () => {
   ])
   assert.deepEqual(Object.keys(report.dynamic.behavior).sort(), ['apis', 'dom', 'network', 'storage', 'timers'])
   assert.deepEqual(Object.keys(report.tracing.jsvmp).sort(), ['detected', 'opcodes', 'steps'])
-  assert.deepEqual(Object.keys(report.hooks).sort(), ['active', 'fired', 'mocks'])
+  assert.deepEqual(Object.keys(report.tracing).sort(), [
+    'dropped',
+    'enabled',
+    'events',
+    'jsvmp',
+    'truncated',
+    'truncatedBy',
+  ])
+  assert.deepEqual(Object.keys(report.hooks).sort(), ['active', 'errors', 'errorsTruncated', 'fired', 'mocks'])
   assert.deepEqual(Object.keys(report.integrity).sort(), ['drift', 'intact'])
   assert.equal(report.verdict.level, 'malicious')
   assert.equal(report.verdict.score, 100)
@@ -333,4 +342,146 @@ test('buildReport extracts IOCs from provided source code when none are supplied
 
   assert.ok(report.static.iocs.urls.some((url) => url.value === 'https://auto.example.com/x'))
   assert.equal(report.static.iocs.meta.truncated, false)
+})
+
+test('platform-emitted events never score as sample behaviour', () => {
+  // The exact shape a `var x = 1;` run produces: the DOM and canvas modules
+  // announce their installation through the `dom` kind, and the API
+  // instrumenter announces every wrapper through `api`/`emit`.
+  const report = buildReport({
+    dynamic: {
+      ok: true,
+      counts: { byKind: { sandbox: 14, dom: 2, api: 58, hook: 2, ast: 1, code: 3 } },
+      events: [
+        { seq: 1, kind: 'sandbox', phase: 'emit', event: 'env.webassembly-stub' },
+        { seq: 6, kind: 'dom', phase: 'emit', api: 'document.installed', url: 'https://example.test/', domain: 'example.test' },
+        { seq: 9, kind: 'dom', phase: 'emit', event: 'document.fonts.installed', faces: 18 },
+        { seq: 16, kind: 'api', phase: 'emit', api: 'window.fetch', event: 'api.wrapped', arity: 1 },
+        { seq: 17, kind: 'api', phase: 'emit', api: 'document.createElement', event: 'api.wrapped', arity: 1 },
+      ],
+    },
+  })
+
+  assert.equal(report.verdict.score, 0, JSON.stringify(report.verdict.reasons))
+  assert.equal(report.verdict.level, 'benign')
+  assert.deepEqual(report.verdict.families, [])
+  assert.deepEqual(report.verdict.reasons, [])
+  assert.equal(report.tracing.truncated, false)
+})
+
+test('guest-originated DOM behaviour still scores', () => {
+  const report = buildReport({
+    dynamic: {
+      ok: true,
+      counts: { byKind: { dom: 1 } },
+      events: [
+        { seq: 6, kind: 'dom', phase: 'emit', api: 'document.installed' },
+        { seq: 21, kind: 'dom', phase: 'before', api: 'document.write', text: '<div id="x">hi</div>' },
+      ],
+    },
+  })
+
+  const reason = report.verdict.reasons.find((entry) => entry.code === 'DYNAMIC_DOM')
+  assert.ok(reason, JSON.stringify(report.verdict.reasons))
+  assert.match(reason.detail, /1 DOM mutation/)
+  assert.ok(report.verdict.score > 0)
+})
+
+test('platform policy mocks are not counted as anti-analysis', () => {
+  const report = buildReport({
+    dynamic: {
+      ok: true,
+      counts: { byKind: { api: 4 } },
+      events: [
+        { seq: 30, kind: 'api', phase: 'invoke', api: 'window.alert' },
+        { seq: 31, kind: 'api', phase: 'skip', api: 'window.alert', mock: true, reason: 'dialog-suppressed' },
+        // The API instrumenter reports the same blocked call without a reason.
+        { seq: 32, kind: 'api', phase: 'skip', api: 'window.alert', mock: true },
+      ],
+    },
+  })
+
+  assert.equal(report.verdict.reasons.some((entry) => entry.code === 'HOOKS_MOCKED'), false)
+  assert.equal(report.verdict.score, 0, JSON.stringify(report.verdict.reasons))
+})
+
+test('the behaviour summary separates platform policy mocks from caller mocks', () => {
+  const events = [
+    { seq: 30, kind: 'api', phase: 'invoke', api: 'window.alert' },
+    { seq: 31, kind: 'api', phase: 'skip', api: 'window.alert', mock: true, reason: 'dialog-suppressed' },
+    // The API instrumenter reports the same blocked call without a reason.
+    { seq: 32, kind: 'api', phase: 'skip', api: 'window.alert', mock: true },
+    { seq: 40, kind: 'api', phase: 'invoke', api: 'navigator.hardwareConcurrency' },
+    { seq: 41, kind: 'api', phase: 'skip', api: 'navigator.hardwareConcurrency', mock: true, reason: 'profile-fixed' },
+  ]
+  const behavior = summarizeBehavior(events)
+
+  assert.deepEqual(behavior.mocks, [{ api: 'navigator.hardwareConcurrency', reason: 'profile-fixed', seq: 41 }])
+  assert.equal(behavior.counts.mocks, 1)
+})
+
+test('a mocked environment API still scores when the summary reports it', () => {
+  const report = buildReport({ hooks: { mocks: 1 } })
+
+  assert.ok(report.verdict.reasons.some((entry) => entry.code === 'HOOKS_MOCKED'), JSON.stringify(report.verdict.reasons))
+})
+
+test('hooks.errors are preserved as evidence and bounded', () => {
+  const errors = Array.from({ length: 120 }, (_, index) => ({
+    hook: `hook-${index}`,
+    phase: 'code:before',
+    message: `boom ${index}`,
+    stack: 'not part of the contract',
+  }))
+  const report = buildReport({ hooks: { active: 2, fired: 1, mocks: 0, errors } })
+
+  assert.equal(report.hooks.errors.length, 50)
+  assert.equal(report.hooks.errorsTruncated, true)
+  assert.deepEqual(Object.keys(report.hooks.errors[0]).sort(), ['hook', 'message', 'phase'])
+  assert.equal(report.hooks.errors[49].message, 'boom 49')
+  assert.match(renderMarkdown(report), /Hook errors:\*\* 50 \(older failures dropped\)/)
+
+  const clean = buildReport({})
+  assert.deepEqual(clean.hooks.errors, [])
+  assert.equal(clean.hooks.errorsTruncated, false)
+  assert.doesNotMatch(renderMarkdown(clean), /Hook errors/)
+})
+
+test('a restoration failure is preserved in the report', () => {
+  const report = buildReport({
+    static: {
+      restoration: {
+        passes: [],
+        code: 'var x = 1;',
+        error: { message: 'pipeline exploded' },
+      },
+    },
+  })
+
+  assert.equal(report.static.restoration.error, 'pipeline exploded')
+  assert.match(renderMarkdown(report), /Restoration error:\*\* pipeline exploded/)
+  assert.equal(buildReport({}).static.restoration.error, null)
+})
+
+test('tracing carries an explicit, bounded truncation flag', () => {
+  const clean = buildReport({ tracing: { enabled: true, events: 137, dropped: 0 } })
+  assert.equal(clean.tracing.truncated, false)
+  assert.deepEqual(clean.tracing.truncatedBy, [])
+  assert.match(renderMarkdown(clean), /Truncated:\*\* no/)
+
+  const truncated = buildReport({
+    tracing: {
+      enabled: true,
+      events: 20_003,
+      dropped: 80,
+      truncated: true,
+      truncatedBy: ['event-limit', 'code-budget', 'bogus-reason'],
+    },
+  })
+  assert.equal(truncated.tracing.truncated, true)
+  assert.deepEqual(truncated.tracing.truncatedBy, ['event-limit', 'code-budget'])
+  const markdown = renderMarkdown(truncated)
+  assert.match(markdown, /Truncated:\*\* yes/)
+  assert.match(markdown, /code-step budget reached/)
+  assert.match(markdown, /80 event\(s\) dropped/)
 })

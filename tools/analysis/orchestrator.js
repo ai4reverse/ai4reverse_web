@@ -172,10 +172,13 @@ export async function analyzeSample(source, options = {}) {
   const opcodeEvents = events.filter(
     (event) => event.kind === 'code' && event.event === 'jsvmp:opcode',
   )
+  const truncation = summarizeTraceTruncation(run)
   const tracing = {
     enabled: Boolean(run),
     events: run?.traceStats?.total ?? 0,
     dropped: run?.traceStats?.dropped ?? 0,
+    truncated: truncation.truncated,
+    truncatedBy: truncation.truncatedBy,
     byKind: run?.traceStats?.byKind ?? {},
     jsvmp: {
       detected: Boolean(run?.vm ?? vmAnalysis?.detected),
@@ -196,6 +199,9 @@ export async function analyzeSample(source, options = {}) {
     restoration: {
       passes: restoration?.passes ?? [],
       code: restoration?.code ?? text,
+      // A failed pipeline is still evidence: keep the message so the report can
+      // say why the static section holds the raw source (audit F8).
+      error: restoration?.error ?? null,
       sha256: sha256(restoration?.code ?? text),
       size: Buffer.byteLength(restoration?.code ?? text),
       reducedBy: Math.max(0, Buffer.byteLength(text) - Buffer.byteLength(restoration?.code ?? text)),
@@ -272,7 +278,7 @@ export async function analyzeSample(source, options = {}) {
     },
     artifacts,
     integrity: run?.integrity ?? { intact: false, drift: [{ kind: 'no-dynamic-run', detail: 'dynamic execution disabled or failed' }] },
-    recommendations: recommend({ run, runError, facts, behavior, tracing, restoration, mergedIocs, staticAnalysis }),
+    recommendations: recommend({ run, runError, facts, behavior, tracing, restoration, mergedIocs, staticAnalysis, traceTruncation: truncation }),
   })
 
   // Expose the detailed behaviour sections without changing the stable schema:
@@ -309,7 +315,37 @@ export async function analyzeSample(source, options = {}) {
     iocs: mergedIocs,
     jsvmp: vmSummary,
     vmAnalysis,
+    traceTruncation: truncation,
   }
+}
+
+/**
+ * Whether the trace is complete, derived from the run record rather than from
+ * the retained event window.
+ *
+ * Two independent budgets cut observations. The code instrumenter stops
+ * emitting after its own `maxEvents` code steps and emits a
+ * `code:trace-truncated` marker once; later events can push that marker out of
+ * the retained window. The recorder drops the oldest retained events once
+ * `limits.maxEvents` is reached and counts them in `traceStats.dropped`.
+ *
+ * Both facts live on the run record and are pure functions of the sample, the
+ * seed and the limits, so the report can state truncation (and its cause) even
+ * when no marker survives. Hard-stopping at 20 003 observations while the read
+ * window shows `dropped: 80` therefore no longer looks like a complete trace.
+ *
+ * @param {object|null} [run] sandbox run record
+ * @returns {{truncated: boolean, truncatedBy: string[], dropped: number, markerRetained: boolean}}
+ */
+export function summarizeTraceTruncation(run) {
+  const events = Array.isArray(run?.events) ? run.events : []
+  const markerRetained = events.some((event) => event?.kind === 'code' && event?.event === 'trace-truncated')
+  const codeBudget = run?.instrumentation?.describe?.code?.truncated === true || markerRetained
+  const dropped = Number.isFinite(run?.traceStats?.dropped) ? run.traceStats.dropped : 0
+  const truncatedBy = []
+  if (codeBudget) truncatedBy.push('code-budget')
+  if (dropped > 0) truncatedBy.push('event-limit')
+  return { truncated: truncatedBy.length > 0, truncatedBy, dropped, markerRetained }
 }
 
 /**
@@ -392,6 +428,12 @@ export function recommend(context) {
   }
   if (run?.ok === false && run?.error?.name === 'InternalError') {
     out.push('Runtime interruption usually indicates an anti-analysis spin loop; review the statement trace tail for the loop site.')
+  }
+  if (restoration?.error) {
+    out.push(`Restoration failed (${restoration.error.message ?? restoration.error}); the static section contains the raw source, so read the original bytes.`)
+  }
+  if (context.traceTruncation?.truncated) {
+    out.push(`Trace truncated (${context.traceTruncation.truncatedBy.join(', ')}); later behaviour may be unobserved.`)
   }
   if (tracing?.jsvmp?.detected) {
     out.push(`JSVMP detected (${tracing.jsvmp.opcodes} opcodes, ${tracing.jsvmp.steps} traced steps); review the devirtualised opcode sequence and handler bodies.`)
