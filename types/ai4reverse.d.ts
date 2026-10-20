@@ -673,6 +673,12 @@ export interface SandboxRunRecord {
    */
   stackExhaustion?: boolean
   timedOut?: boolean
+  /**
+   * Host-wall backstop. True when the host clock interrupted the run, so
+   * observations may be incomplete. Absent on records that failed before the
+   * success path.
+   */
+  provisional?: boolean
   filename?: string
   durationMs: number
   virtualMs: number

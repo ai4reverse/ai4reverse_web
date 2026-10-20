@@ -432,10 +432,12 @@ export function recommend(context) {
 
   if (!staticAnalysis?.ok) out.push('Source did not parse as a valid JavaScript program; treat as truncated or encrypted container.')
   if (runError) out.push(`Dynamic execution failed (${runError.message}); inspect the sandbox error before concluding the sample is inert.`)
-  if (run?.limitsHit?.length) {
+  // Host-wall interruptions are provisional (P0-12): do not recommend as if the
+  // sample hit a guest-derived limit or anti-analysis spin.
+  if (run?.limitsHit?.length && !run?.provisional) {
     out.push(`Execution hit limits (${run.limitsHit.join(', ')}); raise limits or single-step the sample to observe later stages.`)
   }
-  if (run?.ok === false && run?.error?.name === 'InternalError') {
+  if (run?.ok === false && run?.error?.name === 'InternalError' && !run?.provisional) {
     out.push('Runtime interruption usually indicates an anti-analysis spin loop; review the statement trace tail for the loop site.')
   }
   if (restoration?.error) {

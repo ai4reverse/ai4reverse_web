@@ -379,6 +379,8 @@ export class TracelessSandbox {
         // Additive, explicit engine marker (see `disposal.skipped`).
         stackExhaustion: stackBreach,
         timedOut: Boolean(invocation.timedOut || settle?.timedOut),
+        // Host-wall backstop: observations may be incomplete on a slow host (P0-12).
+        provisional: Boolean(runtimeHandle?.state?.provisional),
         filename: invocation.filename,
         durationMs: invocation.durationMs ?? 0,
         virtualMs: settle?.virtualMs ?? Math.round(clock.elapsedMs),

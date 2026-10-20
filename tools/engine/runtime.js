@@ -145,12 +145,15 @@ export function createRuntime(options) {
     // Guest-visible time advances deterministically from traced statements
     // (clock.tick() in the instrumentation channel), never from host speed.
     if (state.poisoned) return true
+    // Guest-derived bound is primary (P0-12); host wall is a backstop that
+    // marks the run provisional rather than cutting observations by host speed.
     if (clock.elapsedMs > limits.maxVirtualMs) {
       state.reason = 'virtual-time'
       return true
     }
     if (Date.now() - state.startedAt > limits.timeoutMs) {
       state.reason = 'timeout'
+      state.provisional = true
       return true
     }
     return false
