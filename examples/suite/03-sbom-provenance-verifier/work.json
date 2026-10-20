@@ -1,0 +1,23 @@
+{
+  "id": "03",
+  "slug": "sbom-provenance-verifier",
+  "type": "sdk",
+  "title": "SBOM / Provenance Verifier",
+  "grade": "military",
+  "category": "supply-chain-security",
+  "summary": "软件供应链证据 SDK：异步 SHA-256 构建 CycloneDX 风格 SBOM，生成/校验 SLSA 溯源信封（DSSE 签名、builder 白名单、subject 摘要），并区分缺失/多余/被篡改文件。",
+  "capabilities": [
+    "异步 SHA-256 文件哈希与 SBOM 构建",
+    "CycloneDX 结构导入/导出",
+    "确定性 SBOM 摘要（subject digest）",
+    "DSSE 信封 + HMAC/ECDSA P-256 签名",
+    "SLSA builder 白名单与谓词类型校验",
+    "缺失/多余/篡改文件差异检测",
+    "SBOM 结构化 diff 与 JSON 互操作"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

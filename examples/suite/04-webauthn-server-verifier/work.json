@@ -1,0 +1,23 @@
+{
+  "id": "04",
+  "slug": "webauthn-server-verifier",
+  "type": "sdk",
+  "title": "WebAuthn Server Verifier",
+  "grade": "commercial",
+  "category": "authentication",
+  "summary": "零依赖 WebAuthn RP 服务端校验 SDK：严格 base64url、最小 CBOR、COSE EC2/P-256 解析、clientData/authenticatorData 校验、ECDSA 断言验签与签名计数器回退检测。",
+  "capabilities": [
+    "严格 base64url 编解码",
+    "最小 CBOR 解码器与 COSE EC2 密钥解析",
+    "clientDataJSON 类型/challenge/origin 绑定",
+    "authenticatorData 标志位/计数器/凭据解析",
+    "ECDSA P-256 断言验签（DER 与 P-1363）",
+    "凭据存储与签名计数器回退检测",
+    "注册/认证全流程端点辅助"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

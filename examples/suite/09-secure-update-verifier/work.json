@@ -1,0 +1,24 @@
+{
+  "id": "09",
+  "slug": "secure-update-verifier",
+  "type": "sdk",
+  "title": "Secure Update Verifier SDK",
+  "grade": "military",
+  "category": "secure-update",
+  "summary": "ES256 签名更新清单 SDK：semver 防回滚、产品/通道绑定、密钥吊销与过期、文件描述符 Merkle 树、分块证明与产物哈希校验。",
+  "capabilities": [
+    "ECDSA P-256 清单签名/验签",
+    "semver 版本防回滚（签名下限 + 已安装状态）",
+    "product/channel 绑定",
+    "签名密钥吊销/生效期/过期",
+    "SHA-256 Merkle 文件树与包含证明",
+    "分块（chunk）根与单块证明",
+    "产物哈希/大小校验",
+    "时钟偏移与有状态更新器"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

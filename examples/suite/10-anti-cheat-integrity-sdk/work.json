@@ -1,0 +1,24 @@
+{
+  "id": "10",
+  "slug": "anti-cheat-integrity-sdk",
+  "type": "sdk",
+  "title": "Anti-Cheat Integrity SDK",
+  "grade": "military",
+  "category": "anti-cheat-integrity",
+  "summary": "游戏关键函数完整性 SDK：基线采集、抽样守卫、热补丁/原型污染/描述符/原型链检测、稳健计时异常判定、遥测事件与 ES256 报告签名。",
+  "capabilities": [
+    "关键函数源码/描述符/原型链基线",
+    "确定性抽样守卫与检查预算",
+    "热补丁与函数替换检测",
+    "Object/Array/Function 原型污染检测",
+    "自定义原型快照与篡改检测",
+    "median+MAD 计时画像与异常判定",
+    "遥测事件构建与去重计数",
+    "ES256 完整性报告签名/验签"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

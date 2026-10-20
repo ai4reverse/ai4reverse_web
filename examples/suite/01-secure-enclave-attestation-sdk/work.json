@@ -1,0 +1,22 @@
+{
+  "id": "01",
+  "slug": "secure-enclave-attestation-sdk",
+  "type": "sdk",
+  "title": "Secure Enclave Attestation SDK",
+  "grade": "commercial",
+  "category": "attestation",
+  "summary": "面向机密计算工作负载的远程证明 SDK：模块清单度量、ECDSA P-256 签名报价、nonce/时效/重放/策略绑定校验，全流程离线可复现。",
+  "capabilities": [
+    "SHA-256 模块清单度量与根摘要",
+    "ECDSA P-256 报价签名与验签",
+    "challenge nonce 与会话绑定",
+    "时效窗口与单次使用重放缓存",
+    "策略绑定（度量白名单/飞地白名单/声明断言）",
+    "密钥轮换与有效期窗口"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

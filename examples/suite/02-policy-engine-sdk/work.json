@@ -1,0 +1,22 @@
+{
+  "id": "02",
+  "slug": "policy-engine-sdk",
+  "type": "sdk",
+  "title": "Policy Engine SDK",
+  "grade": "commercial",
+  "category": "policy-engine",
+  "summary": "声明式 RBAC/ABAC 策略引擎：主体/资源/动作/条件规则、拒绝优先、封闭条件 DSL、决策解释轨迹与策略校验，评估结果确定可复现。",
+  "capabilities": [
+    "RBAC 角色继承与主体选择器",
+    "ABAC 条件 DSL（eq/neq/in/lt/gt/contains/regex 等）",
+    "拒绝优先与优先级排序",
+    "逐规则决策解释轨迹",
+    "策略结构校验与稳定错误码",
+    "JSON 序列化与确定性评估"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

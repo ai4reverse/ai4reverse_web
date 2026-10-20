@@ -1,0 +1,23 @@
+{
+  "id": "05",
+  "slug": "wasm-crypto-sdk",
+  "type": "sdk",
+  "title": "WASM Crypto SDK",
+  "grade": "commercial",
+  "category": "cryptography",
+  "summary": "手写汇编并内置自检的 WebAssembly 密码原语 SDK：xor/rotl/mix/permute/xorBuf、HKDF 式密钥派生、密钥分离与 XOR+MAC 认证流，模块字节可复现并可指纹白名单。",
+  "capabilities": [
+    "确定性 WASM 模块字节生成与 instantiate",
+    "xor/rotl/mix/permute/xorBuf 原语",
+    "WASM 与 JS 参考实现自检向量",
+    "HKDF 式 extract/expand 派生",
+    "enc/mac/index 子密钥分离",
+    "XOR+MAC 认证流加密与篡改检测",
+    "模块 SHA-256 指纹与完整性校验"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

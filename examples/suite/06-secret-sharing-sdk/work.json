@@ -1,0 +1,22 @@
+{
+  "id": "06",
+  "slug": "secret-sharing-sdk",
+  "type": "sdk",
+  "title": "Shamir Secret Sharing SDK",
+  "grade": "military",
+  "category": "key-management",
+  "summary": "基于 GF(256) 的 Shamir 门限秘密共享 SDK：任意 k-of-n 重构、SHA-256 承诺校验、分片校验和、损坏分片定位与可移植序列化。",
+  "capabilities": [
+    "GF(256) 域运算（AES 多项式）",
+    "k-of-n 门限拆分/重构",
+    "SHA-256 秘密承诺与不匹配检测",
+    "分片校验和/重复分片拒绝",
+    "损坏分片定位（小规模穷举诊断）",
+    "sss1 可移植信封序列化"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

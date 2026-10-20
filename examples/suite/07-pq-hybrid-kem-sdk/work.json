@@ -1,0 +1,23 @@
+{
+  "id": "07",
+  "slug": "pq-hybrid-kem-sdk",
+  "type": "sdk",
+  "title": "Post-Quantum Hybrid KEM SDK",
+  "grade": "military",
+  "category": "post-quantum-crypto",
+  "summary": "P-256 ECDH + 从零实现的玩具 ML-KEM（模-LWE 环 Z_q[x]/(x^64+1)，schoolbook 乘法）混合 KEM，HKDF-SHA-256 合成、上下文绑定与密文篡改拒绝。",
+  "capabilities": [
+    "模块-LWE 格 KEM（rank 2，q=3329，CBD 噪声）",
+    "NTT-free schoolbook 负循环多项式乘法",
+    "P-256 临时 ECDH（WebCrypto）",
+    "HKDF-SHA-256 混合密钥派生",
+    "接收方/上下文/传输脚本绑定",
+    "密文检查哈希与篡改拒绝",
+    "公钥/私钥/密文可移植序列化"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "08",
+  "slug": "drm-watermark-sdk",
+  "type": "sdk",
+  "title": "DRM Text Watermark SDK",
+  "grade": "commercial",
+  "category": "drm-watermarking",
+  "summary": "基于零宽字符的隐形文本水印 SDK：规范 JSON 元数据、HMAC/SHA-256 标签、Hamming(7,4) 纠错、容量预算、单符号篡改恢复与冲突检测。",
+  "capabilities": [
+    "零宽字符隐形水印嵌入/提取/检测",
+    "规范 JSON 元数据绑定",
+    "HMAC-SHA-256 / SHA-256 帧标签",
+    "Hamming(7,4) 单比特纠错",
+    "容量计算与超限拒绝",
+    "单符号篡改恢复与越界损坏拒绝",
+    "不可见字符清理与审计统计"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}
