@@ -74,6 +74,7 @@
   },
   "scripts": {
     "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "test:types": "tsc --project tests/fixtures/types/tsconfig.json",
     "test:verbose": "node --test --test-reporter=spec $(ls tests/*.test.js | tr '\\n' ' ')",
     "analyze": "node tools/cli.js analyze",
     "restore": "node tools/cli.js restore",
@@ -106,5 +107,9 @@
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
     "quickjs-emscripten": "^0.32.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
   }
 }

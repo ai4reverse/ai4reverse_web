@@ -1074,12 +1074,31 @@ export interface AnalysisReport {
   [key: string]: unknown
 }
 
+export interface ArtifactInput {
+  kind: string
+  data: string | Uint8Array
+  source?: string
+  meta?: object
+}
+
+export interface ArtifactRecord {
+  id: string
+  kind: string
+  sha256: string
+  size: number
+  source: string
+  count: number
+  preview: string
+  text: string
+  meta: object
+}
+
 export interface ArtifactStore {
-  add(input: { kind: string; data: string | Uint8Array; source?: string; meta?: object }): unknown
-  list(): object[]
-  summary(): object
-  get(id: string): object | undefined
-  [key: string]: unknown
+  add(input: ArtifactInput): ArtifactRecord | null
+  addAll(artifacts: ArtifactInput[]): ArtifactRecord[]
+  list(): ArtifactRecord[]
+  summary(): Omit<ArtifactRecord, 'text'>[]
+  stats(): { count: number; bytes: number }
 }
 
 export interface AnalyzeSampleOptions extends SandboxOptions {
@@ -1133,6 +1152,22 @@ export interface OpcodeSpec {
   argc: number
   stack: { in: number | string; out: number }
   doc: string
+}
+
+export interface BuildVMOptions {
+  seed?: number | string
+  name?: string
+  obfuscate?: boolean
+}
+
+export interface VMArtifact {
+  code: string
+  dispatchTable: Record<string, Omit<OpcodeSpec, 'doc'> & { caseLine: number; count: number }>
+  opcodes: Omit<OpcodeSpec, 'doc'>[]
+  sourceMap: { pc: number; code: number; name: string; line: number }[]
+  bytecode: AssembledProgram['bytecode']
+  /** Host execution requires explicit trust; use code in TracelessSandbox otherwise. */
+  run(options: { trust: 'host'; args?: unknown[] }): unknown
 }
 
 export interface AssembledProgram {
@@ -1429,9 +1464,9 @@ export declare function assemble(program: { op: string; args?: unknown[] }[]): A
  * process and requires the explicit `{ trust: 'host' }` acknowledgement.
  */
 export declare function buildVM(
-  program: { op: string; args?: unknown[] }[] | AssembledProgram,
-  options?: object,
-): string
+  program: { op: string; args?: unknown[] }[],
+  options?: BuildVMOptions,
+): VMArtifact
 
 export declare function buildSampleProgram(): { op: string; args?: unknown[] }[]
 

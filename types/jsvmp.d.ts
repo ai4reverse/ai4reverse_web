@@ -23,7 +23,7 @@ export {
   summarizeVM,
 } from './ai4reverse.js'
 
-export type { OpcodeSpec, AssembledProgram } from './ai4reverse.js'
+export type { OpcodeSpec, AssembledProgram, BuildVMOptions, VMArtifact } from './ai4reverse.js'
 
 /** Default guest-visible name of the generated VM entry function. */
 export declare const DEFAULT_VM_NAME: string

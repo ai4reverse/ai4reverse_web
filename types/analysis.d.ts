@@ -5,6 +5,8 @@
  * scoring, IOC extraction, behaviour summaries and staged-payload extraction.
  */
 
+import type { IOCResult } from './ai4reverse.js'
+
 export {
   analyzeSample,
   buildReport,
@@ -27,6 +29,8 @@ export type {
   IocEntry,
   IocOptions,
   ArtifactStore,
+  ArtifactInput,
+  ArtifactRecord,
 } from './ai4reverse.js'
 
 /** How many scored artifacts the extractor keeps as evidence. */

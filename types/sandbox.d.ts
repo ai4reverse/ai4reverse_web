@@ -5,6 +5,8 @@
  * kit, limit handling, integrity snapshots and the environment module loader.
  */
 
+import type { LimitKind, Limits } from './ai4reverse.js'
+
 export {
   TracelessSandbox,
   createProfile,

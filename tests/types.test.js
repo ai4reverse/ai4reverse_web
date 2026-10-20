@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { readFile, readdir } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,16 +14,94 @@ import { fileURLToPath } from 'node:url'
  * declaration that lists a name the runtime does not export, or that misses a
  * name the runtime does export, is a lie a consumer pays for at compile time.
  *
- * Three things are pinned:
+ * Four things are pinned:
  *  1. `types/ai4reverse.d.ts` declares exactly the value exports of the entry
  *     point (`tools/index.js`);
  *  2. every `exports` subpath carries a `types` condition that exists on disk;
  *  3. every subpath barrel's runtime exports are declared in that subpath's
- *     declaration file.
+ *     declaration file;
+ *  4. strict NodeNext consumers compile, including expected rejection cases.
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const TYPES_DIR = resolve(ROOT, 'types')
+
+// Resolve the installed compiler, never a global or an automatically downloaded one.
+const require = createRequire(import.meta.url)
+
+test('public consumers compile in strict NodeNext mode and reject invalid contracts', () => {
+  const compilerPackage = require.resolve('typescript/package.json')
+  const compiler = resolve(dirname(compilerPackage), require(compilerPackage).bin.tsc)
+  try {
+    execFileSync(process.execPath, [compiler, '--project', 'tests/fixtures/types/tsconfig.json'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 30_000,
+      stdio: 'pipe',
+    })
+  } catch (error) {
+    assert.fail(`TypeScript consumer compilation failed:\n${error.stdout ?? ''}${error.stderr ?? ''}${error.message}`)
+  }
+})
+
+test('declared artifact methods and VM fields match runtime shapes', async () => {
+  const { buildVM, createArtifactStore } = await import('../tools/index.js')
+  const vm = buildVM([])
+  assert.deepEqual(Object.keys(vm).sort(), ['bytecode', 'code', 'dispatchTable', 'opcodes', 'run', 'sourceMap'])
+  assert.equal(typeof vm.code, 'string')
+  assert.equal(typeof vm.run, 'function')
+  assert.throws(() => vm.run(), { code: 'TRUST_ERROR' })
+
+  const store = createArtifactStore()
+  assert.deepEqual(Object.keys(store).sort(), ['add', 'addAll', 'list', 'stats', 'summary'])
+  assert.equal(store.add({ kind: 'eval-payload', data: '' }), null)
+  const added = store.addAll([{ kind: 'eval-payload', data: '42' }])
+  assert.equal(added[0].text, '42')
+  assert.deepEqual(store.stats(), { count: 1, bytes: 2 })
+  assert.equal(store.summary()[0].sha256, added[0].sha256)
+  assert.equal(Object.hasOwn(store.summary()[0], 'text'), false)
+})
+
+test('environment installation returns the declared report fields', async () => {
+  const { installEnvironment } = await import('../tools/index.js')
+  const result = await installEnvironment({}, { only: [] })
+  assert.deepEqual(Object.keys(result).sort(), ['complete', 'installed', 'missing', 'requested', 'tookMs'])
+  assert.deepEqual(result.installed, [])
+  assert.deepEqual(result.missing, [])
+  assert.deepEqual(result.requested, [])
+  assert.equal(result.complete, true)
+  assert.equal(typeof result.tookMs, 'number')
+})
+
+test('nonempty environment reports retain structured installation and missing records', async () => {
+  const { TracelessSandbox } = await import('../tools/index.js')
+  const sandbox = await TracelessSandbox.create({
+    logLevel: 'silent',
+    env: { only: ['misc'], strict: false },
+    instrumentation: { code: { level: 'off' } },
+  })
+  try {
+    const run = await sandbox.run('42')
+    assert.equal(run.ok, true)
+    const result = run.environment
+    assert.deepEqual(Object.keys(result).sort(), ['complete', 'installed', 'missing', 'requested', 'tookMs'])
+    assert.deepEqual(result.requested, ['misc'])
+    assert.equal(result.complete, false)
+    assert.equal(result.installed.length, 1)
+    assert.deepEqual(Object.keys(result.installed[0]).sort(), ['id', 'ms', 'order'])
+    assert.equal(result.installed[0].id, 'misc')
+    assert.equal(typeof result.installed[0].order, 'number')
+    assert.equal(typeof result.installed[0].ms, 'number')
+    assert.deepEqual(result.missing, [
+      { id: 'misc', reason: 'missing requirement globals' },
+      { id: 'misc', reason: 'missing requirement navigator' },
+    ])
+    assert.equal(typeof result.tookMs, 'number')
+    assert.equal(run.disposal.ok, true)
+  } finally {
+    sandbox.dispose()
+  }
+})
 
 /**
  * Names a `.d.ts` file exports.
