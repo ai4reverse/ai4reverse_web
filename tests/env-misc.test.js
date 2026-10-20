@@ -546,3 +546,186 @@ test('service worker and legacy window surface follow the profile', () => {
     ['function', 'function', 0, 'function', 'undefined', true, true],
   )
 })
+
+// ---- globals: dialogs, media queries, selection, isolation, wasm ---------
+
+test('window dialogs answer like a chrome dialog box and tick the clock', () => {
+  const before = chromium.clock.elapsedMs
+  assert.deepEqual(
+    guest(
+      chromium,
+      `[alert('careful'), confirm('continue?'), prompt('name?', 'default'), typeof window.focus()]`,
+    ),
+    [null, false, null, 'undefined'],
+  )
+  assert.ok(chromium.clock.elapsedMs > before, 'each dialog advances virtual time')
+  const dialogs = chromium.trace.events
+    .filter((event) => /^window\.(alert|confirm|prompt)$/.test(String(event.api)))
+    .map((event) => [event.api, event.message])
+  assert.deepEqual(dialogs.slice(-3), [
+    ['window.alert', 'careful'],
+    ['window.confirm', 'continue?'],
+    ['window.prompt', 'name?'],
+  ])
+})
+
+test('window.open records the popup target as an IOC', () => {
+  chromium.trace.events.length = 0
+  assert.equal(guest(chromium, `window.open('https://popup.example.test/stage2.js')`), null)
+  assert.equal(guest(chromium, `window.open('')`), null)
+  const iocs = chromium.trace.events.filter((event) => event.kind === 'ioc')
+  assert.deepEqual(iocs.map((event) => event.value), ['https://popup.example.test/stage2.js'])
+  assert.deepEqual(iocs.map((event) => event.iocKind), ['url'])
+})
+
+test('getSelection exposes the empty selection surface', () => {
+  assert.deepEqual(
+    guest(
+      chromium,
+      `(function () {
+        var selection = getSelection();
+        selection.removeAllRanges();
+        return [String(selection), selection.isCollapsed, selection.rangeCount, selection.type,
+          selection.anchorOffset, selection.focusNode];
+      })()`,
+    ),
+    ['', true, 0, 'None', 0, null],
+  )
+})
+
+test('media queries match width, orientation, colour scheme and motion rules', () => {
+  const matches = JSON.parse(
+    guest(
+      chromium,
+      `JSON.stringify({
+        narrow: matchMedia('(min-width: 1px)').matches,
+        impossible: matchMedia('(min-width: 99999px)').matches,
+        shortView: matchMedia('(max-height: 1px)').matches,
+        landscape: matchMedia('(orientation: landscape)').matches,
+        portrait: matchMedia('(orientation: portrait)').matches,
+        dark: matchMedia('(prefers-color-scheme: dark)').matches,
+        light: matchMedia('(prefers-color-scheme: light)').matches,
+        reduce: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        motion: matchMedia('(prefers-reduced-motion: no-preference)').matches,
+        alternatives: matchMedia('(min-width: 99999px), (max-width: 99999px)').matches,
+        unknownRule: matchMedia('print').matches,
+        empty: matchMedia('').matches,
+      })`,
+    ),
+  )
+  const { innerWidth, innerHeight } = chromium.profile.window
+  assert.deepEqual(matches, {
+    narrow: true,
+    impossible: false,
+    shortView: innerHeight <= 1,
+    landscape: innerHeight < innerWidth,
+    portrait: innerHeight >= innerWidth,
+    dark: false,
+    light: true,
+    reduce: false,
+    motion: true,
+    alternatives: true,
+    unknownRule: false,
+    empty: false,
+  })
+})
+
+test('the isolation triple is coherent and Atomics works when enabled', () => {
+  assert.deepEqual(
+    guest(chromium, `[typeof SharedArrayBuffer, typeof Atomics, crossOriginIsolated]`),
+    ['undefined', 'undefined', false],
+  )
+
+  const isolatedModules = [...MODULES, 'anti-fingerprint']
+  return (async () => {
+    const isolated = await createHarness({ modules: isolatedModules, profile: { crossOriginIsolated: true } })
+    try {
+      const result = isolated.run(
+        `(function () {
+          var cells = new Int32Array(new SharedArrayBuffer(16));
+          var seen = [Atomics.store(cells, 0, 5), Atomics.load(cells, 0), Atomics.add(cells, 0, 2), Atomics.load(cells, 0)];
+          seen.push(Atomics.sub(cells, 0, 1), Atomics.and(cells, 0, 12), Atomics.or(cells, 0, 1), Atomics.xor(cells, 0, 3));
+          seen.push(Atomics.exchange(cells, 0, 9), Atomics.compareExchange(cells, 0, 9, 4), Atomics.load(cells, 0));
+          seen.push(Atomics.compareExchange(cells, 0, 9, 4), Atomics.wait(cells, 0, 5), Atomics.wait(cells, 0, 4));
+          seen.push(Atomics.notify(cells, 0, 1), Atomics.isLockFree(4), Atomics.isLockFree(3), crossOriginIsolated);
+          return JSON.stringify(seen);
+        })()`,
+      )
+      assert.equal(result.ok, true, JSON.stringify(result.error))
+      assert.deepEqual(JSON.parse(result.value), [
+        5, 5, 5, 7, 7, 6, 4, 5, 6, 9, 4, 4, 'not-equal', 'timed-out', 0, true, false, true,
+      ])
+      assert.ok(isolated.trace.events.some((event) => event.event === 'env.atomics-installed'))
+      // The shim rejects misuse instead of silently returning a number.
+      const errors = isolated.run(
+        `(function () {
+          var out = [];
+          try { Atomics.load(new Float32Array(2), 0); } catch (error) { out.push(error.name + '|' + error.message); }
+          try { Atomics.load(new Int32Array(2), 5); } catch (error) { out.push(error.name + '|' + error.message); }
+          return out;
+        })()`,
+      )
+      assert.equal(errors.ok, true, JSON.stringify(errors.error))
+      assert.deepEqual(errors.value, [
+        'TypeError|Atomics.load: First argument must be an integer typed array',
+        'RangeError|Atomics.load: Invalid atomic access index',
+      ])
+    } finally {
+      isolated.dispose()
+    }
+  })()
+})
+
+test('the WebAssembly stub validates, rejects and never executes', () => {
+  assert.equal(guest(chromium, 'typeof WebAssembly'), 'object')
+  assert.equal(guest(chromium, 'WebAssembly.validate(new Uint8Array([0, 97, 115, 109]))'), false)
+  const rejections = guest(
+    chromium,
+    `(function () {
+      var out = [];
+      try { WebAssembly.validate('not bytes'); } catch (error) { out.push(error.name); }
+      try { new WebAssembly.Module(new Uint8Array([1, 2, 3, 4])); } catch (error) { out.push(error.name + '|' + error.message); }
+      try { new WebAssembly.Module(); } catch (error) { out.push(error.name); }
+      try { WebAssembly.Module.exports(undefined); } catch (error) { out.push(error.name); }
+      try { WebAssembly.Module.imports({}); } catch (error) { out.push(error.name); }
+      try { WebAssembly.Module.customSections(0); } catch (error) { out.push(error.name); }
+      try { new WebAssembly.Instance({}); } catch (error) { out.push(error.name); }
+      out.push(WebAssembly.CompileError.name, WebAssembly.LinkError.name, WebAssembly.RuntimeError.name);
+      return out;
+    })()`,
+  )
+  assert.deepEqual(rejections, [
+    'TypeError',
+    'CompileError|WebAssembly.Module(): expected magic word 00 61 73 6d, found 01 02 03 04 @+0',
+    'TypeError',
+    'TypeError',
+    'TypeError',
+    'TypeError',
+    'TypeError',
+    'CompileError',
+    'LinkError',
+    'RuntimeError',
+  ])
+
+  // compile/instantiate report through rejected promises on the job queue.
+  guest(
+    chromium,
+    `globalThis.__wasm = [];
+     WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1])).then(null, function (error) { __wasm.push(error.name); });
+     WebAssembly.compile('nope').then(null, function (error) { __wasm.push(error.name); });
+     WebAssembly.instantiate(new Uint8Array([0, 97, 115, 109])).then(null, function (error) { __wasm.push(error.name); });
+     WebAssembly.instantiate(undefined).then(null, function (error) { __wasm.push(error.name); });
+     WebAssembly.instantiateStreaming({ status: 200, arrayBuffer: function () {} }).then(null, function (error) { __wasm.push(error.name); });
+     WebAssembly.instantiateStreaming(null).then(null, function (error) { __wasm.push(error.name); });
+     0`,
+  )
+  pump(chromium)
+  assert.deepEqual(JSON.parse(guest(chromium, 'JSON.stringify(__wasm)')), [
+    'CompileError',
+    'TypeError',
+    'CompileError',
+    'TypeError',
+    'CompileError',
+    'TypeError',
+  ])
+})
