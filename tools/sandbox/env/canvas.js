@@ -666,16 +666,48 @@ export function install(bridge) {
   const fontMetrics = new Map()
   bridge.fontMetrics = fontMetrics
 
-  /** Register a handle for teardown and return it. */
-  const retain = (handle) => {
-    bridge.onDispose(() => {
+  /**
+   * Handles this module keeps alive after the creating bridge call returns.
+   *
+   * A `dup()` of a borrowed trampoline handle is owned by the module, not by the
+   * call, so it must be released here: a handle that is still alive when the
+   * runtime is freed aborts the engine (`list_empty(&rt->gc_obj_list)`) and
+   * quarantines the WASM module for the rest of the process.
+   *
+   * @type {Set<object>}
+   */
+  const retained = new Set()
+  bridge.onDispose(() => {
+    for (const handle of retained) {
       try {
         handle.dispose()
       } catch {
         /* the guest may already have released it */
       }
-    })
+    }
+    retained.clear()
+  })
+
+  /** Register a handle for teardown and return it. */
+  const retain = (handle) => {
+    retained.add(handle)
     return handle
+  }
+
+  /**
+   * Release a retained handle once its owner is done with it.
+   *
+   * Needed for handles owned by a *scheduled* task: if the run ends before the
+   * virtual clock reaches the task, teardown still frees them.
+   * @param {object} handle
+   */
+  const release = (handle) => {
+    if (!retained.delete(handle)) return
+    try {
+      handle.dispose()
+    } catch {
+      /* already disposed */
+    }
   }
 
   const guestFunction = (source, label) => {
@@ -1514,14 +1546,14 @@ export function install(bridge) {
           bytes: bytes.length,
         })
         if (!callback || ctx.typeof(callback) !== 'function') return ctx.undefined
-        const handler = callback.dup()
+        const handler = retain(callback.dup())
         schedule(1, () => {
           const blob = createBlob(bytes, type)
           const result = ctx.callFunction(handler, ctx.undefined, [blob])
           if (result.error) result.error.dispose()
           else result.value.dispose()
           blob.dispose()
-          handler.dispose()
+          release(handler)
         })
         return ctx.undefined
       },
@@ -2159,13 +2191,13 @@ export function install(bridge) {
         state.src = bridge.str(call.args, 0, '')
         state.complete = false
         bridge.emit('dom', 'before', { api: 'img.src', length: state.src.length })
-        const element = call.thisHandle.dup()
+        const element = retain(call.thisHandle.dup())
         schedule(1, () => {
           state.complete = true
           state.naturalWidth = state.width
           state.naturalHeight = state.height
           if (state.src) fireEvent(state, element, 'load', {})
-          element.dispose()
+          release(element)
         })
         return ctx.undefined
       },
@@ -2261,7 +2293,9 @@ export function install(bridge) {
       length: 1,
       run: (state, call) => {
         const face = call.args[0]
-        if (face && ctx.typeof(face) === 'object') state.faces.push(face.dup())
+        // The set keeps the face for the rest of the run, so the duplicate is
+        // owned by this module and released at teardown.
+        if (face && ctx.typeof(face) === 'object') state.faces.push(retain(face.dup()))
         return call.thisHandle
       },
     },

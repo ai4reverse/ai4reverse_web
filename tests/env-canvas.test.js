@@ -1243,3 +1243,37 @@ test('media elements expose playback state and a settling play() promise', async
     harness.dispose()
   }
 })
+
+test('duplicated handles are released, so the runtime is freed without an abort', async () => {
+  // Each surface below keeps a `dup()` of a borrowed guest handle after the
+  // bridge call that created it returns: an added FontFace (the set iterates it
+  // later), a `toBlob` callback and an `img.src` load listener (both owned by a
+  // scheduled task). The virtual clock is never advanced here, so the module's
+  // own teardown is the only thing that can free them. A live handle aborts
+  // `JS_FreeRuntime` (`list_empty(&rt->gc_obj_list)`) and quarantines the WASM
+  // module for the rest of the process, so the disposal record is asserted.
+  const harness = await createCanvasHarness()
+  let disposal
+  try {
+    runGuest(
+      harness,
+      `(function () {
+        var face = new FontFace('Late Sans', 'local("Late Sans")');
+        document.fonts.add(face);
+        var canvas = new HTMLCanvasElement();
+        canvas.toBlob(function () {});
+        var image = new Image(8, 8);
+        image.src = 'late.png';
+        globalThis.__late = [face, canvas, image];
+        return 0;
+      })()`,
+    )
+    // The guest still sees the added face while the run is alive.
+    assert.equal(runGuest(harness, 'document.fonts.size'), harness.profile.fonts.length + 1)
+    assert.equal(runGuest(harness, '__late[2].complete'), false)
+  } finally {
+    disposal = harness.dispose()
+  }
+  assert.equal(disposal.leaked, false, 'a live handle would abort the engine at teardown')
+  assert.equal(disposal.ok, true)
+})
