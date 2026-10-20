@@ -1,3 +1,5 @@
+import { SandboxError } from '../util/errors.js'
+
 /**
  * Execution limits. Every limit is enforced; none is decorative.
  */
@@ -38,17 +40,76 @@ const NUMERIC_BOUNDS = {
 }
 
 /**
+ * Coerce one limit value and clamp it into its documented range.
+ *
+ * `undefined`/`null` mean "not provided" and fall through to the default; a
+ * numeric string is accepted because CLI/JSON callers forward text. Anything
+ * else is a usage error, reported by the caller.
+ *
+ * @param {unknown} value
+ * @returns {number|undefined} finite number, or undefined when unusable
+ */
+function toLimitNumber(value) {
+  if (value === undefined || value === null) return undefined
+  // A numeric string is accepted (CLI/JSON callers forward text); any other
+  // type is a mistake the caller must hear about.
+  const numeric =
+    typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : Number.NaN
+  return Number.isFinite(numeric) ? numeric : undefined
+}
+
+/**
+ * Normalize caller-supplied limits, rejecting typos instead of ignoring them.
+ *
+ * A mistyped key (`maxEvent`) or a malformed value (`timeoutMs: 'abc'`) used to
+ * be dropped silently, so the report showed the default as if the caller had
+ * asked for it (audit F5 / D7 "unknown options are usage errors"). The default
+ * contract is **strict**: such a call throws a `SandboxError` naming the
+ * accepted keys. `strict: false` keeps the old lenient behaviour for callers
+ * that forward foreign option bags, and reports each ignored entry through the
+ * optional `logger`.
+ *
  * @param {object} [input]
+ * @param {object} [options]
+ * @param {boolean} [options.strict] throw on unknown keys / malformed values (default true)
+ * @param {{warn?: Function}} [options.logger] receives one warning per ignored entry
  * @returns {typeof DEFAULT_LIMITS}
  */
-export function normalizeLimits(input = {}) {
+export function normalizeLimits(input = {}, options = {}) {
+  const { strict = true, logger = null } = options
   const limits = { ...DEFAULT_LIMITS }
+  /** @type {string[]} */
+  const unknownKeys = []
+  /** @type {string[]} */
+  const invalidValues = []
   for (const [key, value] of Object.entries(input ?? {})) {
-    if (!(key in DEFAULT_LIMITS)) continue
-    const numeric = Number(value)
-    if (!Number.isFinite(numeric)) continue
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_LIMITS, key)) {
+      unknownKeys.push(key)
+      continue
+    }
+    const numeric = toLimitNumber(value)
+    if (numeric === undefined) {
+      if (value !== undefined && value !== null) invalidValues.push(key)
+      continue
+    }
     const [min, max] = NUMERIC_BOUNDS[key] ?? [-Infinity, Infinity]
     limits[key] = Math.min(Math.max(numeric, min), max)
+  }
+
+  const ignored = [
+    ...unknownKeys.map((key) => `unknown limit '${key}'`),
+    ...invalidValues.map((key) => `limit '${key}' needs a finite number`),
+  ]
+  if (ignored.length > 0) {
+    const accepted = Object.keys(DEFAULT_LIMITS)
+    const message = `${ignored.join('; ')}; accepted limits are ${accepted.join(', ')}`
+    if (strict) {
+      throw new SandboxError(message, {
+        code: 'SANDBOX_LIMITS',
+        details: { unknownKeys, invalidValues, accepted },
+      })
+    }
+    for (const reason of ignored) logger?.warn?.({ reason }, 'ignored limit option')
   }
   return limits
 }

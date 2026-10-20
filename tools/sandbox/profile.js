@@ -1,4 +1,5 @@
 import { createSeededRandom, seededPick } from '../util/random.js'
+import { SandboxError } from '../util/errors.js'
 
 /**
  * Coherent, seeded browser profile.
@@ -200,6 +201,28 @@ export const BROWSERS = Object.freeze({
 export const DEFAULT_EPOCH = 1792394400000
 
 /**
+ * Look up a profile option that names a table entry.
+ *
+ * A spelling such as `browser: 'chromium'` (the profile *family* name, not a
+ * `BROWSERS` key) used to reach the fingerprint builder as `undefined` and
+ * fail there with a bare `TypeError: Cannot read properties of undefined`. The
+ * caller gets a typed error naming the accepted values instead, because the
+ * option is a usage error, not an internal fault (D7).
+ *
+ * @param {Record<string, object>} table
+ * @param {unknown} value option value
+ * @param {string} field option name used in the message
+ */
+function requireEntry(table, value, field) {
+  const accepted = Object.keys(table)
+  if (typeof value === 'string' && Object.prototype.hasOwnProperty.call(table, value)) return table[value]
+  throw new SandboxError(`profile.${field} must be one of ${accepted.join(', ')}, got ${JSON.stringify(value)}`, {
+    code: 'SANDBOX_PROFILE',
+    details: { field, value, accepted },
+  })
+}
+
+/**
  * @param {object} [options]
  * @param {number|string} [options.seed]
  * @param {'windows'|'macos'|'linux'} [options.os]
@@ -222,9 +245,11 @@ export function createProfile(options = {}) {
   const devicePool = mobileRequested ? DEVICES : DEVICES.filter((item) => item.touch === 0)
   const device = options.screen ?? seededPick(devicePool, seed, 'device')
 
-  const os = OS_FAMILIES[osKey]
-  const browser = BROWSERS[browserKey]
-  const locale = LOCALES[localeKey]
+  // Validate before any consumer reads the tables: every later line assumes a
+  // resolved os/browser/locale record.
+  const os = requireEntry(OS_FAMILIES, osKey, 'os')
+  const browser = requireEntry(BROWSERS, browserKey, 'browser')
+  const locale = requireEntry(LOCALES, localeKey, 'locale')
   const version = options.browserVersion ?? browser.versions[Math.floor(rng.next() * browser.versions.length)]
   const major = Number.parseInt(version, 10)
   const osToken = os.names[Math.floor(rng.next() * os.names.length)]

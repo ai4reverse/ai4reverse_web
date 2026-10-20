@@ -4,7 +4,8 @@ import v8 from 'node:v8'
 import vm from 'node:vm'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
 import { createProfile, consistencyReport } from '../tools/sandbox/profile.js'
-import { normalizeLimits } from '../tools/sandbox/limits.js'
+import { normalizeLimits, DEFAULT_LIMITS } from '../tools/sandbox/limits.js'
+import { SandboxError as SandboxErrorFromUtil } from '../tools/util/errors.js'
 import { createHostBridge } from '../tools/sandbox/bridge.js'
 import { createHarness } from './helpers/harness.js'
 
@@ -581,11 +582,99 @@ test('Math.random is seeded and reproducible across sandboxes', async () => {
 })
 
 test('limit normalization clamps hostile values', () => {
-  const limits = normalizeLimits({ timeoutMs: -1, memoryBytes: 1, maxJobs: Number.NaN, maxEvents: 10 ** 12 })
+  const limits = normalizeLimits({ timeoutMs: -1, memoryBytes: 1, maxEvents: 10 ** 12 })
   assert.ok(limits.timeoutMs >= 50)
   assert.ok(limits.memoryBytes >= 1024 * 1024)
   assert.equal(typeof limits.maxJobs, 'number')
   assert.ok(limits.maxEvents <= 1_000_000)
+})
+
+test('a mistyped limit option is a usage error, not a silent default', () => {
+  // F5/D7: the old contract dropped unknown keys and non-finite values, so the
+  // report showed a default as if the caller had asked for it.
+  assert.throws(
+    () => normalizeLimits({ maxEvent: 100 }),
+    (error) => {
+      assert.equal(error.name, 'SandboxError')
+      assert.equal(error.code, 'SANDBOX_LIMITS')
+      assert.match(error.message, /unknown limit 'maxEvent'/)
+      assert.match(error.message, /accepted limits are timeoutMs/, 'the message must name the accepted keys')
+      assert.deepEqual(error.details.unknownKeys, ['maxEvent'])
+      assert.ok(error.details.accepted.includes('maxEvents'))
+      return true
+    },
+  )
+  assert.throws(
+    () => normalizeLimits({ timeoutMs: 'abc' }),
+    (error) => {
+      assert.equal(error.code, 'SANDBOX_LIMITS')
+      assert.match(error.message, /limit 'timeoutMs' needs a finite number/)
+      assert.deepEqual(error.details.invalidValues, ['timeoutMs'])
+      return true
+    },
+  )
+  assert.throws(() => normalizeLimits({ timeoutMs: Number.NaN }), /needs a finite number/)
+
+  // Lenient mode is the documented escape hatch for forwarded option bags: the
+  // old ignore-and-default behaviour, plus one warning per ignored entry.
+  const warnings = []
+  const limits = normalizeLimits(
+    { maxEvent: 100, timeoutMs: 'abc', maxVirtualMs: 5000 },
+    { strict: false, logger: { warn: (payload, message) => warnings.push({ payload, message }) } },
+  )
+  assert.equal(limits.maxEvents, DEFAULT_LIMITS.maxEvents)
+  assert.equal(limits.timeoutMs, DEFAULT_LIMITS.timeoutMs)
+  assert.equal(limits.maxVirtualMs, 5000, 'valid options in the same bag still apply')
+  assert.deepEqual(
+    warnings.map((entry) => entry.payload.reason),
+    ["unknown limit 'maxEvent'", "limit 'timeoutMs' needs a finite number"],
+  )
+  assert.ok(warnings.every((entry) => entry.message === 'ignored limit option'))
+
+  // `undefined`/`null` mean "not provided" (a very common spread shape) and are
+  // not usage errors. A numeric string is accepted because CLI/JSON callers
+  // forward text.
+  assert.equal(normalizeLimits({ timeoutMs: undefined, maxEvents: null }).timeoutMs, DEFAULT_LIMITS.timeoutMs)
+  assert.equal(normalizeLimits({ timeoutMs: '2500' }).timeoutMs, 2500)
+
+  // The sandbox constructor is where an analyst hits this: it must be a typed
+  // error, not a silently different budget.
+  assert.throws(
+    () => new TracelessSandbox({ logLevel: 'silent', limits: { maxEvent: 100 } }),
+    (error) => error instanceof SandboxErrorFromUtil && error.code === 'SANDBOX_LIMITS',
+  )
+})
+
+test('an unknown profile value is a typed error that names the accepted ones', () => {
+  // F5: `browser: 'chromium'` used to throw a bare TypeError from inside the
+  // fingerprint builder ('Cannot read properties of undefined (reading
+  // versions)'), which reads as an internal fault instead of a usage error.
+  for (const [option, value, expected] of [
+    ['browser', 'chromium', /profile\.browser must be one of chrome, edge, firefox/],
+    ['os', 'solaris', /profile\.os must be one of windows, macos, linux/],
+    ['locale', 'xx-YY', /profile\.locale must be one of/],
+  ]) {
+    assert.throws(
+      () => createProfile({ [option]: value }),
+      (error) => {
+        assert.equal(error.name, 'SandboxError')
+        assert.equal(error.code, 'SANDBOX_PROFILE')
+        assert.match(error.message, expected)
+        assert.equal(error.details.field, option)
+        assert.equal(error.details.value, value)
+        return true
+      },
+      `${option}: ${value}`,
+    )
+  }
+  assert.throws(
+    () => new TracelessSandbox({ logLevel: 'silent', profile: { browser: 'chromium' } }),
+    (error) => error.code === 'SANDBOX_PROFILE' && /chrome, edge, firefox/.test(error.message),
+  )
+  // Valid aliases keep working, and a non-string is the same usage error.
+  assert.equal(createProfile({ browser: 'firefox', os: 'linux', locale: 'en-GB' }).browser, 'firefox')
+  assert.equal(createProfile({ browser: 'edge' }).browserName, 'Edge')
+  assert.throws(() => createProfile({ browser: 42 }), /profile\.browser must be one of/)
 })
 
 test('concurrent sandboxes stay isolated and dispose cleanly', async () => {
