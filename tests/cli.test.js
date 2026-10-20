@@ -175,6 +175,35 @@ test('cli -h/--help print usage without running a command', async () => {
   }
 })
 
+test('cli with no command prints usage and exits 2', async () => {
+  const result = await runCli([])
+  assert.equal(result.code, 2, result.stderr)
+  assert.match(result.stdout, /Usage:/)
+})
+
+test('cli rejects --events outside the run command', async () => {
+  await assertUsageError(
+    ['analyze', 'examples/benign.js', '--events', '--no-dynamic'],
+    /--events is only valid with the run command/,
+  )
+})
+
+test('cli analyze exits 1 when the guest run fails', async () => {
+  const path = await sampleFile('throw.js', 'throw new Error("boom")')
+  const result = await runCli(['analyze', path, '--json', '--log-level', 'silent'])
+  assert.equal(result.code, 1, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.dynamic.ok, false)
+  assert.match(String(report.dynamic.error), /boom/)
+})
+
+test('cli analyze --no-dynamic still exits 0', async () => {
+  const result = await runCli(['analyze', 'examples/benign.js', '--json', '--no-dynamic', '--log-level', 'silent'])
+  assert.equal(result.code, 0, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.dynamic.ok, false)
+})
+
 test('cli rejects unknown options for every command', async () => {
   const cases = [
     ['analyze', 'examples/benign.js', '--nonsense'],

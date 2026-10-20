@@ -133,19 +133,20 @@ function numericOption(name, text) {
 }
 
 /**
- * Validate `--seed`. Only decimal and 0x-prefixed hex integers are accepted;
- * the text is passed through untouched because the seed is hashed as a string
- * downstream, so accepting it verbatim keeps existing seeds reproducible.
+ * Validate `--seed`. Only decimal and 0x-prefixed hex integers are accepted.
+ * Parsed to a number so `--seed 0x5eed` matches the numeric default `0x5eed`
+ * (ACCEPTANCE H12: a string seed was hashed differently by `hashSeed`).
  *
  * @param {string|undefined} text
- * @returns {string|undefined}
+ * @returns {number|undefined}
  */
 function seedOption(text) {
   if (text === undefined) return undefined
-  if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(String(text).trim())) {
+  const raw = String(text).trim()
+  if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
     throw new UsageError(`--seed must be a decimal or 0x-prefixed hex integer, got ${JSON.stringify(text)}`)
   }
-  return text
+  return Number(raw)
 }
 
 /**
@@ -227,12 +228,21 @@ export async function main(argv = process.argv.slice(2)) {
     throw new UsageError(`invalid arguments: ${error.message}`)
   }
   const { values, positionals } = parsed
-  if (values.help || positionals.length === 0) {
+  if (values.help) {
     process.stdout.write(USAGE)
     return 0
   }
+  if (positionals.length === 0) {
+    // No command is a usage error (ACCEPTANCE H12): print help and exit 2 so
+    // batch wrappers do not treat an empty invocation as success.
+    process.stdout.write(USAGE)
+    return 2
+  }
   const command = positionals[0]
   const file = positionals[1]
+  if (values.events && command !== 'run') {
+    throw new UsageError('--events is only valid with the run command')
+  }
   // Validate every closed-set option before a file is read or analysis starts.
   // A typo must never produce a result: batch pipelines treat a silent default
   // as evidence.
@@ -373,6 +383,10 @@ export async function main(argv = process.argv.slice(2)) {
       },
       'analysis complete',
     )
+    // Guest throw / failed dynamic run is a non-zero exit, matching `run`
+    // (ACCEPTANCE H12). `--no-dynamic` leaves `report.dynamic.ok` false with
+    // no `run`, so only an actual sandbox run decides the exit code.
+    if (result.run && result.run.ok === false) return 1
     return 0
   }
 
