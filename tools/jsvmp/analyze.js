@@ -332,7 +332,10 @@ function findConsts(signals) {
  * @param {Signals} signals
  */
 function collectPcVariables(signals) {
-  const pattern = /^(?:_|\$)?(?:pc|ip|sp|idx|index|ptr|pointer|offset|cursor|step|programcounter)$/i
+  // Keep names that look like a VM program counter. Broad tokens like `index`,
+  // `offset`, `step`, and `cursor` are ordinary loop counters and caused
+  // false-positive JSVMP detections (ACCEPTANCE H5).
+  const pattern = /^(?:_|\$)?(?:pc|ip|sp|idx|ptr|pointer|programcounter)$/i
   const names = new Set([
     ...signals.updates,
     ...signals.assignments,
@@ -345,9 +348,9 @@ function collectPcVariables(signals) {
  * @param {Signals} signals
  */
 function findStackVariables(signals) {
-  return [...signals.declarations.keys()].filter(
-    (name) => signals.pushPopVars.has(name) || /stack|stk/i.test(name),
-  )
+  // A `.push`/`.pop` on an arbitrary array is not VM evidence; require a
+  // stack-shaped name (ACCEPTANCE H5 ordinary loop+switch+array).
+  return [...signals.declarations.keys()].filter((name) => /stack|stk/i.test(name))
 }
 
 /**
@@ -567,8 +570,16 @@ function analyzeScope(signals) {
   score = Math.min(100, score)
 
   // A loop switch needs both an indexed discriminant and interpreter evidence.
+  // Ordinary `while` + `switch(rows[0])` + `out.push` must not qualify (H5):
+  // require a named stack/bytecode/consts pool, or a pc plus enough cases.
+  const caseCount = Array.isArray(dispatchInfo?.node?.cases)
+    ? dispatchInfo.node.cases.length
+    : 0
   const interpreterEvidence =
-    Boolean(bytecodeVariable) || stackVariables.length > 0 || pcVariables.length > 0
+    Boolean(bytecodeVariable) ||
+    (stackVariables.length > 0 && (pcVariables.length > 0 || consts.length > 0)) ||
+    (pcVariables.length > 0 && consts.length > 0) ||
+    (pcVariables.length > 0 && indexed && caseCount >= 4)
   const detected = hasSwitch && inLoop && indexed && interpreterEvidence && score >= 50
   return {
     detected,

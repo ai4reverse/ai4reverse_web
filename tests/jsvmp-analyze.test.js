@@ -78,6 +78,29 @@ test('plain functions are not classified as JSVMP', () => {
   assert.equal(isJSVMP(sampleVM().code), true)
 })
 
+test('ordinary loop+switch+array is not classified as JSVMP', () => {
+  const source = `
+function ordinary(rows) {
+  var out = [];
+  var index = 0;
+  while (rows.length) {
+    switch (rows[0]) {
+      case 1: out.push(1); break
+      case 2: out.push(2); break
+      default: rows.shift()
+    }
+    index++;
+  }
+  return out;
+}
+ordinary([1,2,3])
+`
+  const analysis = analyzeVM(source)
+  assert.equal(analysis.detected, false)
+  assert.equal(analysis.kind, 'none')
+  assert.equal(isJSVMP(source), false)
+})
+
 test('analyzeVM, extractHandlers and summarizeVM never crash on malformed input', () => {
   const malformed = [null, undefined, '', '   ', 'function(', 'switch (x) {', 42, { source: '' }]
   for (const input of malformed) {
