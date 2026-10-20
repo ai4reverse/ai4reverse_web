@@ -46,6 +46,11 @@ export function createArtifactStore(options = {}) {
         return existing
       }
       if (byHash.size >= maxArtifacts) return null
+      const eventSeq = Number.isFinite(meta.eventSeq)
+        ? meta.eventSeq
+        : Number.isFinite(meta.seq)
+          ? meta.seq
+          : undefined
       const artifact = {
         id: shortHash(hash, 12),
         kind,
@@ -56,6 +61,7 @@ export function createArtifactStore(options = {}) {
         preview: previewText(text),
         text: text.length > 65_536 ? text.slice(0, 65_536) : text,
         meta,
+        ...(eventSeq !== undefined ? { eventSeq } : {}),
       }
       byHash.set(hash, artifact)
       totalBytes += bytes.length

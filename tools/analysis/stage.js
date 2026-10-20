@@ -1,4 +1,5 @@
 import { createArtifactStore } from './artifact.js'
+import { isPlatformEvent } from './behavior.js'
 
 /**
  * Stage extraction: recover the payloads a loader evaluates.
@@ -14,6 +15,9 @@ export function extractStagedPayloads(events = [], sourceText = '', options = {}
   const { minLength = 16 } = options
 
   for (const event of events) {
+    // Platform install chatter is never a staged payload source.
+    if (isPlatformEvent(event)) continue
+
     if (event.kind === 'code' && (event.event === 'eval' || event.event === 'Function')) {
       const value = typeof event.value === 'string' ? event.value : event.value?.value
       if (typeof value === 'string' && value.length >= minLength) {
@@ -21,7 +25,7 @@ export function extractStagedPayloads(events = [], sourceText = '', options = {}
           kind: event.event === 'eval' ? 'eval-payload' : 'function-body',
           data: value,
           source: `dynamic:${event.filename ?? 'eval'}@${event.seq}`,
-          meta: { line: event.line, column: event.column, seq: event.seq },
+          meta: { line: event.line, column: event.column, seq: event.seq, eventSeq: event.seq },
         })
       }
     }
@@ -32,7 +36,7 @@ export function extractStagedPayloads(events = [], sourceText = '', options = {}
           kind: 'decoded-string',
           data: event.value,
           source: `dynamic:${event.api}@${event.seq}`,
-          meta: { api: event.api, seq: event.seq },
+          meta: { api: event.api, seq: event.seq, eventSeq: event.seq },
         })
       }
     }
@@ -42,7 +46,13 @@ export function extractStagedPayloads(events = [], sourceText = '', options = {}
         kind: 'network-body',
         data: event.bodyText,
         source: `network:${event.url ?? 'unknown'}@${event.seq}`,
-        meta: { url: event.url, status: event.status, method: event.method },
+        meta: {
+          url: event.url,
+          status: event.status,
+          method: event.method,
+          seq: event.seq,
+          eventSeq: event.seq,
+        },
       })
     }
 
@@ -53,7 +63,7 @@ export function extractStagedPayloads(events = [], sourceText = '', options = {}
           kind: 'console-output',
           data: text,
           source: `console@${event.seq}`,
-          meta: { method: event.api, seq: event.seq },
+          meta: { method: event.api, seq: event.seq, eventSeq: event.seq },
         })
       }
     }
@@ -63,7 +73,7 @@ export function extractStagedPayloads(events = [], sourceText = '', options = {}
         kind: 'websocket-message',
         data: event.websocketMessage,
         source: `websocket@${event.seq}`,
-        meta: { url: event.url, seq: event.seq },
+        meta: { url: event.url, seq: event.seq, eventSeq: event.seq },
       })
     }
   }
