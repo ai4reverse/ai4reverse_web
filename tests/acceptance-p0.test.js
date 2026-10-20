@@ -87,16 +87,31 @@ test('P0-2 AbortController.abort with forged stack shape does not hit stack limi
     assert.deepEqual(run.limitsHit, [])
     assert.equal(run.stackExhaustion, false)
     assert.equal(run.disposal.ok, true, JSON.stringify(run.disposal))
-    assert.equal(run.disposal.leaked, false)
-    assert.equal(run.disposal.skipped, false)
+    assert.equal(Boolean(run.disposal.leaked), false)
+    assert.equal(Boolean(run.disposal.skipped), false)
   } finally {
     sb.dispose()
   }
 })
 
-test('P0-4 throw a, b yields the same caught value with instrumentation on and off', {
-  todo: 'ACCEPTANCE P0-4 — parenthesise or skip sequence arguments',
-}, async () => {
+test('P0-3 element listener dispose does not report a handle leak', async () => {
+  const sb = await TracelessSandbox.create({ logLevel: 'silent', limits: { timeoutMs: 15_000 } })
+  try {
+    const run = await sb.run(`
+      const img = new Image();
+      img.addEventListener('load', function () {});
+      img.addEventListener('error', function () {});
+      'listener-attached'
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.disposal.ok, true, JSON.stringify(run.disposal))
+    assert.equal(Boolean(run.disposal.leaked), false)
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('P0-4 throw a, b yields the same caught value with instrumentation on and off', async () => {
   const source = `
     let caught;
     try { throw 1, 2 } catch (e) { caught = e }

@@ -1157,7 +1157,8 @@ export function install(bridge) {
         if (!type || !callback || ctx.typeof(callback) !== 'function') return ctx.undefined
         if (!state.listeners) state.listeners = new Map()
         const list = state.listeners.get(type) ?? []
-        list.push(callback.dup())
+        // retain(): teardown must release listeners the sample never removes (P0-3).
+        list.push(retain(callback.dup()))
         state.listeners.set(type, list)
         return ctx.undefined
       },
@@ -1170,7 +1171,7 @@ export function install(bridge) {
         if (!list || !callback || list.length === 0) return ctx.undefined
         for (let index = list.length - 1; index >= 0; index -= 1) {
           if (!guestEquals(list[index], callback)) continue
-          list[index].dispose()
+          release(list[index])
           list.splice(index, 1)
           break
         }
