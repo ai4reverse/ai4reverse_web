@@ -16,6 +16,12 @@ import { createHarness } from './helpers/harness.js'
 
 const MODULES = ['globals', 'console', 'timers', 'storage', 'navigator', 'url', 'blob', 'misc', 'chrome']
 
+// The two harnesses below are shared across every test in this file: a
+// QuickJS context is expensive, and the suite runs serially
+// (--test-concurrency=1), so guest globals persist between tests by design.
+// Any test that needs pristine globals must create its own harness; do not
+// rely on another test having (not) run first.
+
 /** @type {object} */
 let chromium
 /** @type {object} */

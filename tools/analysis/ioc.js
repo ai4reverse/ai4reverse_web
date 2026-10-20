@@ -777,10 +777,13 @@ function scanFromCharCode(result, text, state, offsetOf, context) {
  * @param {string} args
  * @returns {string|null}
  */
+/** Above this many numeric tokens a fromCharCode chain is hostile bulk, not a decodable string. */
+const MAX_CHAR_CODE_TOKENS = 10_000
+
 function decodeCharCodes(args) {
   const tokens = args.match(/0x[0-9a-f]+|\d+/gi)
   if (!tokens || tokens.length === 0) return null
-  if (tokens.length > 10000) return null
+  if (tokens.length > MAX_CHAR_CODE_TOKENS) return null
   let out = ''
   for (const token of tokens) {
     const code = Number.parseInt(token, token.toLowerCase().startsWith('0x') ? 16 : 10)

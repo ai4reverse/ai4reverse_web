@@ -16,6 +16,10 @@ import { isHostStackExhaustion } from '../engine/runtime.js'
  */
 
 /** @param {object} [options] */
+const TIME_ORIGIN_OFFSET_MIN_MS = 100
+/** Real browsers vary performance.timeOrigin per page load; the sandbox mimics that with a seeded offset in [MIN, MIN + RANGE). */
+const TIME_ORIGIN_OFFSET_RANGE_MS = 2000
+
 export function createVirtualClock(options = {}) {
   const {
     epoch = 1792394400000,
@@ -31,7 +35,8 @@ export function createVirtualClock(options = {}) {
     Number.isFinite(options.maxTimers) && options.maxTimers >= 1 ? Math.floor(options.maxTimers) : DEFAULT_LIMITS.maxTimers
 
   const rng = createSeededRandom(seed)
-  const timeOriginOffset = Math.floor(rng.next() * 2000) + 100
+  const timeOriginOffset =
+    TIME_ORIGIN_OFFSET_MIN_MS + Math.floor(rng.next() * TIME_ORIGIN_OFFSET_RANGE_MS)
   let elapsed = 0
   let timerSeq = 0
   let droppedTimers = 0

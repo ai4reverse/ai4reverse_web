@@ -229,14 +229,17 @@ const MAX_DEPTH = 5
  * @param {unknown} payload
  * @param {number} [depth]
  */
+/** Array payloads are previewed by their first MAX_ARRAY_PREVIEW elements. */
+const MAX_ARRAY_PREVIEW = 100
+
 export function sanitizePayload(payload, depth = 0) {
   if (payload === null || typeof payload !== 'object') {
     return payload === undefined ? {} : payload
   }
   if (depth >= MAX_DEPTH) return '[depth]'
   if (Array.isArray(payload)) {
-    const out = payload.slice(0, 100).map((item) => sanitizeValue(item, depth + 1))
-    if (payload.length > 100) out.push(`[+${payload.length - 100} more]`)
+    const out = payload.slice(0, MAX_ARRAY_PREVIEW).map((item) => sanitizeValue(item, depth + 1))
+    if (payload.length > MAX_ARRAY_PREVIEW) out.push(`[+${payload.length - MAX_ARRAY_PREVIEW} more]`)
     return out
   }
   const out = {}
