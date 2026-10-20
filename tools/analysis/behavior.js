@@ -182,6 +182,7 @@ export function summarizeBehavior(events = []) {
             length: event.value?.length ?? event.value?.value?.length ?? 0,
             value: preview(event.value?.value ?? event.value),
             seq: event.seq,
+            stageId: `stage:eval:${event.seq ?? evals.length}`,
           })
         }
         break
@@ -241,27 +242,36 @@ export function inferKillChain(summary) {
   const has = (pattern) => [...apiNames].some((name) => pattern.test(name))
 
   if (has(/eval|Function/) || (summary.evals ?? []).length > 0) {
-    stages.push({ stage: 'execution', detail: 'dynamic code evaluation observed' })
+    stages.push(killChainStage('execution', 'dynamic code evaluation observed'))
   }
   if (has(/atob|charCode|unescape|decodeURI/)) {
-    stages.push({ stage: 'decode', detail: 'string decoding API used' })
+    stages.push(killChainStage('decode', 'string decoding API used'))
   }
   if ((summary.network ?? []).length > 0 || has(/fetch|XMLHttpRequest|WebSocket|sendBeacon/)) {
-    stages.push({ stage: 'command-and-control', detail: 'outbound network activity' })
+    stages.push(killChainStage('command-and-control', 'outbound network activity'))
   }
   if ((summary.storage ?? []).length > 0 || has(/localStorage|sessionStorage|indexedDB|cookie/)) {
-    stages.push({ stage: 'persistence', detail: 'state written to browser storage' })
+    stages.push(killChainStage('persistence', 'state written to browser storage'))
   }
   if (has(/clipboard|getUserMedia|geolocation|Notification/)) {
-    stages.push({ stage: 'collection', detail: 'sensitive host data accessed' })
+    stages.push(killChainStage('collection', 'sensitive host data accessed'))
   }
   if (has(/createElement|innerHTML|document\.write|appendChild/)) {
-    stages.push({ stage: 'injection', detail: 'DOM injection observed' })
+    stages.push(killChainStage('injection', 'DOM injection observed'))
   }
   if ((summary.exceptions?.uncaught ?? []).length > 0) {
-    stages.push({ stage: 'fault', detail: 'uncaught exception terminated or degraded the sample' })
+    stages.push(killChainStage('fault', 'uncaught exception terminated or degraded the sample'))
   }
   return stages
+}
+
+/**
+ * Stable kill-chain node id used by report provenance refs.
+ * @param {string} stage
+ * @param {string} detail
+ */
+function killChainStage(stage, detail) {
+  return { stage, stageId: `kc:${stage}`, detail }
 }
 
 function dedupeNetwork(entries) {
