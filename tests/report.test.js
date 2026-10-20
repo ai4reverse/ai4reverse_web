@@ -268,6 +268,102 @@ test('scoreVerdict classifies the malicious threshold from independent signals',
   assert.ok(huge.families.includes('obfuscation'))
 })
 
+function reasonFor(verdict, code) {
+  return verdict.reasons.find((reason) => reason.code === code)
+}
+
+test('scoreVerdict scores environment tamper only on concrete drift evidence', () => {
+  const tampered = scoreVerdict({
+    integrity: { intact: false, drift: [{ kind: 'prototype-added', target: 'Object.prototype.__rootkit' }] },
+  })
+  const tamperReason = reasonFor(tampered, 'DYNAMIC_ENV_TAMPER')
+  assert.ok(tamperReason, 'concrete drift must score DYNAMIC_ENV_TAMPER')
+  assert.equal(tamperReason.weight, VERDICT_WEIGHTS.dynamicEnvTamper)
+  assert.ok(tampered.families.includes('evasion'))
+
+  // The synthetic marker for "dynamic run never happened" is not guest tampering.
+  const noRun = scoreVerdict({
+    integrity: { intact: false, drift: [{ kind: 'no-dynamic-run', detail: 'dynamic execution disabled' }] },
+  })
+  assert.equal(reasonFor(noRun, 'DYNAMIC_ENV_TAMPER'), undefined)
+
+  // An unavailable snapshot carries no evidence of tampering either.
+  const unavailable = scoreVerdict({
+    integrity: { intact: false, drift: [{ kind: 'unavailable', detail: 'integrity snapshot unavailable' }] },
+  })
+  assert.equal(reasonFor(unavailable, 'DYNAMIC_ENV_TAMPER'), undefined)
+
+  const intact = scoreVerdict({ integrity: { intact: true, drift: [] } })
+  assert.equal(reasonFor(intact, 'DYNAMIC_ENV_TAMPER'), undefined)
+})
+
+test('scoreVerdict scores worker offload and offline persistence from behaviour apis', () => {
+  const offload = scoreVerdict({
+    dynamicSection: {
+      behavior: { apis: [{ name: 'Worker.postMessage', count: 3 }, { name: 'WebAssembly.instantiate', count: 1 }] },
+    },
+  })
+  assert.equal(reasonFor(offload, 'DYNAMIC_WORKER_OFFLOAD')?.weight, VERDICT_WEIGHTS.dynamicWorkerOffload)
+
+  const persistence = scoreVerdict({
+    dynamicSection: {
+      behavior: { apis: [{ name: 'navigator.serviceWorker.register', count: 1 }, { name: 'window.caches.open', count: 2 }] },
+    },
+  })
+  assert.equal(reasonFor(persistence, 'DYNAMIC_OFFLINE_PERSISTENCE')?.weight, VERDICT_WEIGHTS.dynamicOfflinePersistence)
+  assert.ok(persistence.families.includes('persistence'))
+
+  const inert = scoreVerdict({
+    dynamicSection: { behavior: { apis: [{ name: 'console.log', count: 2 }] } },
+  })
+  assert.equal(reasonFor(inert, 'DYNAMIC_WORKER_OFFLOAD'), undefined)
+  assert.equal(reasonFor(inert, 'DYNAMIC_OFFLINE_PERSISTENCE'), undefined)
+})
+
+test('scoreVerdict scores runtime contact with a discovered messenger endpoint', () => {
+  const webhook = 'https://discord.com/api/webhooks/12345/token'
+  const contacted = scoreVerdict({
+    iocs: { discordWebhooks: [{ value: webhook }] },
+    dynamicSection: {
+      behavior: { network: [{ method: 'POST', url: webhook, seq: 1 }] },
+    },
+  })
+  assert.equal(reasonFor(contacted, 'DYNAMIC_MESSENGER_C2')?.weight, VERDICT_WEIGHTS.dynamicMessengerC2)
+  assert.ok(contacted.families.includes('c2'))
+
+  const unreachable = scoreVerdict({
+    iocs: { discordWebhooks: [{ value: webhook }] },
+    dynamicSection: {
+      behavior: { network: [{ method: 'POST', url: 'https://c2.example.test/collect', seq: 1 }] },
+    },
+  })
+  assert.equal(reasonFor(unreachable, 'DYNAMIC_MESSENGER_C2'), undefined)
+})
+
+test('scoreVerdict scores keyboard event capture as credential access', () => {
+  const keylogger = scoreVerdict({
+    dynamicSection: {
+      events: [
+        { kind: 'api', phase: 'before', api: 'EventTarget.addEventListener', target: '#document', type: 'keydown', seq: 1 },
+        { kind: 'api', phase: 'before', api: 'EventTarget.addEventListener', target: '#document', type: 'click', seq: 2 },
+      ],
+    },
+  })
+  assert.equal(reasonFor(keylogger, 'DYNAMIC_INPUT_CAPTURE')?.weight, VERDICT_WEIGHTS.dynamicInputCapture)
+  assert.ok(keylogger.families.includes('credential-access'))
+
+  // Platform-emitted listener installation and non-key events never score.
+  const inert = scoreVerdict({
+    dynamicSection: {
+      events: [
+        { kind: 'api', phase: 'before', api: 'EventTarget.addEventListener', target: '#document', type: 'click', seq: 1 },
+        { kind: 'api', phase: 'emit', api: 'document.addEventListener.installed', args: [], seq: 2 },
+      ],
+    },
+  })
+  assert.equal(reasonFor(inert, 'DYNAMIC_INPUT_CAPTURE'), undefined)
+})
+
 test('renderMarkdown includes every required heading and omits undefined', () => {
   const markdown = renderMarkdown(buildReport(analysisFixture))
 

@@ -72,6 +72,11 @@ export const VERDICT_WEIGHTS = Object.freeze({
   dynamicApiMisuse: 8,
   dynamicLimits: 10,
   dynamicUncaught: 2,
+  dynamicEnvTamper: 8,
+  dynamicWorkerOffload: 5,
+  dynamicOfflinePersistence: 4,
+  dynamicMessengerC2: 6,
+  dynamicInputCapture: 4,
   tracingJsvmp: 12,
   hooksMocks: 6,
 })
@@ -88,6 +93,28 @@ const DANGEROUS_APIS = new Set([
   'sendBeacon',
   'execCommand',
 ])
+
+/**
+ * Integrity drift kinds that constitute concrete evidence of guest tampering.
+ * `no-dynamic-run` is the orchestrator's synthetic marker for "no run
+ * happened" and `unavailable` means the snapshot itself was missing — neither
+ * is the sample's doing, so neither may raise a behavioural reason.
+ */
+const ENV_TAMPER_KINDS = new Set([
+  'global-added',
+  'global-removed',
+  'symbol-added',
+  'symbol-removed',
+  'prototype-added',
+  'prototype-removed',
+  'constructor-added',
+  'constructor-removed',
+  'native-changed',
+  'value-changed',
+])
+
+/** Keyboard event types whose capture indicates keystroke logging (T1056). */
+const INPUT_CAPTURE_EVENTS = new Set(['keydown', 'keyup', 'keypress'])
 
 const IOC_KEYS = Object.freeze([
   'urls',
@@ -160,6 +187,7 @@ export function buildReport(analysis) {
     iocs,
     tracing,
     hooks,
+    integrity: input.integrity,
   })
 
   return {
@@ -201,6 +229,8 @@ export function buildReport(analysis) {
  * @param {object} [input.iocs]
  * @param {object} [input.tracing]
  * @param {object} [input.hooks]
+ * @param {object} [input.integrity] sandbox integrity result; `drift` entries with
+ *   concrete evidence kinds raise `DYNAMIC_ENV_TAMPER`
  * @returns {{score: number, level: 'benign'|'suspicious'|'malicious', confidence: number, families: string[], reasons: {code: string, weight: number, detail: string}[]}}
  */
 export function scoreVerdict(input) {
@@ -210,6 +240,7 @@ export function scoreVerdict(input) {
   const iocs = obj(options.iocs ?? staticSection.iocs)
   const tracing = obj(options.tracing ?? dynamicSection.tracing)
   const hooks = obj(options.hooks ?? dynamicSection.hooks)
+  const integrity = obj(options.integrity)
   const weights = VERDICT_WEIGHTS
 
   /** @type {{code: string, weight: number, detail: string}[]} */
@@ -387,13 +418,73 @@ export function scoreVerdict(input) {
   }
 
   const behavior = obj(dynamicSection.behavior)
-  const dangerousApis = asArray(behavior.apis).filter((api) => DANGEROUS_APIS.has(str(obj(api).name)))
+  const apiNames = asArray(behavior.apis).map((api) => str(obj(api).name))
+  const dangerousApis = apiNames.filter((name) => DANGEROUS_APIS.has(name))
   if (dangerousApis.length > 0) {
     add(
       'DYNAMIC_API_MISUSE',
       weights.dynamicApiMisuse,
-      `sensitive APIs observed: ${dangerousApis.map((api) => str(obj(api).name)).join(', ')}`,
+      `sensitive APIs observed: ${dangerousApis.join(', ')}`,
       'injection',
+    )
+  }
+
+  const offloadApis = apiNames.filter((name) => name === 'Worker' || name.startsWith('Worker.') || name.startsWith('WebAssembly.'))
+  if (offloadApis.length > 0) {
+    add(
+      'DYNAMIC_WORKER_OFFLOAD',
+      weights.dynamicWorkerOffload,
+      `computation offloaded via ${offloadApis.join(', ')}`,
+      'evasion',
+    )
+  }
+
+  const persistenceApis = apiNames.filter((name) => name.includes('serviceWorker') || name.includes('caches'))
+  if (persistenceApis.length > 0) {
+    add(
+      'DYNAMIC_OFFLINE_PERSISTENCE',
+      weights.dynamicOfflinePersistence,
+      `offline persistence via ${persistenceApis.join(', ')}`,
+      'persistence',
+    )
+  }
+
+  const tamperEntries = asArray(integrity.drift).filter((entry) => ENV_TAMPER_KINDS.has(str(obj(entry).kind)))
+  if (integrity.intact === false && tamperEntries.length > 0) {
+    add(
+      'DYNAMIC_ENV_TAMPER',
+      weights.dynamicEnvTamper,
+      `${tamperEntries.length} environment integrity drift entr(y/ies): ${tamperEntries.map((entry) => str(obj(entry).kind)).join(', ')}`,
+      'evasion',
+    )
+  }
+
+  const messengerEndpoints = [...asArray(iocs.telegram), ...asArray(iocs.discordWebhooks)]
+    .map((endpoint) => str(obj(endpoint).value))
+    .filter(Boolean)
+  if (messengerEndpoints.length > 0) {
+    const networkUrls = asArray(behavior.network).map((entry) => str(obj(entry).url)).filter(Boolean)
+    const contacted = messengerEndpoints.filter((endpoint) => networkUrls.some((url) => url.toLowerCase().includes(endpoint.toLowerCase())))
+    if (contacted.length > 0) {
+      add(
+        'DYNAMIC_MESSENGER_C2',
+        weights.dynamicMessengerC2,
+        `runtime contact with ${contacted.length} discovered messaging/webhook endpoint(s)`,
+        'c2',
+      )
+    }
+  }
+
+  const inputCaptures = guestEvents.filter((event) => {
+    if (obj(event).kind !== 'api' || !str(obj(event).api).includes('addEventListener')) return false
+    return INPUT_CAPTURE_EVENTS.has(str(obj(event).type ?? obj(event).args?.[0]))
+  })
+  if (inputCaptures.length > 0) {
+    add(
+      'DYNAMIC_INPUT_CAPTURE',
+      weights.dynamicInputCapture,
+      `${inputCaptures.length} keyboard event listener(s) registered`,
+      'credential-access',
     )
   }
 
