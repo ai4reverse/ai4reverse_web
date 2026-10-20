@@ -42,6 +42,8 @@ export async function createHarness(options = {}) {
   const env = await installEnvironment(bridge, { only: modules, strict: false })
 
   let disposed = false
+  /** @type {{ok: boolean, leaked: boolean, skipped: boolean, error?: unknown}} */
+  let disposal = { ok: true, leaked: false, skipped: false }
   const harness = {
     ctx,
     runtime: runtimeHandle.runtime,
@@ -82,8 +84,20 @@ export async function createHarness(options = {}) {
       const result = clock.runDue(options)
       return { ...result, advancedMs: result.advancedMs + advanced }
     },
+    /**
+     * Tear the harness down and report how the runtime was released.
+     *
+     * The engine aborts (`Aborted(Assertion failed: list_empty(&rt->gc_obj_list))`)
+     * when a handle is still alive at `JS_FreeRuntime`, which also quarantines
+     * the WASM module for the rest of the process. That print is only visible in
+     * the log, so the result is returned instead: `leaked` is true exactly when a
+     * surface kept a duplicated handle past teardown, and a test that exercises
+     * such a surface asserts on it rather than letting the abort scroll past.
+     *
+     * @returns {{ok: boolean, leaked: boolean, skipped: boolean, error?: unknown}}
+     */
     dispose() {
-      if (disposed) return
+      if (disposed) return disposal
       disposed = true
       bridge.disposeAll()
       stealth.dispose()
@@ -92,8 +106,17 @@ export async function createHarness(options = {}) {
       } catch {
         /* keep harness failures in the assertions */
       }
-      runtimeHandle.dispose()
+      const runtimeDisposal = runtimeHandle.dispose()
       clock.dispose()
+      disposal = {
+        ok: runtimeDisposal?.ok === true,
+        // An abandoned runtime (stack-limit path) is deliberately not freed, so
+        // it must not be reported as a handle leak.
+        leaked: runtimeDisposal?.ok === false && runtimeDisposal.skipped !== true,
+        skipped: runtimeDisposal?.skipped === true,
+        error: runtimeDisposal?.error,
+      }
+      return disposal
     },
   }
   return harness
