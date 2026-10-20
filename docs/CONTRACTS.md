@@ -276,7 +276,7 @@ createProfile(options = {})                                     // -> profile
 
 - `normalizeLimits` copies `DEFAULT_LIMITS` (`timeoutMs` 5 000,
   `maxVirtualMs` 60 000, `memoryBytes` 64 MiB, `stackBytes` 1 MiB,
-  `maxSourceBytes` 1 MiB, plus event/job/timer caps), clamps numeric values to
+  `maxSourceBytes` 8 MiB, plus event/job/timer caps), clamps numeric values to
   their bounds, and treats an unknown key (`maxEvent`) or a non-numeric value
   (`timeoutMs: 'abc'`) as a **usage error**: with the default `strict: true` it
   throws `SandboxError` with `code: 'SANDBOX_LIMITS'`, the offending keys and the

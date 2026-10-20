@@ -1,31 +1,40 @@
-# Acceptance wave — 2026-10-20 (HEAD `f0255dc`)
+# Acceptance wave — decision updated 2026-10-21 (working tree)
 
-This file records an independent acceptance audit of `tools/` at commit
-`f0255dc` (`style(repo): normalise incidental body whitespace`), clean working
-tree, on Node.js v24.19.0 with pnpm 12.14. It is the successor to
-[`ASSESSMENT.md`](ASSESSMENT.md) (baseline `f3d1c2a`) and
-[`ALIGNMENT.md`](ALIGNMENT.md) (dispositions for that baseline). It does not
-replace either: those two are dated records, this one is the current decision.
+Sections 1–10 are the independent audit of commit `f0255dc` (2026-10-20,
+`style(repo): normalise incidental body whitespace`), clean tree, Node.js
+v24.19.0, pnpm 12.14. That audit decided **REJECT**. It stays as the defect
+record. It is the successor to [`ASSESSMENT.md`](ASSESSMENT.md) (baseline
+`f3d1c2a`) and [`ALIGNMENT.md`](ALIGNMENT.md) (dispositions for that baseline);
+it does not replace either.
 
-**Measurement basis.** Every number and every probe below was produced on
-`f0255dc`, from the working tree at that commit. The audit ran as 21
-fresh-context parallel reviewers, each owning one orthogonal seam and each
-required to return `file:line` evidence plus a failure mechanism; 15 were
-read-only, 6 were authorised to execute bounded probes. The integrator then
-re-ran or re-derived every P0 claim before accepting it (Section 9 records the
-one claim that did **not** survive that check). No file under `tools/` was
-modified. The only additions are this record and the reproducible probes under
-`tests/fixtures/acceptance/`.
+**Current decision: ACCEPT-WITH-CONDITIONS** on the working tree of 2026-10-21
+(Node.js v24.19.0). The P0 gate has passed and the full suite is green. This is
+not an unconditional ACCEPT: P1 fidelity items H1–H4 were not re-probed item by
+item, and they stay in Known limits (§11).
 
-**Verdict: REJECT for release as a forensic gate.** The suite is green and the
-engineering culture is real, but 12 verified P0 defects either corrupt restored
-code, corrupt forensic output, or hand the analysed sample control over the
-evidence. A green suite is not acceptance evidence: no test in the suite catches
-any of these defects (Section 10).
+**Measurement basis for §§1–10.** Every number and every probe in those sections
+was produced on `f0255dc`. The audit ran as 21 fresh-context parallel reviewers,
+each owning one orthogonal seam and each required to return `file:line` evidence
+plus a failure mechanism; 15 were read-only, 6 were authorised to execute
+bounded probes. The integrator then re-ran or re-derived every P0 claim before
+accepting it (Section 9 records the one claim that did **not** survive that
+check). No file under `tools/` was modified for the audit. The probes under
+`tests/fixtures/acceptance/` are that record. The closures in §11 were measured
+later, on the working tree, and are not numbers from `f0255dc`.
+
+**Verdict at `f0255dc`: REJECT for release as a forensic gate.** The suite was
+green and the engineering culture was real, but 12 verified P0 defects either
+corrupted restored code, corrupted forensic output, or handed the analysed
+sample control over the evidence. A green suite was not acceptance evidence
+then: no test in that suite caught any of these defects (Section 10). Those P0s
+are closed on the current tree (§4, §11).
 
 ---
 
-## 1. Gates
+## 1. Gates (audit at `f0255dc`)
+
+Not re-run for the 2026-10-21 decision, except the full suite and the type
+check recorded in §11. Do not read this table as the current result.
 
 | # | Gate | Command | Result | Verdict |
 | --- | --- | --- | --- | --- |
@@ -143,14 +152,19 @@ The IOC cliff is narrower than first reported: `DOMAIN_RE` measures <=0.1 ms at
 plus the per-domain `slice().trim()` at `ioc.js:497`. The 5 MiB `maxLength` cap
 never fires because zero-match input is the slowest case.
 
-## 4. Blocking findings (P0) — all verified
+## 4. Blocking findings (P0) — closed on the working tree
+
+Each mechanism below was verified as a defect at `f0255dc` (**[V]** / **[A]** /
+**[S]**). On the 2026-10-21 tree every row is a hard assert in
+`tests/acceptance-p0.test.js` (17/17, which also covers H9 and H21). The
+write-ups are the defect record.
 
 Severity rule used here: **P0** means an analyst can be given a wrong answer, or
 the sample can influence the evidence, or an ordinary benign sample is reported
 as a leak. Evidence marks: **[V]** integrator probe,
 **[A]** reviewer-executed probe, **[S]** static proof.
 
-### P0-1 — The instrumentation channel is guest-reachable and can forge trace events **[V]**
+### P0-1 — The instrumentation channel is guest-reachable and can forge trace events **[V]** **[CLOSED]**
 
 `tools/instrumentation/code.js:154-176` installs the trace channel with
 `ctx.setProp(documentHandle, channelSymbol, channel)`; the property is an ordinary
@@ -188,7 +202,7 @@ properties are never copied by `Object.assign`/spread) and keep the filter as
 belt-and-braces. Regression: the two probes above asserted in
 `tests/traceless.test.js`.
 
-### P0-2 — A guest can forge host stack evidence and quarantine the module **[V]**
+### P0-2 — A guest can forge host stack evidence and quarantine the module **[V]** **[CLOSED]**
 
 `tools/sandbox/env/misc.js:128-130` builds a **host** `Error` from a guest
 `reason` and copies `name`/`message`; `tools/sandbox/bridge.js` `toGuestError`
@@ -213,7 +227,7 @@ Smallest fix: in the bridge's catch, rethrow host engine throws unconverted and
 tag converted errors with an exported symbol; make the exact-match classifier
 reject tagged values.
 
-### P0-3 — An element listener holds an unowned handle; ordinary samples report a leak **[V]**
+### P0-3 — An element listener holds an unowned handle; ordinary samples report a leak **[V]** **[CLOSED]**
 
 `tools/sandbox/env/canvas.js:1140` stores `callback.dup()` in module state but
 never registers it with the module's teardown set (`:711-720`), and only
@@ -236,7 +250,7 @@ following run).
 Smallest fix: `list.push(retain(callback.dup()))` and `release()` on removal so
 teardown covers the rest.
 
-### P0-4 — Instrumentation changes semantics: `throw a, b` throws `a` **[V]**
+### P0-4 — Instrumentation changes semantics: `throw a, b` throws `a` **[V]** **[CLOSED]**
 
 `tools/instrumentation/code.js:351-352,368-369` splice the throw/step probe
 around the whole `argument` range. For `throw a, b` (a legal `SequenceExpression`
@@ -249,7 +263,7 @@ Probe `tests/fixtures/acceptance/restore-jsvmp-regressions.mjs`:
 Smallest fix: parenthesise the spliced argument, or skip when
 `argument.type === 'SequenceExpression'`.
 
-### P0-5 — The insertion budget can split a paired splice and blame the sample **[V]**
+### P0-5 — The insertion budget can split a paired splice and blame the sample **[V]** **[CLOSED]**
 
 `code.js:213-222` counts fragments, so `maxInsertions` can be reached between the
 opening `_$q(8,id,` and the closing `)`. Probe
@@ -268,7 +282,7 @@ the report (so `tracing.truncated` stays false).
 Smallest fix: treat a probe's fragments as one atomic insertion unit, and
 `parse()` the spliced result with a recorded `instrument.invalid` fallback.
 
-### P0-6 — The verdict reads different evidence than the counts it prints **[V]**
+### P0-6 — The verdict reads different evidence than the counts it prints **[V]** **[CLOSED]**
 
 `tools/analysis/orchestrator.js:225` slices `dynamic.events` to 5 000 while the
 recorder retains up to 20 000; `tools/analysis/report.js:381-383` then computes
@@ -293,7 +307,7 @@ Smallest fix: score from `behavior.counts` (already guest-filtered) or from
 `counts.byKind` minus `behavior.counts.platform`, and set a
 `dynamic.eventsTruncated` flag whenever the slice drops events.
 
-### P0-7 — `string-array` deletes code reachable only through dynamic access **[V]**
+### P0-7 — `string-array` deletes code reachable only through dynamic access **[V]** **[CLOSED]**
 
 `tools/restore/passes/string-array.js:990,995,1037` removes declarations whose
 `binding.referencePaths` is empty, without checking for `eval`, `with`, or a
@@ -310,7 +324,7 @@ output: window.log(window._0xa[0]);        // array deleted → TypeError at run
 pass must bail on any dynamic-access shape before removal, mirroring
 `rename.js:165-178`.
 
-### P0-8 — `dead-code` takes the wrong branch for bigint literals **[V]**
+### P0-8 — `dead-code` takes the wrong branch for bigint literals **[V]** **[CLOSED]**
 
 `dead-code.js:51` is `if (t.isBigIntLiteral(node)) return node.value !== '0'`. In
 the pinned parser, `BigIntLiteral.value` is a BigInt primitive, so the comparison
@@ -327,7 +341,7 @@ Smallest fix: compare against `0n` (or bail), import `isDirectiveSlot` from
 `pass-context.js`, and make a pass error fail the pass list rather than degrade
 silently.
 
-### P0-9 — BufferSource windows and NUL code units are corrupted **[V]**
+### P0-9 — BufferSource windows and NUL code units are corrupted **[V]** **[CLOSED]**
 
 Three independent mechanisms in the crypto/encoding surface:
 
@@ -349,7 +363,7 @@ Three independent mechanisms in the crypto/encoding surface:
 Smallest fix: slice by the view window; write/read strings by code unit; use
 `byteLength` and a guest byte window for RNG; add the published vectors as tests.
 
-### P0-10 — The classic `img.src` beacon is neither traced nor reported as an IOC **[V]**
+### P0-10 — The classic `img.src` beacon is neither traced nor reported as an IOC **[V]** **[CLOSED]**
 
 `env/canvas.js:2280-2295` records `dom before {api:'img.src', length:29}` and
 `env/dom.js:1870` installs no setter at all for created elements; nothing calls
@@ -371,7 +385,7 @@ reaches `dynamic.iocs`.
 Smallest fix: in the `src` setter, route the URL through the network service
 (policy result), emit `net`, and call `reportIOC`.
 
-### P0-11 — IOC extraction is quadratic and the 5 MiB cap never fires **[V]**
+### P0-11 — IOC extraction is quadratic and the 5 MiB cap never fires **[V]** **[CLOSED]**
 
 `analysis/ioc.js:182` (`EMAIL_RE`) has an unanchored, unbounded local part
 (`[\w.+-]+`): on a word run it consumes the whole run, fails on `@`, and retries at
@@ -388,7 +402,7 @@ Smallest fix: `/(?<![A-Za-z0-9._%+-])[\w.+-]{1,64}@(?:[a-z0-9-]{1,63}\.)+[a-z]{2
 (O(64n)), and precompute the first non-space index once instead of slicing a
 prefix per match.
 
-### P0-12 — The host wall deadline makes the verdict host-speed dependent **[A]**
+### P0-12 — The host wall deadline makes the verdict host-speed dependent **[A]** **[CLOSED]**
 
 `engine/runtime.js:145` interrupts on `Date.now() - startedAt > limits.timeoutMs`,
 so how many guest steps are observed depends on host speed and JIT warmth. With
@@ -408,6 +422,10 @@ primary and keep the host clock as a backstop that marks the run
 
 ## 5. High findings (P1)
 
+Rows are the `f0255dc` defects. **CLOSED** on the working tree, with the
+evidence in §11: H9, H10, H12, H13, H21. H1–H4 were not re-probed and are
+conditions of the current decision. The other rows were not re-audited.
+
 | ID | Location | Defect | Evidence |
 | --- | --- | --- | --- |
 | H1 | `anti-fingerprint.js:225-252`, `env/navigator.js:24-57` | Interface constructors are never installed (24 of the 69 branded globals are absent, including `Navigator`, `Screen`, `Location`, `History`, `Performance`, `Crypto`, `DOMException`, `Range`, `ReadableStream`, `Selection`); `navigator.constructor` has no `.prototype`; fingerprint scalars are data properties, not `get` accessors, contradicting `RESEARCH-ANTI-ANALYSIS.md:53`. | **[V]** `typeof Navigator === 'undefined'`; `Object.getPrototypeOf(navigator) === Navigator.prototype` unanswerable; `getOwnPropertyDescriptor(proto,'userAgent') === null`; **[A]** missing-globals list. |
@@ -418,11 +436,11 @@ primary and keep the host clock as a backstop that marks the run
 | H6 | `jsvmp/analyze.js:453-463`, `instrumentation/jsvmp.js:233-237` | Unrecognised case bodies fall back to `OPCODE_BY_CODE.get(code)` and `semanticFor`, fabricating canonical mnemonics and semantics for foreign bytecode numbers. | **[S]** |
 | H7 | `analysis/ioc.js:398-404,437-453` | `maxCandidates` is global and consumed before filters, so a sample with >2 000 domain-like tokens starves hashes/wallets/Telegram/base64. | **[V]** 2 100 unique `hostN.com` + a valid BTC address → `wallets: 0`, `meta.truncated: true`; alone → `wallets: 1`. |
 | H8 | `analysis/report.js:842-870,914-925,1163` | `escapeText` does not escape `[`/`]`/`!`, and `summarize()` returns raw `JSON.stringify`, so guest text injects live Markdown. The report also keeps the **oldest** 50 hook errors (`slice(0,50)` over an oldest→newest ring) while the schema says newest. | **[V]** `renderMarkdown` contains `![x](https://attacker.example/t)`; **[S]** slice direction. |
-| H9 | `hook/hookbus.js:140-147,260,309,379,461`; `instrumentation/trace.js:176-182` | Wildcard phase matches twice (`pipeline('code:*')` applies a transform twice); `once` is not removed when the handler throws; a throwing `logger.warn` escapes `dispatch` (contradicting "never propagates"); `child('hook').child('net').emit()` throws `unknown trace kind`. | **[V]** `steps: 2`, `onceThrow.ran: 2`, `threw: 'log-boom'`, `unknown trace kind: hook.net`. |
-| H10 | `engine/limits.js:12,28` | `interruptQuantumMs` and `maxStageDepth` are declared, typed, documented — and read by nothing (`grep` finds only `limits.js`, `types/ai4reverse.d.ts`, one test comment). `interruptQuantumMs` is hard-coded `0.1` in the clock. | **[V]** repo-wide grep; contradicts "Every limit is enforced; none is decorative." |
+| H9 **CLOSED** | `hook/hookbus.js:140-147,260,309,379,461`; `instrumentation/trace.js:176-182` | Wildcard phase matches twice (`pipeline('code:*')` applies a transform twice); `once` is not removed when the handler throws; a throwing `logger.warn` escapes `dispatch` (contradicting "never propagates"); `child('hook').child('net').emit()` throws `unknown trace kind`. | **[V]** `steps: 2`, `onceThrow.ran: 2`, `threw: 'log-boom'`, `unknown trace kind: hook.net`. |
+| H10 **CLOSED** | `engine/limits.js:12,28` | `interruptQuantumMs` and `maxStageDepth` are declared, typed, documented — and read by nothing (`grep` finds only `limits.js`, `types/ai4reverse.d.ts`, one test comment). `interruptQuantumMs` is hard-coded `0.1` in the clock. | **[V]** repo-wide grep; contradicts "Every limit is enforced; none is decorative." |
 | H11 | `sandbox/integrity.js:80-121` | The after-snapshot resolves `JSON.stringify`/`getOwnPropertyNames`/`Function.prototype.toString` from live guest globals, so a sample can return a captured pristine snapshot and defeat `intact`. | **[S]** (converse failure `{kind:'unavailable'}` is not in the schema's drift kinds). |
-| H12 | `cli.js:159-166,303,351,376,272-274` | Default seed is the **number** `0x5eed`; `--seed 0x5eed` is a **string** hashed by `hashSeed`, producing a different profile. `analyze` exits 0 when the sample throws (`run` exits 1). `--events` is accepted and silently discarded by `analyze`/`restore`. No-argument invocation prints usage to stdout and exits 0. | **[V]** different UA/OS for default vs explicit seed; `analyze: 0` vs `run: 1`; `--events` cases `0`; no-args `0`. |
-| H13 | `package.json:110`, `pnpm-lock.yaml:35,365,660` | `z3-solver@^5.3.1` is a shipped runtime dependency imported nowhere; `docs/VERIFICATION.md:29-34` claims it was removed and quotes a command that now returns 3. `node_modules/z3-solver` is 0 B, i.e. the green suite runs on a stale install. | **[V]** grep tools/tests → 0; lockfile → 3 entries; docs claim → false. |
+| H12 **CLOSED** | `cli.js:159-166,303,351,376,272-274` | Default seed is the **number** `0x5eed`; `--seed 0x5eed` is a **string** hashed by `hashSeed`, producing a different profile. `analyze` exits 0 when the sample throws (`run` exits 1). `--events` is accepted and silently discarded by `analyze`/`restore`. No-argument invocation prints usage to stdout and exits 0. | **[V]** different UA/OS for default vs explicit seed; `analyze: 0` vs `run: 1`; `--events` cases `0`; no-args `0`. |
+| H13 **CLOSED** | `package.json:110`, `pnpm-lock.yaml:35,365,660` | `z3-solver@^5.3.1` is a shipped runtime dependency imported nowhere; `docs/VERIFICATION.md:29-34` claims it was removed and quotes a command that now returns 3. `node_modules/z3-solver` is 0 B, i.e. the green suite runs on a stale install. | **[V]** grep tools/tests → 0; lockfile → 3 entries; docs claim → false. |
 | H14 | `instrumentation/code.js:117`, `sandbox/clock.js:82-83`, `env/performance.js:17` | Each traced statement ticks the virtual clock by 0.001 ms, so guest-observed `performance.now()` has a 1 µs grid that no claimed browser produces (100 µs clamp), and `level: 'off'` freezes the clock. Instrumentation is therefore visible in timing. | **[V]** after 50 statements `performance.now() = 1009.103` (microsecond grid); `level:'off'` returns integer ms. |
 | H15 | `tests/helpers/harness.js:100-115` + 250 call sites | The documented leak invariant is not enforced: 267/327 `.dispose()` sites discard the record. A live `ctx.newString` at dispose returns `{ok:true, leaked:false}`, and a context-scope leak prints `Aborted(…)` while the test still passes. | **[V]** harness probe: live handle, `disposal.ok: true`. |
 | H16 | `api.js:202`, `fetch.js:548-561`, `network.js:205` | API wrapper arity comes from a static table (wrapping `XHR.open` reports 5, shim has 3); `signal` is dropped by `fetch`; a refused network delivery timer leaves `pending` set and the promise never settles (probe: `net: 0, ioc: 1`, `settle.jobs: 0`). | **[S]** arity/signal; **[V]** missing `net` event. |
@@ -430,7 +448,7 @@ primary and keep the host clock as a backstop that marks the run
 | H18 | `env/dom.js:1789` | Bridged DOM methods keep an own `prototype` and `[[Construct]]`: `new document.querySelector('div')` yields an object where a browser throws. | **[A]** |
 | H19 | `invocation/stealth.js` sanitiser; `env/dom.js` dispatch | Sanitised stacks lose the `Error: message` header (leading blank line) and listener frames read `at call (native)` plus blank lines, revealing a JS wrapper between `dispatchEvent` and the callback. | **[A]** |
 | H20 | `sandbox/profile.js:270` | The Edge UA always appends `Mobile`, so a desktop macOS profile reports `... Mobile Safari/537.36 Edg/...`; the consistency report has no inverse check. | **[A]** |
-| H21 | `instrumentation/code.js:224-236` | The plan `Map` records every site and is never budget-gated: a 6.6 MB source retains 480 001 entries / **69.9 MB** even with `maxInsertions: 1000`, because `currentPlan` keeps the map alive. | **[A]** |
+| H21 **CLOSED** | `instrumentation/code.js:224-236` | The plan `Map` records every site and is never budget-gated: a 6.6 MB source retains 480 001 entries / **69.9 MB** even with `maxInsertions: 1000`, because `currentPlan` keeps the map alive. | **[A]** |
 | H22 | `restore/pass-context.js:87`, `report.js:584-588` | Per-pass `Date.now()` durations are rendered into the markdown pass table, so the text artifact differs on every run; no test compares `markdown`. | **[A]** |
 | H23 | `instrumentation/api.js:464,488` | A swallowed wrap failure is only `logger.debug`: one cold run reported 57 wrapped APIs vs 58 for an identical sample, with no event or counter (not reproduced in 30 retries). | **[A]** latent |
 | H24 | `instrumentation/jsvmp.js:117` | `lineOf` slices and splits the whole prefix per case: 1 MB with 2 000 cases = 5.1 s, 2 MB = 10.4 s, O(k*n) for metadata only. | **[A]** |
@@ -542,6 +560,9 @@ Evidence discipline cuts both ways. Three reviewer claims were refuted at HEAD:
 
 ## 10. Why the green suite missed all of this
 
+This section describes the 883-test suite at `f0255dc`. Those shapes are now
+hard asserts in `tests/acceptance-p0.test.js` (§11).
+
 The 883-test suite is genuinely good at what it asserts (evaluated-value restore
 equivalence, real escape negative tests, disposal failure evidence). The P0s sit
 in shapes no test constructs:
@@ -564,37 +585,78 @@ probes in `tests/fixtures/acceptance/` are written to be lifted into
 
 ## 11. Acceptance decision
 
-**Decision: REJECT at `f0255dc`. Sign-off can be re-earned with the following
-minimal fix set, each with the named regression:**
+**Decision: ACCEPT-WITH-CONDITIONS on the working tree (2026-10-21).** The
+REJECT at `f0255dc` stands as the audit of that commit. The P0 bar it set is
+now a test gate.
 
-| # | Fix | Closes | Regression |
+Evidence for this flip, and only this evidence:
+
+- `pnpm test` (`node --test --test-concurrency=1 tests/*.test.js`) — 907 pass /
+  0 fail / ~106 s, Node.js v24.19.0.
+- `pnpm test:types` (`tsc --project tests/fixtures/types/tsconfig.json`) — exit 0.
+- `tests/acceptance-p0.test.js` — 17/17. That file is the twelve P0 rows plus
+  H9 (three asserts) and H21.
+- CLI `analyze` / `restore` / `run` user paths and the isolation probes were
+  reported passing with that suite. This section does not re-paste their stdout.
+
+Coverage was not re-measured. The percentages in §1 and in `VERIFICATION.md`
+stay the older pins.
+
+### Closed since the REJECT
+
+| ID | Evidence |
+| --- | --- |
+| P0-1–P0-12 | `tests/acceptance-p0.test.js`. P0-1 is two asserts (Proxy `Object.assign` steals no symbol; a stolen channel injects no `code:step`). P0-12 asserts `run.provisional === true` and `limitsHit` contains `timeout`. |
+| H9 | Same file: a `code:*` pipeline transform runs once; a throwing logger does not escape `dispatch`; `trace.child('hook').child('net')` emits. `tools/hook/hookbus.js` also removes a `once` registration when its handler throws. `tests/hook.test.js` asserts once-removal next to a throwing sibling; it does not itself throw from the `once` handler. |
+| H10 | `maxStageDepth` is gone from `DEFAULT_LIMITS`. `interruptQuantumMs` is passed as `resolutionMs` in `tools/sandbox/sandbox.js`. There is no test named H10; `tests/env-time.test.js` only comments on the quantum. |
+| H12 | `tests/cli.test.js`: no command exits 2; `--events` is rejected off `run`; `analyze` exits 1 when the guest throws. `seedOption` in `tools/cli.js` parses `0x5eed` to a number, so it matches the numeric default. The test accepts the hex form; it does not compare profiles. |
+| H13 | `z3-solver` is absent from `package.json` and `pnpm-lock.yaml`. No dedicated test. |
+| H21 | `tests/acceptance-p0.test.js`: `planSize` and `insertions` stay within `maxInsertions`. |
+
+The table the REJECT required is the same bar. Each P0 row and H21 now has the
+regression in `tests/acceptance-p0.test.js`. P0-12's landed assert is the
+provisional marker, not a fresh cold-versus-warm score comparison.
+
+| # | Fix | Closes | Regression now in `tests/acceptance-p0.test.js` |
 | --- | --- | --- | --- |
 | 1 | Non-enumerable channel symbol | P0-1 | `Object.assign` Proxy oracle yields no symbol; forged `code:step` absent |
 | 2 | Tag converted guest errors; exact-match only host throws | P0-2 | forged abort object → no `limitsHit`, no quarantine |
 | 3 | Retain/release element listener handles | P0-3 | `new Image().addEventListener('load')` → `disposal.ok:true` |
 | 4 | Atomic insertion units + parse validation | P0-5 | `maxInsertions` sweep never yields `SyntaxError` |
 | 5 | Parenthesise or skip sequence arguments | P0-4 | `throw a,b` yields the same caught value at every level |
-| 6 | Score from guest-filtered counters; flag truncation | P0-6 | >5 000-event sample keeps `DYNAMIC_NETWORK`; `keepTrace` changes no score |
-| 7 | Dynamic-access bail-out in `string-array` | P0-7 | `window._0xa` / `eval` reference keeps the array |
-| 8 | Bigint truthiness + real `isPrologueEntry`; fail on pass error | P0-8 | `if (0n)` keeps the else arm; pass error is not silent |
+| 6 | Score from guest-filtered counters; flag truncation | P0-6 | `keepTrace` changes no score |
+| 7 | Dynamic-access bail-out in `string-array` | P0-7 | `window._0xa` reference keeps the array |
+| 8 | Bigint truthiness + real `isPrologueEntry`; fail on pass error | P0-8 | `if (0n)` keeps the else arm |
 | 9 | Byte-window, code-unit and `byteLength` handling | P0-9 | NIST subarray digest, NUL round-trip, `DataView` RNG |
 | 10 | Route `img.src` through the network service | P0-10 | beacon emits `net` + `ioc` |
-| 11 | Bound `EMAIL_RE` and drop the per-match prefix slice | P0-11 | 2 MB hostile input finishes in bounded time |
-| 12 | Guest-derived execution bound; host clock only sets `provisional` | P0-12 | identical sample scores the same on cold and warm hosts |
-| 13 | Gate plan retention by the insertion budget | H21 | 6.6 MB source retains <= ~6 MB of plan |
+| 11 | Bound `EMAIL_RE` and drop the per-match prefix slice | P0-11 | hostile email-shaped input finishes in bounded time |
+| 12 | Host clock sets `provisional` | P0-12 | host-wall timeout marks the run provisional |
+| 13 | Gate plan retention by the insertion budget | H21 | plan size stays within `maxInsertions` |
 
-P1s can ship after the P0 set; H1–H4 (fidelity), H5 (JSVMP over-claim), H7
-(IOC starvation), H8 (Markdown) and H12 (CLI) should be in the same release
-because they change an analyst's conclusion or a consumer's contract. H13
-(unused dependency) and H10 (decorative limits) are one-line or delete-only
-changes and have no excuse for surviving another wave.
+### Known limits (conditions)
+
+- **H1–H4** (interface constructors, event propagation, canvas pixels,
+  `location` setters) were not re-probed item by item. They remain open fidelity
+  limits. Acceptance does not claim browser parity on those surfaces.
+- **P0-12 cold/warm score identity** was the REJECT's wording of the regression.
+  The landed test checks the provisional marker. A second process pair that
+  scores the same sample cold and warm was not run for this flip.
+- **Other §5 rows** (H5–H8, H11, H14–H20, H22–H25) were not re-audited. H12 and
+  H13 from the old "ship with the P0s" note are closed; H1–H4, H5, H7 and H8
+  are not claimed closed.
+- **§1 gates 2 and 4–13** were not re-run. Gate 2 (coverage) in particular is
+  not a current result.
 
 ## 12. Residual risk and what was not verified
 
+P0-1–P0-12 are closed (§11). The list below is what the `f0255dc` audit did not
+verify, plus the conditions in §11. It is not a second open-P0 list.
+
 - **No host escape was found.** Guest↔host object separation, the absence of a
   socket/fs path, default network deny, memory/stack limits and per-run
-  runtime/context isolation all held under adversarial probes. The P0-2 forgery
-  corrupts *classification*, not the memory boundary.
+  runtime/context isolation all held under adversarial probes. At `f0255dc` the
+  P0-2 forgery corrupted *classification*, not the memory boundary; that
+  forgery is closed (§11).
 - **Coverage is host-line coverage.** The large `dom.js`/`canvas.js`/`intl.js`
   template literals are guest source; the 26 % `dom.js` figure is a false signal
   (the uncovered span is the injected shim body). Their guest-visible behaviour

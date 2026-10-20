@@ -5,7 +5,31 @@ authoritative command and outcome. It is regenerated at the end of each wave and
 kept under version control so the evidence is reviewable without rerunning
 history.
 
-**Measurement basis.** Every number below was produced on commit **`7c1df9c`**
+**Current baseline (working tree, 2026-10-21).** Not a pinned commit: the tree
+includes the acceptance fixes that flipped `docs/ACCEPTANCE.md` from REJECT at
+`f0255dc` to ACCEPT-WITH-CONDITIONS. Node.js v24.19.0.
+
+```bash
+pnpm test
+# node --test --test-concurrency=1 tests/*.test.js
+```
+
+```
+ℹ pass 907
+ℹ fail 0
+duration ~106 s
+```
+
+`pnpm test:types` (`tsc --project tests/fixtures/types/tsconfig.json`) exited 0.
+The P0 gate is `node --test --test-concurrency=1 tests/acceptance-p0.test.js`
+(17/17). Per-file counts for the 907 are not re-tabulated here.
+
+**Coverage was not re-run this round.** The percentages under "Coverage", and
+the coverage row in the disposition matrix, are the `7c1df9c` measurement.
+They are not a result for this working tree, and they are not the current gate.
+
+**Previous pin.** From "Environment" on, unless a paragraph says otherwise,
+every number was produced on commit **`7c1df9c`**
 (`fix(hook): accept array-form registrations and reject malformed ones`), the
 last commit of the `tools/` alignment wave, from a pristine export of that
 commit:
@@ -15,28 +39,33 @@ git archive 7c1df9c | tar -x -C /tmp/v && ln -s "$PWD/node_modules" /tmp/v/node_
 cd /tmp/v && node --test --test-concurrency=1 $(git -C "$OLDPWD" ls-files 'tests/*.test.js')
 ```
 
-No working-tree or later-commit file can influence these numbers, and a pinned
-commit never moves, so they stay reproducible. Commits that land after `7c1df9c`
-add example corpora under `examples/` (`products`, `works`, `suite`, `mega`) with
-their own test files; those corpora are not described here and are excluded from
-every count in this file.
+No working-tree or later-commit file can influence those pinned numbers, and a
+pinned commit never moves, so they stay reproducible. Commits that land after
+`7c1df9c` add example corpora under `examples/` (`products`, `works`, `suite`,
+`mega`) with their own test files; those corpora are not described in the pin
+and are excluded from every count in the pinned sections. The 612-pass figure
+below is that pin, not the current baseline.
 
 ## Environment
 
 - Node.js v24.19.0 (contract requires >= 24.18), pnpm 12.14.
 - Dependency set: `quickjs-emscripten@0.32.0`,
   `@babel/{parser,traverse,generator,types,template}@8.x`, `pino@10`,
-  `pino-pretty@13`. `z3-solver` was removed from `package.json` **and** the
-  lockfile:
+  `pino-pretty@13`. `z3-solver` is not a dependency (ACCEPTANCE H13); confirm
+  with:
 
   ```
-  $ grep -c z3-solver pnpm-lock.yaml
+  $ grep -c z3-solver pnpm-lock.yaml package.json
   0
   ```
 
 - No network access is required or performed by the platform or its tests.
 
 ## Full suite
+
+The current working-tree run is the opening baseline: **907 pass / 0 fail /
+~106 s** via `pnpm test`. The transcript below is the previous pin at
+`7c1df9c` (612 pass).
 
 ```
 $ node --test --test-concurrency=1 $(git ls-files 'tests/*.test.js')   # commit 7c1df9c
@@ -58,6 +87,9 @@ what makes the claim checkable: both stack shapes, the timer path and the
 promise-job path classify *and* tear down without printing an engine assertion.
 
 ### Coverage
+
+**Not re-run on 2026-10-21.** This section is the `7c1df9c` coverage gate. It
+is kept so that pin stays readable. It does not certify the current tree.
 
 Coverage is recorded on **two scopes**, because the review baseline was measured
 on `tools/` while `examples/` holds sample code that the tests execute rather
