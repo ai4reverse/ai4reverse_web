@@ -387,6 +387,46 @@ test('guest-originated DOM behaviour still scores', () => {
   assert.ok(report.verdict.score > 0)
 })
 
+test('mutation records score DYNAMIC_DOM while installation records do not', () => {
+  // The trace keeps everything; scoring counts only what the sample did. A real
+  // mutation record (`Node.appendChild`, `Element.innerHTML`) is guest evidence,
+  // an installation announcement (`document.installed`) is platform setup.
+  const report = buildReport({
+    dynamic: {
+      ok: true,
+      counts: { byKind: { dom: 4, sandbox: 3 } },
+      behavior: {
+        dom: [
+          { api: 'Node.appendChild', seq: 30, detail: 'div' },
+          { api: 'Element.innerHTML', seq: 31, detail: '42' },
+        ],
+        counts: { dom: 2, platform: 2 },
+      },
+      events: [
+        { seq: 6, kind: 'dom', phase: 'emit', api: 'document.installed', url: 'https://example.test/' },
+        { seq: 9, kind: 'dom', phase: 'emit', event: 'document.fonts.installed', faces: 18 },
+        { seq: 30, kind: 'dom', phase: 'emit', api: 'Node.appendChild', op: 'appendChild', tag: 'body', child: 'div' },
+        { seq: 31, kind: 'dom', phase: 'emit', api: 'Element.innerHTML', op: 'set innerHTML', tag: 'div', length: 42 },
+      ],
+    },
+  })
+
+  const reason = report.verdict.reasons.find((entry) => entry.code === 'DYNAMIC_DOM')
+  assert.ok(reason, JSON.stringify(report.verdict.reasons))
+  assert.match(reason.detail, /^2 DOM mutation/)
+  assert.equal(
+    reason.weight,
+    Math.min(VERDICT_WEIGHTS.dynamicDomMax, VERDICT_WEIGHTS.dynamicDomBase + 2 * VERDICT_WEIGHTS.dynamicDomStep),
+  )
+  assert.deepEqual(
+    report.dynamic.behavior.dom.map((entry) => entry.api),
+    ['Node.appendChild', 'Element.innerHTML'],
+    'the summary keeps the mutation records as evidence',
+  )
+  // Filtering affects the score, never the trace: the histogram is unchanged.
+  assert.equal(report.dynamic.counts.byKind.dom, 4)
+})
+
 test('platform policy mocks are not counted as anti-analysis', () => {
   const report = buildReport({
     dynamic: {

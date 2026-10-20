@@ -1309,3 +1309,65 @@ test('EventSource retries a refused stream and validates its arguments', async (
     sb.dispose()
   }
 })
+
+test('an injected overlay is real mutation evidence, not payload text', async () => {
+  const sb = await sandbox()
+  try {
+    const markup = '<div id="helios-overlay">SECRET-PAYLOAD</div>'
+    const { value, run } = await probe(
+      sb,
+      `(function () {
+        var overlay = document.createElement('div');
+        overlay.style.position = 'fixed';
+        overlay.innerHTML = ${JSON.stringify(markup)};
+        overlay.setAttribute('aria-hidden', 'false');
+        overlay.classList.add('helios');
+        var input = document.createElement('input');
+        input.type = 'password';
+        overlay.appendChild(input);
+        document.body.appendChild(overlay);
+        return JSON.stringify({
+          ownKeys: Object.keys(overlay).length,
+          ownNames: Object.getOwnPropertyNames(overlay).length,
+          children: overlay.children.length,
+          attached: document.body.contains(overlay)
+        });
+      })()`,
+    )
+
+    // Fidelity first: tracing must not add an own property to an instance.
+    assert.equal(value.ownKeys, 0, 'Object.keys(element) stays empty')
+    assert.equal(value.ownNames, 0, 'no own property name appears on the element')
+    assert.equal(value.children, 1)
+    assert.equal(value.attached, true)
+
+    const mutations = (run.events ?? []).filter((event) => event.kind === 'dom' && event.op)
+    const ops = mutations.map((event) => event.op)
+    for (const op of ['set innerHTML', 'setAttribute', 'classList.add', 'appendChild']) {
+      assert.ok(ops.includes(op), `${op} must be recorded: ${ops.join(',')}`)
+    }
+    const append = mutations.find((event) => event.op === 'appendChild' && event.tag === 'body')
+    assert.ok(append, 'the overlay is appended to the body')
+    assert.equal(append.child, 'div')
+    assert.equal(append.actor, 'sandbox', 'the guest made this change, not the platform')
+
+    // Payload bounds: tag, operation, attribute name and a text length only.
+    assert.doesNotMatch(JSON.stringify(mutations), /SECRET-PAYLOAD/, 'page text must not be traced')
+    assert.doesNotMatch(JSON.stringify(mutations), /helios-overlay/, 'attribute values are not traced')
+    for (const event of mutations) {
+      assert.ok(String(event.tag).length > 0 && String(event.tag).length < 32, 'tag names are bounded')
+      assert.equal(event.innerHTML, undefined)
+      assert.equal(event.value, undefined)
+    }
+
+    // Attribution at the sandbox level: an inert run keeps the platform's own
+    // installation announcement and collects no mutation evidence at all.
+    const inert = await sb.run('var x = 1;', { level: 'off' })
+    assert.equal(inert.ok, true)
+    assert.deepEqual((inert.events ?? []).filter((event) => event.kind === 'dom' && event.op), [])
+    assert.ok((inert.events ?? []).some((event) => event.api === 'document.installed'))
+    assert.equal(inert.disposal.ok, true, JSON.stringify(inert.disposal))
+  } finally {
+    sb.dispose()
+  }
+})

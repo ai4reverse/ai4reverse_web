@@ -787,3 +787,127 @@ test('XMLDocument is a Document subtype distinct from HTMLDocument', async () =>
     harness.dispose()
   }
 })
+
+test('real DOM mutations are traced with bounded, guest-attributed evidence', async () => {
+  const harness = await createHarness({ modules: MODULES })
+  try {
+    // Installing the DOM builds the initial document through the same setters a
+    // guest uses; that construction is platform bookkeeping and must stay out of
+    // the trace, or every inert sample would collect DOM evidence.
+    assert.deepEqual(
+      harness.trace.events.filter((event) => event.kind === 'dom' && event.op),
+      [],
+      'building the initial document is not a mutation of the sample',
+    )
+
+    const markup = '<form id="login"><input name="otp" value="SECRET-VALUE"></form>'
+    const ownProperties = run(
+      harness,
+      `(function () {
+        var overlay = document.createElement('div');
+        overlay.id = 'overlay';
+        overlay.innerHTML = ${JSON.stringify(markup)};
+        overlay.textContent = 'SECRET-TEXT';
+        overlay.setAttribute('data-stage', 'SECRET-VALUE');
+        overlay.classList.add('hidden');
+        var input = document.createElement('input');
+        document.body.appendChild(overlay);
+        overlay.appendChild(input);
+        overlay.insertBefore(input, null);
+        overlay.replaceChild(document.createElement('span'), input);
+        overlay.classList.toggle('hidden');
+        overlay.classList.remove('hidden');
+        overlay.removeAttribute('data-stage');
+        document.body.removeChild(overlay);
+        return [Object.keys(overlay).length, Object.getOwnPropertyNames(overlay).length];
+      })()`,
+    )
+    assert.deepEqual(ownProperties, [0, 0], 'a mutation never adds an own property to the instance')
+
+    const mutations = harness.trace.events.filter((event) => event.kind === 'dom' && event.op)
+    assert.deepEqual(
+      mutations.map((event) => event.op),
+      [
+        'set innerHTML',
+        'set textContent',
+        'setAttribute',
+        'classList.add',
+        'appendChild',
+        'appendChild',
+        'insertBefore',
+        'replaceChild',
+        'classList.toggle',
+        'classList.remove',
+        'removeAttribute',
+        'removeChild',
+      ],
+      'exactly one record per committed mutation, in order',
+    )
+    for (const event of mutations) {
+      assert.equal(event.phase, 'emit')
+      assert.equal(event.actor, 'instrumentation', 'a mutation is the guest reacting, not the platform installing')
+      assert.equal(event.tracing, undefined)
+    }
+
+    const byOp = (op) => mutations.filter((event) => event.op === op)
+    assert.equal(byOp('appendChild')[0].api, 'Node.appendChild')
+    assert.equal(byOp('appendChild')[0].tag, 'body')
+    assert.equal(byOp('appendChild')[0].child, 'div')
+    assert.equal(byOp('appendChild')[1].tag, 'div')
+    assert.equal(byOp('appendChild')[1].child, 'input')
+    assert.equal(byOp('insertBefore')[0].before, '')
+    assert.deepEqual([byOp('replaceChild')[0].child, byOp('replaceChild')[0].replaced], ['span', 'input'])
+    assert.equal(byOp('removeChild')[0].tag, 'body')
+    assert.equal(byOp('removeChild')[0].child, 'div')
+
+    // Attribute writes name the attribute and never echo its value.
+    assert.equal(byOp('setAttribute')[0].api, 'Element.setAttribute')
+    assert.equal(byOp('setAttribute')[0].attribute, 'data-stage')
+    assert.equal(byOp('setAttribute')[0].value, undefined)
+    assert.equal(byOp('removeAttribute')[0].attribute, 'data-stage')
+
+    // Text setters report the size of the write, not the write.
+    const innerHTML = byOp('set innerHTML')[0]
+    assert.equal(innerHTML.api, 'Element.innerHTML')
+    assert.equal(innerHTML.tag, 'div')
+    assert.equal(innerHTML.length, markup.length)
+    assert.equal(innerHTML.text, undefined)
+    assert.equal(byOp('set textContent')[0].api, 'Node.textContent')
+    assert.equal(byOp('set textContent')[0].length, 'SECRET-TEXT'.length)
+
+    // classList mutators name the attribute they change, never a token.
+    for (const event of mutations.filter((entry) => entry.op.startsWith('classList.'))) {
+      assert.equal(event.attribute, 'class')
+      assert.equal(event.tag, 'div')
+    }
+
+    const serialized = JSON.stringify(mutations)
+    assert.doesNotMatch(serialized, /SECRET/, 'no payload text may reach the trace')
+
+    // The shim's own construction work runs through the same setters: a clone is
+    // detached, and a fresh document belongs to the platform, so neither is
+    // evidence about the sample.
+    const beforeQuiet = harness.trace.events.filter((event) => event.kind === 'dom').length
+    const quietShape = run(
+      harness,
+      `(function () {
+        var host = document.createElement('div');
+        host.setAttribute('data-a', '1');
+        host.innerHTML = '<span>deep</span>';
+        host.appendChild(document.createElement('b'));
+        var copy = host.cloneNode(true);
+        var fresh = document.implementation.createHTMLDocument();
+        return [copy.childNodes.length, copy.getAttribute('data-a'), fresh.body.nodeName];
+      })()`,
+    )
+    assert.deepEqual(quietShape, [1, '1', 'BODY'], 'cloning and document creation still work')
+    const quietEvents = harness.trace.events.filter((event) => event.kind === 'dom').slice(beforeQuiet)
+    assert.deepEqual(
+      quietEvents.map((event) => event.api),
+      ['Element.setAttribute', 'Element.innerHTML', 'Node.appendChild'],
+      'the clone and the new document contribute no records of their own',
+    )
+  } finally {
+    harness.dispose()
+  }
+})

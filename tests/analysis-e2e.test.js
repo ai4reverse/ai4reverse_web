@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { analyzeSample } from '../tools/analysis/orchestrator.js'
+import { VERDICT_WEIGHTS } from '../tools/analysis/report.js'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -247,4 +248,49 @@ test('mergeIocs tracks truncation and only multi-source entries carry sources', 
   const b = merged.urls.find((entry) => entry.value === 'https://b.test')
   assert.deepEqual(a.sources, ['static', 'dynamic'])
   assert.equal('sources' in b, false)
+})
+
+test('a webinject-style overlay scores DYNAMIC_DOM from real mutations', async () => {
+  // The shape `examples/products/01-bank-webinject/sample.js` has: create an
+  // element, fill it, attach it. Before mutation tracing existed this sample
+  // scored zero DOM events and under-reported its behaviour.
+  const source = `(function () {
+    var template = '<form id="login"><input name="user"><input name="pass" type="password"></form>'
+    var overlay = document.createElement('div')
+    overlay.id = 'helios'
+    overlay.style.position = 'fixed'
+    overlay.innerHTML = template
+    overlay.setAttribute('data-bank', 'bs')
+    document.body.appendChild(overlay)
+    overlay.addEventListener('submit', function (event) { event.preventDefault() })
+  })()`
+  const result = await analyzeSample(source, { name: 'webinject.js', logLevel: 'silent', env: { strict: false } })
+  const { report, behavior } = result
+
+  assert.equal(report.dynamic.ok, true, JSON.stringify(report.dynamic.error))
+  assert.ok(behavior.counts.dom >= 2, `expected real mutations, saw ${behavior.counts.dom}`)
+  const reason = report.verdict.reasons.find((entry) => entry.code === 'DYNAMIC_DOM')
+  assert.ok(reason, JSON.stringify(report.verdict.reasons))
+  assert.match(reason.detail, /DOM mutation/)
+  assert.ok(
+    reason.weight >= VERDICT_WEIGHTS.dynamicDomBase + 2 * VERDICT_WEIGHTS.dynamicDomStep,
+    `DOM evidence must scale with the number of mutations: ${reason.weight}`,
+  )
+
+  // The evidence is guest-attributed and bounded: no payload text, no host path.
+  const mutations = report.dynamic.events.filter((event) => event.kind === 'dom' && event.op)
+  assert.ok(mutations.length >= 2, JSON.stringify(mutations))
+  assert.ok(mutations.every((event) => event.actor === 'sandbox'))
+  assert.deepEqual(
+    [...new Set(mutations.map((event) => event.op))].sort(),
+    ['appendChild', 'set innerHTML', 'setAttribute'],
+  )
+  assert.doesNotMatch(JSON.stringify(mutations), /<input|password|helios/, 'no payload text')
+
+  // The platform's own installation events stay excluded from the count.
+  assert.ok(behavior.counts.platform > 0, JSON.stringify(behavior.counts))
+  assert.ok(report.dynamic.events.some((event) => event.api === 'document.installed'))
+
+  // DOM injection is visible as a kill-chain stage, not just a number.
+  assert.ok(behavior.killChain.some((stage) => stage.stage === 'injection'), JSON.stringify(behavior.killChain))
 })
