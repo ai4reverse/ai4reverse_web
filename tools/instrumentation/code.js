@@ -139,10 +139,6 @@ export function createCodeInstrumenter(options) {
     })
   }
 
-  function symbolKey(symbolHandle) {
-    return `ai4r.channel.${nonceFrom(stealth, invocation)}`
-  }
-
   /**
    * Instrument one source text.
    * @param {string} source
@@ -216,7 +212,6 @@ export function createCodeInstrumenter(options) {
       return offset
     }
 
-    let functionDepth = 0
     let currentFunctionName = ''
 
     traverse(ast, {
@@ -225,7 +220,6 @@ export function createCodeInstrumenter(options) {
           const node = path.node
           if (!node.body || node.body.type !== 'BlockStatement') return
           if (activeRank < LEVEL_RANK.function) return
-          functionDepth += 1
           const name =
             node.id?.name ??
             (path.parent?.type === 'VariableDeclarator' && path.parent.id?.type === 'Identifier'
@@ -233,7 +227,6 @@ export function createCodeInstrumenter(options) {
               : path.parent?.type === 'AssignmentExpression' && path.parent.left?.type === 'Identifier'
                 ? path.parent.left.name
                 : `anonymous@${node.loc?.start.line ?? 0}`)
-          const previousName = currentFunctionName
           currentFunctionName = name
           stats.functions += 1
           const enterId = record('function:enter', node.body, name)
@@ -245,13 +238,12 @@ export function createCodeInstrumenter(options) {
           add(bodyOffset, 95, `\ntry{`)
           add(bodyOffset, 90, `${bindingName()}(${kind('function:enter')},${enterId});`)
           add((node.body.end ?? 1) - 1, 90, `}finally{${bindingName()}(${kind('function:exit')},${exitId});}`)
-          // restore name when leaving via exit visitor below
+          // The exit visitor needs to know whether this node was instrumented; a
+          // node flag is enough (no depth counter: nothing reads it).
           path.node.__ai4rFnName = name
-          void previousName
         },
         exit(path) {
           if (path.node.body?.type === 'BlockStatement' && path.node.__ai4rFnName) {
-            functionDepth = Math.max(0, functionDepth - 1)
             currentFunctionName = ''
           }
         },
