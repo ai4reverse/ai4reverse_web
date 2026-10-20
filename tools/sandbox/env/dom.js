@@ -19,6 +19,17 @@
  *    element methods are registered as native source through `bridge.adopt`.
  *
  * The document is not a parser: `write`/`writeln` are recorded, never executed.
+ *
+ * Mutations are evidence. `appendChild`, `insertBefore`, `removeChild`,
+ * `replaceChild`, `append`/`remove`, `setAttribute`/`removeAttribute`, the
+ * `innerHTML`/`outerHTML`/`textContent`/`innerText` setters and the
+ * `classList` mutators emit a `dom` trace event with a bounded payload (tag,
+ * operation, attribute name, text length). Those events are guest-attributed,
+ * so a webinject that builds an overlay scores under `DYNAMIC_DOM`, while the
+ * module's own installation announcement (`document.installed`) stays filtered
+ * out by `analysis/behavior.js`. The shim's internal construction work (building
+ * the initial document, cloning a detached node) runs through the same setters
+ * and is therefore silenced: it is platform bookkeeping, not sample behaviour.
  */
 
 export const meta = { id: 'dom', order: 30, requires: ['globals'] }
@@ -1050,6 +1061,95 @@ function domShim(host) {
   /** @type {Record<string, Function>} interface name -> constructor */
   var interfaces = Object.create(null)
 
+  /**
+   * Depth counter for the shim's own DOM construction (`createDocument`,
+   * `cloneNode`). While it is non-zero the public setters mutate without
+   * emitting a trace event: those writes are the platform building a fresh or
+   * detached tree, not the sample touching the page.
+   */
+  var quietDepth = 0
+
+  /** Text-bearing setters that are mutations, with the interface they belong to. */
+  var TRACED_TEXT_SETTERS = {
+    textContent: 'Node.textContent',
+    innerText: 'HTMLElement.innerText',
+    innerHTML: 'Element.innerHTML',
+    outerHTML: 'Element.outerHTML',
+  }
+
+  /** Run `fn` with mutation tracing disabled (see `quietDepth`). */
+  function quietly(fn) {
+    quietDepth += 1
+    try {
+      return fn()
+    } finally {
+      quietDepth -= 1
+    }
+  }
+
+  /**
+   * Node name for a mutation payload: a tag name or an interface sentinel,
+   * never page text.
+   * @param {object} target mutated node
+   * @returns {string}
+   */
+  function mutationTargetName(target) {
+    if (target === null || target === undefined) return ''
+    var state = nodeStates.get(target)
+    if (state) return stringOf(state.tag)
+    var type = target.nodeType
+    if (type === 9) return '#document'
+    if (type === 11) return '#document-fragment'
+    if (type === 3) return '#text'
+    if (type === 8) return '#comment'
+    return 'node'
+  }
+
+  /**
+   * Report one committed DOM mutation to the host as a `dom` trace event.
+   *
+   * The payload is a pure function of the guest's own calls (tag, operation,
+   * attribute name, text length) and never carries page text, a host time or a
+   * handle, so a trace stays reproducible and bounded.
+   *
+   * @param {string} op operation name, e.g. `appendChild`
+   * @param {string} api interface member the guest called, e.g. `Node.appendChild`
+   * @param {object} target mutated node
+   * @param {object} [extra] extra bounded fields
+   */
+  function traceMutation(op, api, target, extra) {
+    if (quietDepth > 0) return
+    var payload = { api: api, op: op, tag: mutationTargetName(target) }
+    if (extra) {
+      var keys = Object.keys(extra)
+      for (var index = 0; index < keys.length; index += 1) payload[keys[index]] = extra[keys[index]]
+    }
+    try {
+      host.trace('dom', 'emit', payload)
+    } catch (error) {
+      // Tracing is evidence collection; it must never change the page.
+    }
+  }
+
+  /**
+   * Report a text-bearing setter by operation and length only: the value is the
+   * attacker's payload (an injected overlay, a credential field), so it stays
+   * out of the trace.
+   * @param {object} target node whose setter ran
+   * @param {string} key `textContent`, `innerHTML`, ...
+   * @param {unknown} value written value, measured but not recorded
+   */
+  function traceTextMutation(target, key, value) {
+    if (quietDepth > 0) return
+    var length = 0
+    try {
+      length = stringOf(value).length
+    } catch (error) {
+      length = 0
+    }
+    traceMutation('set ' + key, TRACED_TEXT_SETTERS[key], target, { length: length })
+  }
+
   /** Internal-slot bag of the nearest node in the receiver's prototype chain. */
   function bagFor(receiver) {
     var current = receiver
@@ -1070,11 +1170,19 @@ function domShim(host) {
    * closure would make every getter stringify with the same name.
    */
   function makeAttributeAccessor(key, kind) {
-    var source =
-      kind === 'get'
-        ? 'return function () { var bag = bagFor(this); return bag ? bag["' + key + '"] : undefined }'
-        : 'return function (value) { var bag = bagFor(this); if (bag) bag["' + key + '"] = value }'
-    var accessor = new Function('bagFor', source)(bagFor)
+    var source
+    if (kind === 'get') {
+      source = 'return function () { var bag = bagFor(this); return bag ? bag["' + key + '"] : undefined }'
+    } else if (TRACED_TEXT_SETTERS[key]) {
+      // The write is recorded (operation + length) after the bag is updated, so
+      // the event describes a committed mutation, like a MutationObserver record.
+      source =
+        'return function (value) { var bag = bagFor(this); if (!bag) return;' +
+        ' bag["' + key + '"] = value; traceTextMutation(this, "' + key + '", value) }'
+    } else {
+      source = 'return function (value) { var bag = bagFor(this); if (bag) bag["' + key + '"] = value }'
+    }
+    var accessor = new Function('bagFor', 'traceTextMutation', source)(bagFor, traceTextMutation)
     Object.defineProperty(accessor, 'name', {
       value: (kind === 'get' ? 'get ' : 'set ') + key,
       configurable: true,
@@ -1571,27 +1679,50 @@ function domShim(host) {
 
   var nodeMethods = {
     appendChild: function appendChild(node) {
-      return insertNode(this, node, null)
+      var result = insertNode(this, node, null)
+      traceMutation('appendChild', 'Node.appendChild', this, { child: mutationTargetName(node) })
+      return result
     },
     insertBefore: function insertBefore(node, reference) {
-      return insertNode(this, node, reference === undefined ? null : reference)
+      var result = insertNode(this, node, reference === undefined ? null : reference)
+      traceMutation('insertBefore', 'Node.insertBefore', this, {
+        child: mutationTargetName(node),
+        before: mutationTargetName(reference),
+      })
+      return result
     },
     removeChild: function removeChild(node) {
-      return removeNodeFrom(this, node)
+      var result = removeNodeFrom(this, node)
+      traceMutation('removeChild', 'Node.removeChild', this, { child: mutationTargetName(node) })
+      return result
     },
     replaceChild: function replaceChild(node, replaced) {
-      if (replaced === null || replaced === undefined) return insertNode(this, node, null)
+      if (replaced === null || replaced === undefined) {
+        var inserted = insertNode(this, node, null)
+        traceMutation('replaceChild', 'Node.replaceChild', this, { child: mutationTargetName(node) })
+        return inserted
+      }
       insertNode(this, node, replaced)
-      return removeNodeFrom(this, replaced)
+      var removed = removeNodeFrom(this, replaced)
+      traceMutation('replaceChild', 'Node.replaceChild', this, {
+        child: mutationTargetName(node),
+        replaced: mutationTargetName(replaced),
+      })
+      return removed
     },
     append: function append() {
       for (var index = 0; index < arguments.length; index += 1) {
         var item = arguments[index]
-        insertNode(this, typeof item === 'string' ? makeTextNode(item) : item, null)
+        var node = typeof item === 'string' ? makeTextNode(item) : item
+        insertNode(this, node, null)
+        traceMutation('append', 'Element.append', this, { child: mutationTargetName(node) })
       }
     },
     remove: function remove() {
+      var state = nodeStates.get(this)
+      var parent = state ? state.parent : null
       detachNode(this)
+      if (parent) traceMutation('remove', 'Element.remove', parent, { child: mutationTargetName(this) })
     },
     contains: function contains(node) {
       var current = node
@@ -1606,13 +1737,18 @@ function domShim(host) {
       return Boolean(state) && state.childNodes.length > 0
     },
     cloneNode: function cloneNode(deep) {
-      var copy = cloneShallow(this)
-      if (deep === true && copy) {
-        for (var index = 0; index < this.childNodes.length; index += 1) {
-          insertNode(copy, this.childNodes[index].cloneNode(true), null)
+      // A deep copy is built by the same setters a guest would call; the copy is
+      // detached, so its construction is not a mutation of the page.
+      var node = this
+      return quietly(function copyNode() {
+        var copy = cloneShallow(node)
+        if (deep === true && copy) {
+          for (var index = 0; index < node.childNodes.length; index += 1) {
+            insertNode(copy, node.childNodes[index].cloneNode(true), null)
+          }
         }
-      }
-      return copy
+        return copy
+      })
     },
     getElementsByTagName: function getElementsByTagName() {
       return makeCollection('HTMLCollection')
@@ -1778,6 +1914,7 @@ function domShim(host) {
       var text = stringOf(value)
       state.attrs[key] = text
       reflectAttribute(this, key, text)
+      traceMutation('setAttribute', 'Element.setAttribute', this, { attribute: key })
     },
     setAttributeNS: function setAttributeNS(namespace, name, value) {
       this.setAttribute(name, value)
@@ -1801,6 +1938,7 @@ function domShim(host) {
       delete state.attrs[key]
       reflectAttribute(this, key, '')
       if (key === 'style' && this.style) this.style.cssText = ''
+      traceMutation('removeAttribute', 'Element.removeAttribute', this, { attribute: key })
     },
     hasAttribute: function hasAttribute(name) {
       return this.getAttribute(name) !== null
@@ -2030,6 +2168,7 @@ function domShim(host) {
         if (tokens.indexOf(token) < 0) tokens.push(token)
       }
       writeClassTokens(element, tokens)
+      traceMutation('classList.add', 'DOMTokenList.add', element, { attribute: 'class', tokens: arguments.length })
     },
     remove: function remove() {
       var element = classStates.get(this)
@@ -2040,6 +2179,7 @@ function domShim(host) {
         if (position >= 0) tokens.splice(position, 1)
       }
       writeClassTokens(element, tokens)
+      traceMutation('classList.remove', 'DOMTokenList.remove', element, { attribute: 'class', tokens: arguments.length })
     },
     toggle: function toggle(token, force) {
       var element = classStates.get(this)
@@ -2051,6 +2191,7 @@ function domShim(host) {
       if (next && position < 0) tokens.push(value)
       else if (!next && position >= 0) tokens.splice(position, 1)
       writeClassTokens(element, tokens)
+      traceMutation('classList.toggle', 'DOMTokenList.toggle', element, { attribute: 'class' })
       return next
     },
     contains: function contains(token) {
@@ -2303,6 +2444,14 @@ function domShim(host) {
   }
 
   function createDocument(config) {
+    // The initial document is platform bookkeeping: building it must not look
+    // like the sample appending nodes or writing text.
+    return quietly(function buildDocument() {
+      return buildDocumentTree(config)
+    })
+  }
+
+  function buildDocumentTree(config) {
     var settings = config && typeof config === 'object' ? config : {}
     var document = Object.create(htmlDocumentProto)
     var state = createNodeState('#document')
