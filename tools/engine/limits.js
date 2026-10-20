@@ -8,8 +8,11 @@ export const DEFAULT_LIMITS = Object.freeze({
   timeoutMs: 5000,
   /** Virtual milliseconds the guest may experience (drives timer loops). */
   maxVirtualMs: 60_000,
-  /** Virtual ms added to the clock per interrupt check, making timing plausible. */
-  interruptQuantumMs: 0.02,
+  /**
+   * Virtual ms added per instrumentation `clock.tick()` (browser-like timer
+   * resolution). Wired into `createVirtualClock({ resolutionMs })`.
+   */
+  interruptQuantumMs: 0.1,
   /** QuickJS heap limit. */
   memoryBytes: 64 * 1024 * 1024,
   /** QuickJS stack limit. */
@@ -24,8 +27,6 @@ export const DEFAULT_LIMITS = Object.freeze({
   maxEvents: 20_000,
   /** Maximum number of source bytes analysed in one run. */
   maxSourceBytes: 8 * 1024 * 1024,
-  /** Recursion guard for nested payload staging (eval inside eval). */
-  maxStageDepth: 5,
 })
 
 const NUMERIC_BOUNDS = {
@@ -39,7 +40,6 @@ const NUMERIC_BOUNDS = {
   maxTimers: [1, 100_000],
   maxEvents: [0, 1_000_000],
   maxSourceBytes: [1024, 128 * 1024 * 1024],
-  maxStageDepth: [1, 32],
 }
 
 /**

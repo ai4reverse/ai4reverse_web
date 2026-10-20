@@ -133,7 +133,6 @@ export interface Limits {
   maxTimers: number
   maxEvents: number
   maxSourceBytes: number
-  maxStageDepth: number
 }
 
 /** Limits that `limitMessage` knows how to describe. */

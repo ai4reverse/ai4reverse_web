@@ -210,6 +210,7 @@ export class TracelessSandbox {
       epoch: this.profile.epoch,
       seed: runId,
       maxTimers: this.limits.maxTimers,
+      resolutionMs: this.limits.interruptQuantumMs,
       logger: this.logger,
     })
     const trace = createTraceRecorder({
