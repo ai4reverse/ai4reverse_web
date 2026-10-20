@@ -911,6 +911,64 @@ test('customElements is a working registry with browser error names', async () =
   }
 })
 
+test('CustomElementRegistry is the registry interface, not a missing global', async () => {
+  // Residual (see the lane report): the registry *instance* is built by the
+  // anti-fingerprint module, whose guest half creates a plain object, so
+  // `customElements instanceof CustomElementRegistry` still answers `false`.
+  // Fixing that needs `anti-fingerprint.js`, outside this lane. Everything the
+  // interface can own here (identity, members, brand, Illegal constructor,
+  // Illegal invocation, delegation to the live singleton) is asserted below.
+  const sb = await sandbox()
+  try {
+    const { value } = await probe(
+      sb,
+      `(function () {
+        var out = {
+          type: typeof CustomElementRegistry,
+          nativeSource: String(CustomElementRegistry).includes('native code'),
+          length: CustomElementRegistry.length,
+          members: Object.getOwnPropertyNames(CustomElementRegistry.prototype),
+          protoConstructor: CustomElementRegistry.prototype.constructor === CustomElementRegistry,
+          protoBrand: Object.prototype.toString.call(CustomElementRegistry.prototype),
+          enumerable: Object.keys(globalThis).indexOf('CustomElementRegistry'),
+          descriptor: (function () {
+            var d = Object.getOwnPropertyDescriptor(globalThis, 'CustomElementRegistry');
+            return { enumerable: d.enumerable, configurable: d.configurable, writable: d.writable };
+          })(),
+          registryBrand: Object.prototype.toString.call(customElements),
+          registryOwnKeys: Object.keys(customElements).length,
+          delegatedGet: CustomElementRegistry.prototype.get.call(customElements, 'never-defined'),
+          nativeMethod: String(CustomElementRegistry.prototype.get).includes('native code')
+        };
+        // Calling define through the interface reaches the one registry the page has.
+        class ProbeBox extends HTMLElement {}
+        CustomElementRegistry.prototype.define.call(customElements, 'probe-box', ProbeBox);
+        out.delegatedDefine = customElements.get('probe-box') === ProbeBox;
+        try { new CustomElementRegistry() } catch (error) { out.illegalConstructor = error.name + ': ' + error.message }
+        try { CustomElementRegistry.prototype.get.call({}, 'probe-box') } catch (error) { out.brandCheck = error.name }
+        return JSON.stringify(out);
+      })()`,
+    )
+    assert.equal(value.type, 'function')
+    assert.equal(value.nativeSource, true)
+    assert.equal(value.length, 0)
+    assert.deepEqual(value.members, ['constructor', 'define', 'get', 'whenDefined', 'upgrade'])
+    assert.equal(value.protoConstructor, true)
+    assert.equal(value.protoBrand, '[object CustomElementRegistry]')
+    assert.equal(value.enumerable, -1, 'the interface is a non-enumerable global')
+    assert.deepEqual(value.descriptor, { enumerable: false, configurable: true, writable: true })
+    assert.equal(value.registryBrand, '[object CustomElementRegistry]')
+    assert.equal(value.registryOwnKeys, 0)
+    assert.equal(value.delegatedGet, undefined)
+    assert.equal(value.delegatedDefine, true)
+    assert.equal(value.nativeMethod, true)
+    assert.equal(value.illegalConstructor, 'TypeError: Illegal constructor')
+    assert.equal(value.brandCheck, 'TypeError')
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('DOMParser builds a real tree and XMLSerializer round-trips it', async () => {
   const sb = await sandbox()
   try {
@@ -918,6 +976,7 @@ test('DOMParser builds a real tree and XMLSerializer round-trips it', async () =
       sb,
       `(function () {
         var parser = new DOMParser();
+        var serializer = new XMLSerializer();
         var markup = '<!doctype html><html><head><title>Hi &amp; bye</title></head>' +
           '<body><div id="app" class="root panel"><p class="msg">hello <b>world</b></p>' +
           '<img src="a.png" alt="x &quot;y&quot;"><!--note--></div></body></html>';
@@ -927,6 +986,16 @@ test('DOMParser builds a real tree and XMLSerializer round-trips it', async () =
           brand: Object.prototype.toString.call(doc),
           ownKeys: Object.keys(doc).length,
           ownSymbols: Object.getOwnPropertySymbols(doc).length,
+          // Blink brands the parser interfaces themselves; a plain [object Object]
+          // brand is a direct tell.
+          parserBrand: Object.prototype.toString.call(parser),
+          serializerBrand: Object.prototype.toString.call(serializer),
+          parserProtoBrand: Object.prototype.toString.call(DOMParser.prototype),
+          parserOwn: Object.keys(parser).length + Object.getOwnPropertySymbols(parser).length,
+          parserIsParser: parser instanceof DOMParser,
+          serializerIsSerializer: serializer instanceof XMLSerializer,
+          parserConstructorName: parser.constructor.name,
+          serializerConstructorName: serializer.constructor.name,
           nodeType: doc.nodeType,
           contentType: doc.contentType,
           documentElement: doc.documentElement.tagName,
@@ -972,6 +1041,14 @@ test('DOMParser builds a real tree and XMLSerializer round-trips it', async () =
     assert.equal(value.brand, '[object HTMLDocument]')
     assert.equal(value.ownKeys, 0)
     assert.equal(value.ownSymbols, 0)
+    assert.equal(value.parserBrand, '[object DOMParser]')
+    assert.equal(value.serializerBrand, '[object XMLSerializer]')
+    assert.equal(value.parserProtoBrand, '[object DOMParser]')
+    assert.equal(value.parserOwn, 0, 'branding must not add an own property or symbol')
+    assert.equal(value.parserIsParser, true)
+    assert.equal(value.serializerIsSerializer, true)
+    assert.equal(value.parserConstructorName, 'DOMParser')
+    assert.equal(value.serializerConstructorName, 'XMLSerializer')
     assert.equal(value.nodeType, 9)
     assert.equal(value.contentType, 'text/html')
     assert.equal(value.documentElement, 'HTML')
@@ -1183,6 +1260,11 @@ test('EventSource retries a refused stream and validates its arguments', async (
         var out = {};
         out.type = typeof EventSource;
         out.source = String(EventSource).includes('native code');
+        out.brand = Object.prototype.toString.call(source);
+        out.protoBrand = Object.prototype.toString.call(EventSource.prototype);
+        out.own = Object.keys(source).length + Object.getOwnPropertySymbols(source).length;
+        out.isEventSource = source instanceof EventSource;
+        out.constructorName = source.constructor.name;
         out.constants = [EventSource.CONNECTING, EventSource.OPEN, EventSource.CLOSED];
         out.protoConstants = [EventSource.prototype.CONNECTING, EventSource.prototype.CLOSED];
         out.url = source.url;
@@ -1202,6 +1284,11 @@ test('EventSource retries a refused stream and validates its arguments', async (
     const value = JSON.parse(probeLine.slice('probe:'.length))
     assert.equal(value.type, 'function')
     assert.equal(value.source, true)
+    assert.equal(value.brand, '[object EventSource]')
+    assert.equal(value.protoBrand, '[object EventSource]')
+    assert.equal(value.own, 0, 'the stream state must stay out of the own-property surface')
+    assert.equal(value.isEventSource, true)
+    assert.equal(value.constructorName, 'EventSource')
     assert.deepEqual(value.constants, [0, 1, 2])
     assert.deepEqual(value.protoConstants, [0, 2])
     assert.equal(value.url, 'https://refused.example.test/events')

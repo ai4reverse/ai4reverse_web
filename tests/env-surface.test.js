@@ -299,7 +299,8 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
         // Every DOM interface the sandbox publishes. A Chromium profile exposes
         // all of them, so a missing name is a detectable gap.
         var names = ['HTMLElement','HTMLDivElement','HTMLBodyElement','HTMLCanvasElement','HTMLScriptElement',
-          'HTMLInputElement','HTMLImageElement','HTMLAnchorElement','customElements','DOMParser','XMLSerializer',
+          'HTMLInputElement','HTMLImageElement','HTMLAnchorElement','customElements','CustomElementRegistry',
+          'DOMParser','XMLSerializer',
           'EventSource','WebAssembly','Atomics','SharedArrayBuffer',
           'EventTarget','Node','Element','CharacterData','Text','Comment','DocumentFragment','DocumentType',
           'Document','NodeList','HTMLCollection','DOMTokenList','CSSStyleDeclaration'];
@@ -308,6 +309,7 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
           types: {
             HTMLElement: typeof HTMLElement,
             customElements: typeof customElements,
+            CustomElementRegistry: typeof CustomElementRegistry,
             DOMParser: typeof DOMParser,
             XMLSerializer: typeof XMLSerializer,
             EventSource: typeof EventSource,
@@ -326,6 +328,10 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
           bodyIsBody: document.body instanceof HTMLBodyElement,
           elementBrand: Object.prototype.toString.call(element),
           customElementsBrand: Object.prototype.toString.call(customElements),
+          customElementRegistryBrand: Object.prototype.toString.call(CustomElementRegistry.prototype),
+          parserBrand: Object.prototype.toString.call(new DOMParser()),
+          serializerBrand: Object.prototype.toString.call(XMLSerializer.prototype),
+          eventSourceBrand: Object.prototype.toString.call(EventSource.prototype),
           webAssemblyBrand: Object.prototype.toString.call(WebAssembly),
           registryIsObject: customElements.get('never-defined') === undefined,
           sources: {
@@ -344,6 +350,7 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
     assert.deepEqual(value.types, {
       HTMLElement: 'function',
       customElements: 'object',
+      CustomElementRegistry: 'function',
       DOMParser: 'function',
       XMLSerializer: 'function',
       EventSource: 'function',
@@ -358,6 +365,10 @@ test('D6 surfaces exist, are branded and the isolation triple is coherent', asyn
     assert.equal(value.bodyIsBody, true)
     assert.equal(value.elementBrand, '[object HTMLDivElement]')
     assert.equal(value.customElementsBrand, '[object CustomElementRegistry]')
+    assert.equal(value.customElementRegistryBrand, '[object CustomElementRegistry]')
+    assert.equal(value.parserBrand, '[object DOMParser]')
+    assert.equal(value.serializerBrand, '[object XMLSerializer]')
+    assert.equal(value.eventSourceBrand, '[object EventSource]')
     assert.equal(value.webAssemblyBrand, '[object WebAssembly]')
     assert.equal(value.registryIsObject, true)
     for (const [key, source] of Object.entries(value.sources)) {

@@ -25,6 +25,8 @@
  * reasoning behind the caps.
  */
 
+import { createKit } from './platform-kit.js'
+
 export const meta = { id: 'dom-parser', order: 32, requires: ['globals', 'dom'] }
 
 /** Input cap in characters; also the bound for the text node buffers. */
@@ -67,6 +69,7 @@ export function install(bridge) {
   }
 
   const module = call.value
+  const kit = createKit(bridge)
   try {
     // Every prototype member is adopted so `Function.prototype.toString` reports
     // native code; the guest half returned the exact (name, function) pairs.
@@ -88,8 +91,14 @@ export function install(bridge) {
     // `document instanceof HTMLDocument` for the live document and make every
     // parsed document an HTMLDocument. The guest half only builds documents on
     // those prototypes.
-    for (const name of ['DOMParser', 'XMLSerializer']) {
+    // `CustomElementRegistry` is the interface of the `customElements` singleton
+    // the anti-fingerprint module installs; its members delegate to that live
+    // registry, so the singleton may be installed before or after this module.
+    for (const name of ['DOMParser', 'XMLSerializer', 'CustomElementRegistry']) {
       const ctor = ctx.getProp(module, name)
+      // Without the tag, `Object.prototype.toString.call(new DOMParser())` is
+      // `[object Object]` in a real browser's place of `[object DOMParser]`.
+      kit.setToStringTag(ctor, name)
       bridge.install(bridge.global, name, ctor, {
         enumerable: false,
         configurable: true,
@@ -622,13 +631,46 @@ const DOMPARSER_SOURCE = `(function (host, nodeBrand) {
     return markup;
   });
 
+  // ---- CustomElementRegistry interface -----------------------------------
+  // The registry *instance* is built by the anti-fingerprint module (a custom
+  // element constructor is a guest value, so the registry must be guest code)
+  // and installs later than this module. The interface constructor belongs to
+  // the DOM layer instead, so it exists even in a subset environment.
+  //
+  // Members delegate to the live singleton on every call rather than capturing
+  // it, so the install order does not matter and a replaced registry is still
+  // reached. The receiver is brand-checked exactly as in Blink: the registry is
+  // a singleton, so "is this that object" is the whole check.
+  function CustomElementRegistry() {
+    throw new TypeError('Illegal constructor');
+  }
+  function registryTarget(receiver) {
+    var live = typeof customElements === 'undefined' ? null : customElements;
+    if (!live || receiver !== live) throw new TypeError('Illegal invocation');
+    return live;
+  }
+  function delegate(member) {
+    return function () {
+      var live = registryTarget(this);
+      return live[member].apply(live, arguments);
+    };
+  }
+  var REGISTRY_MEMBERS = ['define', 'get', 'whenDefined', 'upgrade'];
+  for (var registryIndex = 0; registryIndex < REGISTRY_MEMBERS.length; registryIndex += 1) {
+    var registryMember = REGISTRY_MEMBERS[registryIndex];
+    var delegated = delegate(registryMember);
+    Object.defineProperty(delegated, 'name', { value: registryMember, configurable: true });
+    defineMember(CustomElementRegistry.prototype, registryMember, delegated);
+  }
+
   // ---- native-source adoption table --------------------------------------
   function surfaceFunctions() {
     var out = [
       ['DOMParser', DOMParser],
-      ['XMLSerializer', XMLSerializer]
+      ['XMLSerializer', XMLSerializer],
+      ['CustomElementRegistry', CustomElementRegistry]
     ];
-    var targets = [DOMParser.prototype, XMLSerializer.prototype, htmlProto, xmlProto];
+    var targets = [DOMParser.prototype, XMLSerializer.prototype, CustomElementRegistry.prototype, htmlProto, xmlProto];
     for (var targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
       var names = Object.getOwnPropertyNames(targets[targetIndex]);
       for (var index = 0; index < names.length; index += 1) {
@@ -644,6 +686,7 @@ const DOMPARSER_SOURCE = `(function (host, nodeBrand) {
   return {
     DOMParser: DOMParser,
     XMLSerializer: XMLSerializer,
+    CustomElementRegistry: CustomElementRegistry,
     functions: surfaceFunctions()
   };
 })`

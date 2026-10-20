@@ -7,6 +7,7 @@ import {
   networkResultForGuest,
 } from './network.js'
 import { createSeededRandom } from '../../util/random.js'
+import { createKit } from './platform-kit.js'
 
 /**
  * `EventSource` (server-sent events).
@@ -63,8 +64,13 @@ export function install(bridge) {
   }
 
   const guest = createGuestModule(bridge, EVENTSOURCE_SOURCE, bindings)
+  const kit = createKit(bridge)
   try {
     const ctor = ctx.getProp(guest, 'EventSource')
+    // Blink brands the interface and its prototype: without the tag,
+    // `Object.prototype.toString.call(new EventSource(url))` is `[object
+    // Object]` where a browser answers `[object EventSource]`.
+    kit.setToStringTag(ctor, 'EventSource')
     bridge.install(bridge.global, 'EventSource', ctor, {
       enumerable: false,
       configurable: true,
