@@ -13,13 +13,16 @@
  *  - parsing never executes scripts, never fetches resources and never touches
  *    the live document,
  *  - selectors cover tag, `#id`, `.class` and their compounds, comma lists,
- *  - the input is capped (length, node count, depth) and the cap is reported in
- *    the trace, so a decompression bomb cannot turn a parse into a DoS,
+ *  - the input is capped (length, node count, depth), so a decompression bomb
+ *    cannot turn a parse into a DoS. The length and depth caps are reported in
+ *    the trace as `truncated`; the node cap ends the scan without setting it,
  *  - `XMLSerializer` re-serialises the same tree to well-formed markup.
  *
- * Not modelled (see `_w6-fidelity-notes.md`): the HTML5 insertion-mode
- * algorithm (foster parenting, adoption agency), entity tables beyond the XML
- * five, namespaces, and CSS selectors beyond the subset above.
+ * Not modelled: the HTML5 insertion-mode algorithm (foster parenting, adoption
+ * agency), named entities beyond the XML five and `&nbsp;`, namespaces, and CSS
+ * selectors beyond the subset above. `README.md` ("Known limitations") lists
+ * these accepted deviations and `docs/SECURITY-MODEL.md` gives the safety
+ * reasoning behind the caps.
  */
 
 export const meta = { id: 'dom-parser', order: 32, requires: ['globals', 'dom'] }

@@ -373,7 +373,9 @@ const ATOMICS_MEMBERS = Object.freeze([
  * every operation is a plain read-modify-write on an integer typed array. `wait`
  * can never block (nothing else could store), therefore it reports what the
  * spec mandates for a value mismatch or an expired timeout. This is a *shim*,
- * not a lock implementation, and `_w6-fidelity-notes.md` says so.
+ * not a lock implementation: `docs/SECURITY-MODEL.md` ("`SharedArrayBuffer` /
+ * `Atomics` policy") states what it guarantees and `README.md` ("Known
+ * limitations") lists the deviation from a browser.
  */
 const ATOMICS_SOURCE = `(function () {
   var object = {};
