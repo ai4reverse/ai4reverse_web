@@ -471,7 +471,13 @@ this record. Companion records: `docs/EVALUATION-TOOLS.md`,
 
 ## 7. Alignment disposition — 2026-10-20 (post-assessment wave)
 
-Every CRITICAL, HIGH and MEDIUM finding from §2 was resolved the same day,
+This section records the historical wave ending at `f54c0ef`; its closure claim
+below is not a claim about later independent acceptance findings. The follow-up
+H1–H7/M1–M12 identifiers are a separate namespace from §2. See
+[Tools acceptance alignment](ALIGNMENT.md) for their repair and verification
+ledger; do not infer their closure from the historical test count.
+
+The wave recorded every CRITICAL, HIGH and MEDIUM finding from §2 as resolved,
 plus most of the P2 structural list. Commit range `c86310d..HEAD`. Final
 suite state: **676 tests / 676 pass / 0 fail** (was 638/632/6 at `f3d1c2a`).
 

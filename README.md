@@ -50,14 +50,18 @@ Every number in this README is produced by a command named in
 later commits land. Example corpora that are not tracked at `7c1df9c`
 (`examples/products`, `examples/works`, `examples/suite`, `examples/mega`) are
 outside that measurement: they are not described here and are excluded from
-every count in this file. Behavioural statements describe that commit, except
-where a later commit is named explicitly (the AES `crypto.subtle` operations).
+every historical count in this file. Current contract corrections from the
+2026-10-20 acceptance alignment supersede the older behavior descriptions for
+resource attribution, trace snapshots, environment status and public API shapes;
+see `docs/ALIGNMENT.md` for current verification. Other pinned measurements remain
+historical, including the explicitly dated AES `crypto.subtle` evidence.
 
 ## Quick start
 
 ```bash
 pnpm install                # Node >= 24.18 (needs @babel/* 8, pino, quickjs-emscripten)
-pnpm test                   # 612 tests (commit 7c1df9c)
+pnpm test                   # current serial suite; historical count below is pinned
+pnpm test:types             # strict NodeNext public-consumer compilation
 
 # Full analysis (static + dynamic + report)
 node tools/cli.js analyze examples/sample-loader.js
@@ -236,10 +240,11 @@ against `requires`, but strictness differs by entry point:
 `installEnvironment(bridge, { strict: true })` — the library default — throws a
 `SandboxError` on an unmet edge, while
 `TracelessSandbox.create({ env: { only } })` defaults to `strict: false` and
-installs every module whose requirements are satisfied, so a dropped surface
-shows up as `undefined` in the guest. Pass `env: { strict: true }` when a missing
-surface must fail the run. The run record reports
-`environment: { installed, missing, requested, complete }`.
+attempts installation even when a dependency is absent. Each unmet edge is
+recorded in `missing` as `{ id, reason }` and makes `complete: false`; continued
+execution is not a claim that every requested dependency is present. Pass
+`env: { strict: true }` when missing dependencies must fail the run. The run
+record reports `environment: { installed, missing, requested, tookMs, complete }`.
 
 Notable surfaces: `DOMParser`/`XMLSerializer` brand as `[object DOMParser]` /
 `[object XMLSerializer]`, `EventSource` as `[object EventSource]`, and
@@ -321,9 +326,10 @@ Packaging (`package.json`): `type: module`, `engines.node >= 24.18`,
 types, README.md, LICENSE]`, ISC `LICENSE`, and 11 `exports` subpaths
 (`.`, `./sandbox`, `./instrumentation`, `./hook`, `./restore`, `./analysis`,
 `./jsvmp`, `./logging`, `./invocation`, `./util`, `./cli`) each with its own
-`types/*.d.ts`. The entry barrel exports **68** names. `restoreCode` and
-`restoreWithPass` are exported both from the barrel and from `./restore`;
-`validateOutput` and `isDeferredPass` are on `./restore` only.
+`types/*.d.ts`. The entry barrel exports **68** names. `restoreCode` is a
+root-entry convenience API; `restoreWithPass` is exported both from the root
+barrel and from `./restore`. `validateOutput` and `isDeferredPass` are on
+`./restore` only.
 
 ## Report
 
@@ -409,21 +415,16 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
   boundary into a guest `Error`. The second shape is certified by a host-side
   counter the guest cannot write (`runtime.stackSignals()`), which is also why a
   guest that *swallows* the converted overflow still returns `ok:true` with
-  `limitsHit: ['stack']`. Guest-side evidence is used only where no host throw
-  exists (a reduced `limits.stackBytes`), and it is prototype identity against
-  the engine's own `InternalError.prototype` — captured before the guest can see
-  it, and revoked for the run if an environment module has to expose an
-  unwrapped `InternalError` (`env/stack.js`, Firefox). A classified run always
-  reports `error.stack === ''` and the same
-  `disposal { ok:false, leaked:true, stage:'runtime', skipped:true }`, and 40
-  consecutive recursion runs in the full environment produce one identical
-  record (`tests/resilience.test.js`). The remaining residual is narrow: at a
-  **reduced `limits.stackBytes`** (where the interpreter's own stack check fires
-  instead of the WASM native stack) a guest that first triggers a *genuine*
-  overflow, catches it and reuses the caught error's prototype can forge the
-  second classification — costing one abandoned runtime for a run that already
-  had a real breach. At the default 1 MB limit the overflow is a host throw and
-  no guest-reachable prototype exists (`docs/SECURITY-MODEL.md`).
+  `limitsHit: ['stack']`. Intrinsic-shaped guest errors provide a fallback for
+  interpreter stack and allocation/size failures, after real host stack and
+  interrupt evidence are considered. This is not an unforgeable allocator
+  witness: a guest that catches a genuine engine `InternalError` can retain and
+  reuse its prototype. A real OOM may expose it even with default `stackBytes`,
+  so the residual is not limited to the previously measured reduced-stack case.
+  Ordinary guest-created errors and copied names/messages are not engine
+  evidence. Guest callback errors retain their guest identity rather than
+  becoming host stack signals. See `docs/SECURITY-MODEL.md` for the precise
+  fallback, abandoned-runtime behavior and deployment limits.
 
 **Environment (28 modules)**
 

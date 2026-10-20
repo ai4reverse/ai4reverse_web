@@ -14,13 +14,15 @@ tools/
 │
 ├── util/                     seedable PRNG, hashes, handle bag, typed errors
 │
+├── engine/
+│   ├── runtime.js            QuickJS module (memoised), limits, interrupt handler
+│   └── limits.js             normalized resource limits
+│
 ├── sandbox/
 │   ├── sandbox.js            TracelessSandbox: one fresh runtime per run
-│   ├── runtime.js            QuickJS module (memoised), limits, interrupt handler
 │   ├── bridge.js             the only sanctioned handle API for env modules
 │   ├── profile.js            seeded, coherent browser fingerprint
 │   ├── clock.js              virtual clock + timer queue
-│   ├── limits.js             normalized resource limits
 │   ├── integrity.js          intrinsic snapshot / diff
 │   └── env/                  28 platform-surface modules (+ loader + platform-kit)
 │
@@ -94,7 +96,7 @@ connection/battery/mediaDevices/plugins/storage, `dom-parser` owns `DOMParser`/
 ## 1.2 Guest runs are serialized; a poisoned module is quarantined
 
 All sandboxes in a process share one QuickJS WASM module (memoised in
-`tools/sandbox/runtime.js`) and a module executes one guest at a time. Guest code
+`tools/engine/runtime.js`) and a module executes one guest at a time. Guest code
 runs synchronously, so a second `run()` is suspended at its first `await`; a
 host-time budget measured from runtime creation would then expire on the first
 statement after the neighbour released the thread, abort the evaluation and leave
@@ -135,14 +137,19 @@ shape happened: `error.stack === ''` (the frame list grows with recursion depth)
 `limitsHit: ['stack']`, `stackExhaustion: true` and the abandoned-runtime
 disposal.
 
-The guest-side path is used only where no host throw exists — interpreter
-recursion from a reduced `limits.stackBytes` — and it is prototype **identity**
-against the engine's `InternalError.prototype`, captured in `stealth.install()`
-before any env module runs. `env/stack.js` gives its `InternalError` wrapper a
-fresh prototype (same own properties, same `[[Prototype]]`) so a Firefox profile
-keeps a faithful constructor without making the intrinsic reachable; when the
-wrapper cannot be installed, `stealth.revokeStackEvidence()` withdraws the
-guest-side proof for the run and the host witness remains authoritative.
+The guest-side fallback handles intrinsic-shaped engine errors without a host
+witness, including reduced-stack recursion and allocation/size failures. It uses
+prototype **identity** against `InternalError.prototype`, captured in
+`stealth.install()` before any env module runs. `env/stack.js` gives its wrapper
+a fresh prototype so Firefox keeps a faithful constructor without exposing the
+intrinsic; failure to install the wrapper revokes this fallback. Real host stack
+evidence wins, then host interrupt reasons, then intrinsic-shaped subtypes.
+
+This fallback is not an unforgeable allocator witness: catching a genuine engine
+error can expose a reusable prototype, including OOM at default stack size. The
+residual scope and deployment boundaries are documented in `SECURITY-MODEL.md`.
+Guest callback errors stay guest handles rather than being recreated as host
+errors with attacker-selected engine wording.
 
 Two consequences worth knowing:
 

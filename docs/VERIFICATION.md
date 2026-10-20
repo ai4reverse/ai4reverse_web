@@ -447,6 +447,10 @@ and the test that keeps it fixed.
 
 ## Follow-up alignment wave (after Review 6)
 
+For the later acceptance findings and current working-tree repair evidence, see
+[Tools acceptance alignment — 2026-10-20](ALIGNMENT.md). The pinned results below
+remain historical evidence; they do not close the new H1–H7/M1–M12 findings.
+
 Sixteen commits landed after the Review 6 documentation refresh
 (`a8e4965..3013295`) and closed the handle-lifetime findings:
 

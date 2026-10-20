@@ -70,7 +70,7 @@ It returns:
 ```js
 {
   emit(kind, phase, payload = {}),  // -> event; strict-validates first, then seq/t/counts
-  events,                          // retained array (live, not a copy)
+  events,                          // detached, frozen retained-window array snapshot
   size, dropped, seq,              // getters
   child(kind, phase = 'emit'),     // recorder bound to a kind (+ default phase);
                                    // its child(subKind) namespaces as `${kind}.${subKind}`
@@ -80,6 +80,12 @@ It returns:
   clear(),                         // empties buffer + counters
 }
 ```
+
+Each `events` read copies the retained window into a frozen array. Its membership
+and ordering do not change after later emissions, evictions, compaction or
+`clear()`. This is a **shallow** snapshot: event objects and nested payloads are
+not deep-frozen. Reading costs O(retained events); use `subscribe` for live
+streaming and `size` for counts. `drain()` returns a separate mutable array.
 
 `sanitizePayload` bounds every payload: strings to 2 048 characters plus an
 elision marker (`…[N]`, so a clipped 3 000-character string measures 2 055
@@ -240,7 +246,12 @@ Two ownership-transfer rules make this work:
   (typically from the call bag) or a plain primitive; `fn`'s trampoline hands the
   handle to the guest instead of duplicating it. Returning a *bag-owned* value
   therefore does not leave a dangling handle, and the caller must not dispose
-  what it returned.
+  what it returned. To propagate an existing guest exception without converting
+  it to a host error, return `{ error: guestErrorHandle }`. The bridge removes
+  that handle from the call bag and transfers it to QuickJS's callback result;
+  the callback must not dispose it. Duplicate a borrowed argument first if it
+  needs to be transferred. An ordinary object with a non-handle `error` property
+  is still data, not an exception result.
 - **A deferred promise releases at settle.** `deferred()` keeps one record per
   promise in the bridge-owned set and releases it when the promise settles — on
   the next bridge entry, because quickjs-emscripten duplicates a returned handle
@@ -254,7 +265,9 @@ A duplicate taken from a bag and stored for later is a use-after-free; a
 duplicate with no owner is an engine abort at `runtime.dispose()`. Both are
 platform bugs, not sample behaviour.
 
-## Limits, profile and option validation (`tools/sandbox/{limits,profile}.js`)
+## Limits, profile and option validation
+
+Owners: `tools/engine/limits.js` and `tools/sandbox/profile.js`.
 
 ```js
 normalizeLimits(input = {}, { strict = true, logger = null })  // -> limits
@@ -290,18 +303,23 @@ export function install(bridge) {
 
 `installEnvironment(bridge, { strict = true, only = null, exclude = [], logger })`
 — note the **two defaults**: this library call is strict, while
-`TracelessSandbox.create({ env })` defaults `strict` to `false` and installs
-whatever resolves (an unmet `requires` edge then shows up as an `undefined`
-surface in the guest, not as an error).
+`TracelessSandbox.create({ env })` defaults `strict` to `false`. In non-strict
+mode, unmet dependencies are recorded and installation is still attempted;
+continued execution does not imply a complete environment.
 
 - loads only ids from `ENV_MODULE_IDS` (28) minus `exclude`/outside `only`;
 - sorts loaded modules by `(meta.order, meta.id)`, so the only tie (order 80:
   `crypto`, `xhr`) resolves deterministically;
 - checks each module's `requires` against the set installed so far and throws
   `SandboxError` in strict mode (`environment module "x" missing requirement y`);
-- a missing/failed module throws in strict mode and is skipped with a warning
-  otherwise;
-- returns `{ installed, missing, requested, tookMs, complete }`.
+- a module load failure throws in strict mode and is skipped with a warning
+  otherwise. An exception thrown by the module's `install` function propagates;
+  non-strict mode does not silently swallow installation failures;
+- returns `{ installed, missing, requested, tookMs, complete }`. `installed` has
+  `{ id, order, ms }` entries; `missing` has `{ id, reason }` entries for unavailable
+  modules or unmet dependency edges. A non-strict module may appear in both lists
+  when it installed with missing dependencies. `complete` is false whenever
+  `missing` is nonempty; `requested` lists the requested module ids.
 
 Contract rules:
 
@@ -366,7 +384,7 @@ returns `{ install(), dispose(), isIntrinsicStackError(handle) }` plus helpers.
 **first**, because `env/globals.js` deletes it for every non-Firefox profile.
 
 `isIntrinsicStackError(handle)` is the guest-side half of stack-breach
-classification (`tools/invocation/invoke.js` `isEngineStackError`):
+classification (`tools/invocation/invoke.js` `isIntrinsicEngineError`):
 
 - it answers from the **live handle**, never from a dump, so no guest-controlled
   `name`/`message` takes part;
@@ -379,13 +397,22 @@ classification (`tools/invocation/invoke.js` `isEngineStackError`):
 - it neither consumes nor disposes the caller's handle.
 
 The host-side half is `isHostStackExhaustion(thrown)` in
-`tools/sandbox/runtime.js` (a host-thrown `RangeError` out of the WASM
+`tools/engine/runtime.js` (a host-thrown `RangeError` out of the WASM
 trampoline) plus the callback-boundary witness: `guardHostStackExhaustion`
 increments `runtime.stackSignals()` when the engine signal appears at a host
 callback before quickjs-emscripten converts it into a guest `Error`. The invoker
 reads that counter around the branch it just ran (`noteHostStack`), which is why
 a guest that catches the converted overflow is still classified. Both feed the
 `stackExhaustion` marker, and only that marker drives abandonment.
+
+The invoker's host-owned `limitReason` callback supplies interrupt reasons for
+script, entry and settle execution. Real host stack evidence takes precedence;
+otherwise timeout/virtual-time reasons take precedence over intrinsic-shaped
+error fallback. Ordinary guest error text is never sufficient to classify a
+limit. The intrinsic prototype probe is not an unforgeable OOM witness: a guest
+can reuse a prototype after catching a genuine engine error. See the residual
+risk section in `SECURITY-MODEL.md`; memory classification also includes engine
+allocation/size rejection, not an assertion about total process memory.
 
 `revokeStackEvidence(reason)` withdraws guest-dump certification for the rest of
 the run. An environment module that has to leave the engine's `InternalError`

@@ -119,21 +119,24 @@ cases and the next run recompiles it. A `skipped` failure also implies
   exhausted: boolean,            // a job/timer cap was hit
   pendingTimers: number,         // timers still scheduled at settle time
   virtualMs: number,             // virtual time consumed by the settle
-  limitsHit: string[],           // e.g. ['stack'] when a callback breached the stack
+  limitsHit: string[],           // stack, timeout, virtual-time or memory evidence
+  timedOut: boolean,             // host timeout/virtual-time during settlement
   stackExhaustion: boolean,      // explicit engine marker (drives abandonment)
   error: null | { origin: 'timer'|'promise-job', name, message, stack },
 }
 ```
 
-`run.stackExhaustion` mirrors the marker at the top level. It is set only from a
-real engine signal — a host-thrown `RangeError` out of the engine, or a guest
-error whose prototype chain contains the engine's own captured
-`InternalError.prototype` while that constructor is unreachable from the guest
-(`stealth.isIntrinsicStackError`). A forged `{ name: 'InternalError', … }`
-record, a renamed `Error` and a prototype stand-in therefore do not classify, so
-a guest cannot steer the disposal path by throwing an error that merely *says*
-"stack overflow". The one caveat (a reduced `limits.stackBytes`) is in
-`docs/SECURITY-MODEL.md`.
+`run.stackExhaustion` mirrors the marker at the top level. Host stack evidence
+requires abandonment; otherwise the host-owned interrupt reason determines
+`timeout` or `virtual-time`. Intrinsic-shaped `InternalError` values are a
+fallback for stack/allocation errors, not an unforgeable allocator witness.
+Plain guest errors cannot establish a limit merely by saying "stack overflow",
+"interrupted" or "out of memory". Reusing a prototype after catching a genuine
+engine error remains a documented limitation; see `docs/SECURITY-MODEL.md`.
+
+`run.timedOut` includes settlement interrupts. Each pending-job batch is bounded
+by the remaining `maxJobs`, not just the fixed batch size. Execution counters
+measure actual executed jobs; pending work makes `exhausted` true at the cap.
 
 ### Concurrency
 
@@ -180,6 +183,14 @@ Report fields that carry evidence rather than volume (`docs/REPORT-SCHEMA.md`):
 | `hooks.errors`, `hooks.errorsTruncated` | Newest 50 hook failures (`{hook, phase, message}`); the bus itself keeps 200. |
 
 Static-only: pass `dynamic: false`. It never executes the sample.
+
+When restoration changes the source, `runRestored: true` runs a fresh sandbox
+with the same explicit run options: entry/args, script/module type, code level,
+settlement policy, network/mocks and trace retention. It does not force a
+different instrumentation level. The comparison still reports two executions;
+it is not an automatic proof of semantic equivalence. If an externally supplied
+sandbox has private configuration, supply equivalent explicit options for the
+comparison rather than assuming its internals can be cloned.
 
 ## Restore code
 
@@ -267,12 +278,26 @@ embedding the instrumenter in another runtime.
 
 ```js
 import { buildVM, buildSampleProgram, analyzeVM, summarizeVM } from './tools/jsvmp/index.js'
+import { TracelessSandbox } from './tools/sandbox/index.js'
 
-const vm = buildVM(buildSampleProgram(), { seed: 3, obfuscate: true })
-console.log(vm.run())                       // "fib(10)=55 via VM"
+const vmName = 'exampleVm'
+const vm = buildVM(buildSampleProgram(), { seed: 3, name: vmName, obfuscate: true })
+const sandbox = await TracelessSandbox.create({ logLevel: 'silent' })
+try {
+  const run = await sandbox.run(vm.code, { entry: vmName })
+  if (!run.ok) throw new Error(run.error?.message ?? 'VM execution failed')
+  console.log(run.result.value) // "fib(10)=55 via VM"
+} finally {
+  sandbox.dispose()
+}
 const analysis = analyzeVM(vm.code)
 console.log(summarizeVM(analysis).dispatch) // cases, opcodes, loop type
 ```
+
+The artifact's `run({ trust: 'host' })` convenience method executes in the host
+process and is only for explicitly trusted, platform-originated programs. It
+rejects calls without that acknowledgement; sample-derived artifacts should use
+the sandbox path above.
 
 Inside a sandbox, setting `instrumentation: { jsvmp: true }` traces the dispatch
 loop at opcode level; `run.vm` and `run.events` (`event: 'jsvmp:opcode'`) carry

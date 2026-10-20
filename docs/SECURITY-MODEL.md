@@ -54,9 +54,11 @@ QuickJS throws its stack overflow as a **host** `RangeError`
 list, so `runtime.dispose()` would abort the WASM engine and print
 `Aborted(Assertion failed: list_empty(&rt->gc_obj_list))` to stderr.
 
-The platform therefore **classifies from the engine signal only** and then
-abandons the runtime. Two engine shapes exist, and the platform records the
-signal host-side for both:
+The platform distinguishes host engine signals from guest error values before
+classifying a resource limit. A confirmed host stack signal requires abandonment;
+timeout/virtual-time reasons come from the host-owned interrupt state. Guest
+error text alone cannot establish either kind of evidence. Two stack shapes
+exist:
 
 1. **Host throw.** A host `RangeError` escapes `evalCode`, `callFunction` or
    `executePendingJobs`. `runtime.js` `isHostStackExhaustion(thrown)` accepts
@@ -70,9 +72,10 @@ signal host-side for both:
    `catch {}` nor a forged message can suppress or fake it.
 
 Everything else about the classification:
-- Guest-side evidence is used for one case only: interpreter recursion under a
-  reduced `limits.stackBytes`, which no host throw announces.
-  `tools/invocation/invoke.js` `isEngineStackError(stealth, handle)` asks
+- Guest-side evidence is an intrinsic-shaped fallback for interpreter errors
+  that do not escape as a host throw (including reduced-stack recursion and
+  allocation/size-limit errors).
+  `tools/invocation/invoke.js` `isIntrinsicEngineError(stealth, handle)` asks
   `stealth.isIntrinsicStackError(handle)` about the **live guest handle**: the
   thrown value's prototype chain must contain the engine's own
   `InternalError.prototype`, captured in `stealth.install()` *before*
@@ -82,10 +85,12 @@ Everything else about the classification:
   (same own properties, same `[[Prototype]]`, as Firefox has); if the wrapper
   cannot be installed, the module calls `stealth.revokeStackEvidence()` and
   guest-side certification is off for the rest of the run. The host witness is
-  never affected. No caller applies a name or message test to guest data, so
-  `{ name: 'InternalError', … }`, a renamed `Error`, a plain
-  `Error('stack overflow')` and a prototype stand-in all stay ordinary
-  exceptions.
+  never affected. Classification checks host stack evidence first, then the
+  host-owned interrupt reason; only then can an intrinsic-shaped error's message
+  distinguish stack from allocation/size failure. Plain guest errors with
+  matching names or messages remain ordinary exceptions. `memory` includes an
+  engine allocation/size rejection such as `string too long`, not proof that
+  total host RSS or exactly the configured QuickJS heap cap was exhausted.
 - `tools/invocation/invoke.js` records the breach as the explicit marker
   `stackExhaustion: true` (also inside a timer or promise callback, where the
   script itself still succeeds and the record appears in `run.settle`). One
@@ -97,7 +102,7 @@ Everything else about the classification:
   it calls `runtimeHandle.abandon()` (which never calls `runtime.dispose()`),
   quarantines the WASM module, and reports
   `disposal { ok:false, leaked:true, stage:'runtime', skipped:true }`.
-- `tools/sandbox/runtime.js` `loadQuickJS()` returns a **healthy** module: a
+- `tools/engine/runtime.js` `loadQuickJS()` returns a **healthy** module: a
   quarantined module is replaced on the next `run()`, so analysis continues in
   the same process. 12 consecutive stack overflows followed by a normal run is a
   regression test (`tests/resilience.test.js`).
@@ -112,23 +117,22 @@ engine still prints that assertion when a *non-stack* handle leak occurs; that i
 the engine's own diagnostic, is converted into `disposal.ok === false`, and is a
 platform bug — not a sample-visible signal.
 
-**Residual risk (measured, documented):** classification is by intrinsic
-identity, so the old forgery — a guest setting `error.name = 'InternalError'` (or
-throwing a matching object literal, or renaming its own `Error`) — no longer
-classifies: each reports `limitsHit: []`, `stackExhaustion: false` and
-`disposal { ok:true, errors: [] }`, and the module is not swapped. The narrow
-remainder needs **two** conditions: a reduced `limits.stackBytes`, under which
-QuickJS's interpreter check fires first and the overflow arrives as a *guest*
-`InternalError`, **and** a guest that catches that genuine overflow, keeps the
-caught object's prototype and re-throws a forged value with it. That costs one
-abandoned runtime for a run that already hit a real breach, and the default 1 MB
-limit is not exposed to it (there the overflow is a host throw with no
-guest-reachable prototype). Measured: the same script reports
-`limitsHit: ['stack']`, `stackExhaustion: true` and
-`disposal { ok:false, leaked:true, stage:'runtime', skipped:true }` at
-`stackBytes: 64 KiB`, while throwing a plain error after the caught overflow
-reports `limitsHit: []`, `disposal { ok:true }`. Honest samples cannot produce a
-false leak, and memory plateaus rather than growing without bound.
+**Residual risk:** intrinsic identity is stronger than a guest-selected name or
+message, but it is not an unforgeable allocator-failure witness. The public
+QuickJS binding exposes no separate host OOM event. A guest that catches a real
+engine `InternalError` can retain its prototype and reuse it on a later value;
+changing its message can also affect the memory/stack subtype. A real OOM can
+expose that prototype even with the default stack size, so this limitation is
+not restricted to reduced `stackBytes`. This broader boundary is a consequence
+of the shared engine error prototype, not a claim of a new measured RSS attack.
+
+The previously measured reduced-stack case remains: after genuine interpreter
+stack exhaustion at `stackBytes: 64 KiB`, a reused prototype can produce
+`limitsHit: ['stack']`, `stackExhaustion: true` and abandoned disposal. Throwing a
+plain error after the caught overflow does not acquire that provenance. Ordinary
+guest-created `Error` values and copied `{name, message}` objects remain ordinary
+exceptions. URLSearchParams/FormData callback errors preserve their guest
+handles instead of being recreated as host stack evidence.
 
 **The price of continuing.** A quarantined module keeps its WASM heap until the
 engine's module is collected, so each breach costs host memory: measured
@@ -274,8 +278,12 @@ runtime cannot be released at all and is abandoned instead.
 - Traces contain sample-derived strings (decoded payloads, console output,
   storage values, URLs). Treat logs and reports as **live malware artifacts**.
 - pino redaction covers cookies, tokens, passwords, API keys, sessions and
-  authorization headers. Sample-derived payloads are intentionally not redacted:
-  they are evidence.
+  authorization headers at the explicitly configured paths. Root fields and up
+  to two enclosing object levels include `apiKey`, `session`, `jwt`,
+  `authorization` and `Authorization`. Paths are case-sensitive and finite-depth,
+  not a recursive, case-insensitive secret detector. Configure additional paths
+  before logging differently shaped authentication metadata. Sample-derived
+  payloads are intentionally not redacted: they are evidence.
 - Artifacts are content-addressed (SHA-256) and bounded (4 MB/artifact, 200
   artifacts). Nothing is written to disk unless the caller/CLI asks for `--out`.
 
