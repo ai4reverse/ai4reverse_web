@@ -7,6 +7,15 @@ import { HandleBag } from '../util/disposable.js'
  * Design goals, in priority order:
  *  1. Correctness of handle lifetime. The WASM runtime aborts on dispose if a
  *     single handle leaks, so every temporary is owned by a per-call bag.
+ *     Ownership has exactly three lifetimes:
+ *       - per call: anything built while a call bag is active (`temporary`);
+ *       - per bridge: values created at install time and genuinely long-lived
+ *         (`own`, released by `disposeAll`);
+ *       - transferred: values returned to the guest. quickjs-emscripten
+ *         duplicates a returned handle after the host callback returns, so
+ *         `normalizeReturn` only keeps it out of the bag and the trampoline
+ *         frees the host copy. Tracking it in `owned` would retain one entry
+ *         per call until teardown (the audit measured 159 MB for 20k calls).
  *  2. Fidelity. Guest-visible functions are created with
  *     `newFunctionWithOptions`, which preserves `name`, `length` and makes
  *     `Function.prototype.toString` report `[native code]` exactly like a real
@@ -78,18 +87,55 @@ export function createHostBridge(options) {
     return bags.length > 0 ? bags[bags.length - 1] : null
   }
 
-  /** Track a temporary handle in the active call bag (or return it). */
-  function track(handle) {
-    const bag = currentBag()
-    if (bag) bag.add(handle)
-    return handle
-  }
-
   /** Take ownership of a long-lived handle (disposed at teardown). */
   function own(handle) {
     if (handle && typeof handle.dispose === 'function') owned.add(handle)
     return handle
   }
+
+  /**
+   * Register a value the current call built.
+   *
+   * Inside a guest call the handle joins the call bag, so everything a call
+   * allocates dies when the call returns instead of accumulating in `owned`
+   * until teardown. Outside a call (module install time) the value is
+   * long-lived by definition, so it is owned until `disposeAll`.
+   *
+   * @param {object} handle
+   */
+  function temporary(handle) {
+    const bag = currentBag()
+    if (bag) return bag.add(handle)
+    return own(handle)
+  }
+
+  /**
+   * Resources that only have to survive until the current host call returns.
+   *
+   * quickjs-emscripten duplicates a value the guest receives *after* the host
+   * callback returns, so a handle that was just handed over can only be
+   * released on the next entry into the bridge. Flushing here keeps the queue
+   * bounded by one call's worth of settled promises.
+   */
+  const retired = []
+
+  function retire(release) {
+    retired.push(release)
+  }
+
+  function flushRetired() {
+    while (retired.length > 0) {
+      const release = retired.pop()
+      try {
+        release()
+      } catch {
+        /* already released: double disposal is never fatal */
+      }
+    }
+  }
+
+  /** Deferred promises that still own a live resolver pair. */
+  const pendingDeferreds = new Set()
 
   /**
    * Set a guest function's `length` without touching anything else.
@@ -150,6 +196,9 @@ export function createHostBridge(options) {
       const arity = Number.isFinite(length) ? Math.max(0, Math.min(8, Math.trunc(length))) : 0
       const implementation = function guestFunction(...args) {
         const bag = new HandleBag()
+        // A previous call may have handed a value to the guest and retired the
+        // host copy; the trampoline has duplicated it by now.
+        flushRetired()
         bags.push(bag)
         stats.calls += 1
         try {
@@ -173,6 +222,9 @@ export function createHostBridge(options) {
       // functions regardless of the option, so set the guest-visible arity
       // explicitly (property `length` is configurable per spec).
       setFunctionLength(handle, arity)
+      // Bridge-owned, not a call temporary: a function handle is built while a
+      // surface is installed and host code caches some of them (prototype
+      // methods, `Intl` bound-method getters), so its lifetime is the bridge's.
       return own(handle)
     },
 
@@ -245,12 +297,12 @@ export function createHostBridge(options) {
     install(target, key, value, flags = {}) {
       const { enumerable = true, configurable = true, writable = true } = flags
       const valueHandle = isHandle(value) ? value : bridge.toGuest(value)
-      const descriptor = own(track(ctx.newObject()))
+      const descriptor = temporary(ctx.newObject())
       ctx.setProp(descriptor, 'enumerable', boolHandle(enumerable))
       ctx.setProp(descriptor, 'configurable', boolHandle(configurable))
       ctx.setProp(descriptor, 'writable', boolHandle(writable))
       ctx.setProp(descriptor, 'value', valueHandle)
-      const keyHandle = own(track(ctx.newString(key)))
+      const keyHandle = temporary(ctx.newString(key))
       const result = ctx.callFunction(definePropertyFactory, ctx.undefined, [target, keyHandle, descriptor])
       if (result.error) {
         const message = dumpError(result.error)
@@ -271,11 +323,13 @@ export function createHostBridge(options) {
       const { get, set, enumerable = true, configurable = true } = descriptor
       const getHandle = get ? bridge.fn(get.name || `get ${key}`, get.length ?? 0, get) : ctx.undefined
       const setHandle = set ? bridge.fn(set.name || `set ${key}`, set.length ?? 0, set) : ctx.undefined
-      if (get) track(getHandle)
-      if (set) track(setHandle)
+      // The installed property keeps its own reference to the accessor, so the
+      // host copies are call temporaries.
+      if (get) temporary(getHandle)
+      if (set) temporary(setHandle)
       const result = ctx.callFunction(accessorFactory, ctx.undefined, [
         target,
-        own(track(ctx.newString(key))),
+        temporary(ctx.newString(key)),
         getHandle,
         setHandle,
         boolHandle(enumerable),
@@ -300,25 +354,25 @@ export function createHostBridge(options) {
       if (value === undefined) return ctx.undefined
       if (value === null) return ctx.null
       const type = typeof value
-      if (type === 'string') return own(track(ctx.newString(value)))
-      if (type === 'number') return own(track(ctx.newNumber(value)))
+      if (type === 'string') return temporary(ctx.newString(value))
+      if (type === 'number') return temporary(ctx.newNumber(value))
       if (type === 'boolean') return boolHandle(value)
-      if (type === 'bigint') return own(track(ctx.newBigInt(value)))
+      if (type === 'bigint') return temporary(ctx.newBigInt(value))
       if (type === 'function') {
         throw new Error('bridge.toGuest refuses to convert a host function; use bridge.fn()')
       }
       if (value instanceof Uint8Array) {
-        return own(track(ctx.newArrayBuffer(value.slice().buffer)))
+        return temporary(ctx.newArrayBuffer(value.slice().buffer))
       }
       if (Array.isArray(value)) {
-        const array = own(track(ctx.newArray()))
+        const array = temporary(ctx.newArray())
         for (let i = 0; i < value.length; i += 1) {
           ctx.setProp(array, i, bridge.toGuest(value[i]))
         }
         return array
       }
       if (type === 'object') {
-        const object = own(track(ctx.newObject()))
+        const object = temporary(ctx.newObject())
         for (const [key, item] of Object.entries(value)) {
           if (item === undefined) continue
           ctx.setProp(object, key, bridge.toGuest(item))
@@ -450,7 +504,7 @@ export function createHostBridge(options) {
 
     /** Create a plain guest object with the given properties. */
     obj(properties = {}, prototype = null) {
-      const object = own(track(isHandle(prototype) ? ctx.newObject(prototype) : ctx.newObject()))
+      const object = temporary(isHandle(prototype) ? ctx.newObject(prototype) : ctx.newObject())
       for (const [key, value] of Object.entries(properties)) {
         if (value === undefined) continue
         ctx.setProp(object, key, bridge.toGuest(value))
@@ -460,7 +514,7 @@ export function createHostBridge(options) {
 
     /** Create a guest array from plain values. */
     arr(values = []) {
-      const array = own(track(ctx.newArray()))
+      const array = temporary(ctx.newArray())
       values.forEach((value, index) => ctx.setProp(array, index, bridge.toGuest(value)))
       return array
     },
@@ -480,29 +534,49 @@ export function createHostBridge(options) {
 
     /**
      * Create a guest promise plus resolve/reject helpers that accept plain JS
-     * values. The deferred promise is disposed with the sandbox.
+     * values.
+     *
+     * Lifetime: the promise handle itself is a transfer (the trampoline frees
+     * the host copy after duplicating it) or, when the promise is never handed
+     * to the guest, a retired value released on the next bridge entry. What the
+     * host keeps until the promise settles is the *resolver pair*: an `resolve`
+     * from a timer or network callback needs it later, and quickjs-emscripten
+     * frees it when the promise settles. Releasing the record at settle (and at
+     * teardown for promises that never settle) is what stops a promise-heavy
+     * sample from retaining one resolver pair per promise for the whole run.
      */
     deferred() {
       const deferred = ctx.newPromise()
-      disposers.push(() => {
+      let settled = false
+      const release = () => {
+        pendingDeferreds.delete(record)
         try {
           deferred.dispose()
         } catch {
           /* already gone */
         }
-      })
-      own(deferred.handle)
+      }
+      const record = { release }
+      pendingDeferreds.add(record)
+      const settle = (method, value) => {
+        if (settled) return
+        settled = true
+        deferred[method](value)
+        // Not `release()`: the guest may not hold the promise yet, and the
+        // trampoline duplicates a returned handle only after this call returns.
+        retire(release)
+      }
       return {
         handle: deferred.handle,
         resolve(value) {
-          deferred.resolve(bridge.toGuest(value))
+          settle('resolve', bridge.toGuest(value))
         },
         reject(value) {
-          const handle = bridge.toGuest(value)
-          deferred.reject(handle)
+          settle('reject', bridge.toGuest(value))
         },
         dispose() {
-          deferred.dispose()
+          settled = true
+          release()
         },
       }
     },
@@ -530,6 +604,10 @@ export function createHostBridge(options) {
 
     /** Dispose every registered resource. Called once by the sandbox. */
     disposeAll() {
+      // Settled deferreds were handed back to the guest already; release the
+      // host copies before the teardown disposers run.
+      flushRetired()
+      for (const record of [...pendingDeferreds]) record.release()
       while (disposers.length > 0) {
         const fn = disposers.pop()
         try {
@@ -552,6 +630,9 @@ export function createHostBridge(options) {
   function normalizeReturn(result, bag) {
     if (result === undefined) return undefined
     if (isHandle(result)) {
+      // Keep, never own: quickjs-emscripten's trampoline duplicates the value
+      // for the guest and then disposes this handle. Owning it here would
+      // retain one dead handle per call until teardown.
       bag.keep(result)
       return result
     }

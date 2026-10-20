@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import v8 from 'node:v8'
+import vm from 'node:vm'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
 import { createProfile, consistencyReport } from '../tools/sandbox/profile.js'
 import { normalizeLimits } from '../tools/sandbox/limits.js'
@@ -954,6 +956,124 @@ test('bridge property helpers set, read and build guest values', async () => {
   }
 })
 
+test('per-call value builders die with the call; install-time values do not', async () => {
+  // Ownership audit: `obj()`/`arr()`/`toGuest()` used to register every value
+  // in the bridge-wide `owned` set, so a sample that built a throwaway object
+  // per call retained one host handle per call until teardown (20k calls grew
+  // the host heap by tens of MB). Per-call values now join the call bag.
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge, ctx } = harness
+    const installedObject = bridge.obj({ a: 1 })
+    const installedArray = bridge.arr([1, 2])
+    const perCall = []
+    installProbe(
+      harness,
+      'probeOwnership',
+      bridge.fn('probeOwnership', 0, ({ bag }) => {
+        perCall.push(bridge.obj({ x: 1 }), bridge.arr([1, 2, 3]), bridge.toGuest('text'))
+        return bag.keep(bridge.toGuest({ returned: true }))
+      }),
+    )
+
+    const run = harness.run('var out = probeOwnership(); [out.returned, typeof out]')
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.deepEqual(run.value, [true, 'object'])
+    assert.equal(perCall.length, 3)
+    assert.deepEqual(
+      perCall.map((handle) => handle.alive),
+      [false, false, false],
+      'temporaries must be released when the call returns',
+    )
+    // A value the guest received is owned by the guest from then on.
+    assert.equal(harness.run('out.returned').value, true)
+    assert.equal(installedObject.alive, true, 'install-time objects live until teardown')
+    assert.equal(installedArray.alive, true)
+    const disposal = harness.dispose()
+    assert.equal(disposal.ok, true, 'no handle may be leaked')
+    assert.equal(disposal.leaked, false)
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('a 20k-call builder loop stays on a memory plateau', async () => {
+  // Regression guard for the retention above: with per-call values owned by the
+  // bridge, 20k calls retained ~30 MB of host heap and 60k retained ~78 MB. The
+  // fixed version plateaus at well under a megabyte; the bound is generous so
+  // the assertion reports retention, not allocator noise.
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge } = harness
+    installProbe(
+      harness,
+      'probePlateau',
+      bridge.fn('probePlateau', 0, ({ bag }) => {
+        bridge.obj({ a: 1, b: 'two', c: [1, 2, 3] })
+        bridge.arr([1, 'two', { three: 3 }])
+        return bag.keep(bridge.toGuest({ d: 4 }))
+      }),
+    )
+
+    const heap = forcedHeap()
+    const before = heap()
+    const wave = (calls) => {
+      const run = harness.run(`
+        var sink = 0;
+        for (var i = 0; i < ${calls}; i += 1) { sink += probePlateau().d; }
+        sink
+      `)
+      assert.equal(run.ok, true, JSON.stringify(run.error))
+      assert.equal(run.value, calls * 4)
+      return heap()
+    }
+
+    const first = wave(20_000)
+    const second = wave(20_000)
+    assert.ok(first - before < 12 * 1024 * 1024, `20k calls retained ${((first - before) / 1048576).toFixed(1)} MB`)
+    assert.ok(second - first < 6 * 1024 * 1024, `the next 20k calls retained ${((second - first) / 1048576).toFixed(1)} MB`)
+  } finally {
+    const disposal = harness.dispose()
+    assert.equal(disposal.ok, true)
+  }
+})
+
+test('bridge stats count the calls, errors and conversions that happened', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge } = harness
+    installProbe(harness, 'probeStats', bridge.fn('probeStats', 1, ({ args }) => {
+      if (bridge.num(args, 0, 0) < 0) throw new Error('negative')
+      return { echoed: bridge.num(args, 0, 0) }
+    }))
+    const before = { ...bridge.stats }
+    assert.equal(harness.run('probeStats(7).echoed').value, 7)
+    assert.equal(harness.run('try { probeStats(-1) } catch (error) { error.message }').value, 'negative')
+    assert.equal(bridge.stats.calls, before.calls + 2)
+    assert.equal(bridge.stats.errors, before.errors + 1)
+    assert.ok(
+      bridge.stats.conversions > before.conversions,
+      'conversions counts the toGuest conversions a call performed',
+    )
+  } finally {
+    harness.dispose()
+  }
+})
+
+/**
+ * Heap reader that forces a collection first, so a test can assert retention
+ * rather than pending garbage.
+ * @returns {() => number} current host heap in bytes
+ */
+function forcedHeap() {
+  v8.setFlagsFromString('--expose-gc')
+  const collect = vm.runInNewContext('gc')
+  return () => {
+    collect()
+    return process.memoryUsage().heapUsed
+  }
+}
+
 test('bridge.install and bridge.accessor surface descriptor failures', async () => {
   const harness = await createHarness({ modules: ['globals'] })
   try {
@@ -1004,26 +1124,34 @@ test('bridge.evalInGuest reports values and errors as plain objects', async () =
   }
 })
 
-test('bridge.deferred resolves, rejects and is released at teardown', async () => {
+test('bridge.deferred releases its host handles once the promise has settled', async () => {
   const harness = await createHarness({ modules: ['globals'] })
   try {
-    const resolved = harness.bridge.deferred()
+    const { bridge } = harness
+    const resolved = bridge.deferred()
     resolved.resolve('payload')
     harness.jobs()
     // The bridge-level invariant: resolving does not throw and the promise is
     // reported as settled by fromGuest, without consuming it.
-    assert.deepEqual(harness.bridge.fromGuest(resolved.handle), { __type: 'promise', state: 'fulfilled' })
+    assert.deepEqual(bridge.fromGuest(resolved.handle), { __type: 'promise', state: 'fulfilled' })
+    // The host copy cannot be freed before the trampoline duplicates a returned
+    // handle, so it is retired and released on the next bridge entry.
+    assert.equal(resolved.handle.alive, true, 'a settled deferred keeps its handle for the current call')
+    installProbe(harness, 'probeNextCall', bridge.fn('probeNextCall', 0, () => 1))
+    assert.equal(harness.run('probeNextCall()').value, 1)
+    assert.equal(resolved.handle.alive, false, 'the retired handle is released on the next call')
 
-    const rejected = harness.bridge.deferred()
+    const rejected = bridge.deferred()
     rejected.reject('why')
     harness.jobs()
-    assert.deepEqual(harness.bridge.fromGuest(rejected.handle), { __type: 'promise', state: 'rejected' })
+    assert.deepEqual(bridge.fromGuest(rejected.handle), { __type: 'promise', state: 'rejected' })
 
-    const disposed = harness.bridge.deferred()
+    const disposed = bridge.deferred()
     disposed.dispose()
     // A second teardown pass must not throw even though the promise is gone.
-    harness.bridge.disposeAll()
+    bridge.disposeAll()
     disposed.dispose.bind(disposed)
+    assert.equal(harness.dispose().ok, true, 'an unsettled promise is released at teardown')
   } finally {
     harness.dispose()
   }
