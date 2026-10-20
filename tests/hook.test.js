@@ -316,3 +316,60 @@ test('trace recording follows record/recordPhases/phase policy', () => {
   assert.equal(defaultTrace.events.length, 1, 'jsvmp phases stay out of the trace')
   assert.equal(defaultTrace.events[0].kind, 'hook')
 })
+
+test('registerHooks accepts tuple and list shapes instead of dropping them', () => {
+  // F6: `[['code:after', fn]]` (a natural guess) used to register nothing, so a
+  // hook meant to block a behaviour never ran and only an odd count hinted at
+  // it.
+  const bus = createHookBus({ record: false })
+  const seen = []
+  const ids = registerHooks(bus, [
+    ['code:after', (source) => seen.push(source)],
+    ['code:before', (source) => source, { id: 'before', priority: 5 }],
+    [['api:after', () => seen.push('nested')]],
+    { phase: 'exception:uncaught', handler: () => seen.push('object'), id: 'object' },
+  ])
+  assert.deepEqual(ids, ['anonymous', 'before', 'anonymous', 'object'])
+  assert.equal(bus.describe().length, 4)
+  assert.deepEqual(
+    bus.describe().map((entry) => entry.phase).sort(),
+    ['api:after', 'code:after', 'code:before', 'exception:uncaught'],
+  )
+  bus.emit('code:after', 'src')
+  bus.emit('api:after', { api: 'x' })
+  bus.emit('exception:uncaught', { error: 'x' })
+  assert.deepEqual(seen, ['src', 'nested', 'object'])
+  assert.equal(bus.describe().find((entry) => entry.id === 'before').priority, 5)
+})
+
+test('registerHooks rejects a malformed registration instead of skipping it', () => {
+  const bus = createHookBus({ record: false })
+  const cases = [
+    [['code:after', 'not a function'], /hook tuple must be \[phase, handler/],
+    [[['code:after']], /must be an object or a \[phase, handler\] tuple/],
+    [{ phase: 'code:after' }, /has no handler function/],
+    [{ handler: () => undefined }, /has no phase/],
+    ['code:after', /must be an object or a \[phase, handler\] tuple/],
+    [{ phase: 'code:after', handler: () => undefined }, /unknown hook phase/, { strict: true, phase: 'bogus:phase' }],
+  ]
+  for (const [registration, message, options] of cases) {
+    const target = options ? createHookBus({ record: false, strict: options.strict }) : bus
+    const entry = options ? { phase: options.phase, handler: () => undefined } : registration
+    assert.throws(
+      () => registerHooks(target, [entry]),
+      (error) => {
+        assert.equal(error.name, 'HookError')
+        assert.equal(error.code, 'HOOK_ERROR')
+        assert.match(error.message, message)
+        return true
+      },
+      JSON.stringify(entry),
+    )
+  }
+  // A strict bus still validates the phase it is given, and nothing was
+  // registered by the failed calls.
+  assert.equal(bus.describe().length, 0)
+  // Absent/empty lists are not errors.
+  assert.deepEqual(registerHooks(bus, undefined), [])
+  assert.deepEqual(registerHooks(bus, []), [])
+})
