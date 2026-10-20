@@ -439,9 +439,10 @@ coverage and handle-lifetime wave (`a8e4965..3013295`, 16 commits).
 3. **Reproducers.** `node tools/cli.js analyze examples/sample-loader.js` →
    score 60 / `malicious`, 9 weighted reasons, 3 URL IOCs, 2 decoded payloads;
    `restore` prints the decoded stage-2 source; `run --events` emits 136 trace
-   events ending with `net after` `net::ERR_NAME_NOT_RESOLVED` for the mocked
-   beacon; `node examples/works/30-sandbox-farm/app.mjs --self-test` →
-   `farm: total=4 completed=3 limited=1 disposed=true` / `SELFTEST OK`.
+   events, including the mocked beacon as `net after` with
+   `net::ERR_NAME_NOT_RESOLVED`; `node examples/works/30-sandbox-farm/app.mjs
+   --self-test` → `farm: total=4 completed=3 limited=1 disposed=true` /
+   `SELFTEST OK`.
 4. **Audit re-run plan.** The four read-only auditors re-run their original
    reproducers against this tree (AUDIT-A: D1–D3 + forged-`InternalError`
    matrix, AUDIT-B: D4/D5/D7, AUDIT-C: D6 + packaging, AUDIT-D: D8 claim sweep)
