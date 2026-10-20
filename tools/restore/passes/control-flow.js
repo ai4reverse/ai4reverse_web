@@ -46,19 +46,30 @@ export function run(ast, context) {
   const report = createReporter(context)
   let changed = false
 
-  // One site per traversal: replacing a loop invalidates the paths collected
-  // during that traversal, so the scan restarts after each rewrite.
-  for (let iteration = 0; iteration < MAX_FLATTEN_ITERATIONS; iteration += 1) {
-    const match = findDispatchLoop(ast, context, note)
-    if (!match) break
-    const { path, statements } = match
+  // Collect every site in ONE traversal, then rewrite in reverse document
+  // order: rewriting a site invalidates the paths collected inside its
+  // subtree, so inner/last sites go first. Before each rewrite the match is
+  // re-validated locally; a site made stale by an inner rewrite is skipped —
+  // the pass is idempotent and the pipeline's next round rescans the tree.
+  const sites = findDispatchLoops(ast, context, note)
+  for (let index = sites.length - 1; index >= 0; index -= 1) {
+    const { path } = sites[index]
+    if (path.removed) continue
+    const result = analyzeDispatchLoop(path, context)
+    if (!result.statements) continue
     const loopType = path.node.type
-    if (statements.length === 0) {
-      path.remove()
-    } else {
-      path.replaceWithMultiple(statements)
+    try {
+      if (result.statements.length === 0) {
+        path.remove()
+      } else {
+        path.replaceWithMultiple(result.statements)
+      }
+    } catch {
+      // A stale path that still analyses cleanly but no longer sits in the
+      // tree; the next pipeline round rescans and rewrites it.
+      continue
     }
-    report({ rule: 'switch-dispatch', from: loopType, to: `${statements.length} sequential statement(s)` })
+    report({ rule: 'switch-dispatch', from: loopType, to: `${result.statements.length} sequential statement(s)` })
     changed = true
   }
 
@@ -100,21 +111,20 @@ function createReporter(context) {
  * @param {(message: string) => void} note
  * @returns {{path: object, statements: object[]}|null}
  */
-function findDispatchLoop(ast, context, note) {
-  let found = null
+function findDispatchLoops(ast, context, note) {
+  const sites = []
   context.traverse(ast, {
     'WhileStatement|ForStatement'(path) {
-      if (found) return
       const result = analyzeDispatchLoop(path, context)
       if (result.statements) {
-        found = { path, statements: result.statements }
-        path.stop()
+        sites.push({ path, statements: result.statements })
+        if (sites.length >= MAX_FLATTEN_ITERATIONS) path.stop()
         return
       }
       if (result.reason) note(describeSkip(path.node, result.reason))
     },
   })
-  return found
+  return sites
 }
 
 /**
