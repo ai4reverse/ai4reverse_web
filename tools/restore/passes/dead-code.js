@@ -17,6 +17,7 @@
  */
 
 import { generateExpression } from '../generate.js'
+import { isPrologueEntry } from '../pass-context.js'
 
 export const meta = {
   id: 'dead-code',
@@ -48,7 +49,12 @@ function constantTruthiness(t, node, scope) {
   if (t.isNumericLiteral(node)) return node.value !== 0
   if (t.isStringLiteral(node)) return node.value.length > 0
   if (t.isNullLiteral(node)) return false
-  if (t.isBigIntLiteral(node)) return node.value !== '0'
+  // Babel may expose BigIntLiteral.value as a bigint or as a numeric string (P0-8).
+  if (t.isBigIntLiteral(node)) {
+    const value = node.value
+    if (typeof value === 'bigint') return value !== 0n
+    return String(value) !== '0'
+  }
   if (t.isArrayExpression(node)) return node.elements.every((element) => !element || t.isPureish(element)) ? true : null
   if (t.isObjectExpression(node)) return node.properties.length === 0 ? true : null
   if (t.isFunctionExpression(node) || t.isArrowFunctionExpression(node)) return true

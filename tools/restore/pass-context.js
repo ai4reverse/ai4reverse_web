@@ -64,14 +64,17 @@ export function runPass(pass, ast, options = {}) {
   try {
     result = pass.run(ast, context)
   } catch (error) {
+    // Fail-closed (P0-8): surface the error and mark the pass failed rather
+    // than silently reporting changed:false after a partial AST mutation.
     if (options.strict) throw error
     context.note(`pass threw: ${error.message}`)
     return {
       id,
-      changed: false,
+      changed: context.changes.length > 0,
       notes: context.notes,
       changes: context.changes,
       error: { message: error.message, stack: error.stack?.split('\n').slice(0, 5).join('\n') },
+      failed: true,
       durationMs: Date.now() - started,
     }
   }

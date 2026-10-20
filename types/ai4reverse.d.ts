@@ -942,6 +942,8 @@ export interface PassRunReport {
   changes: object[]
   durationMs: number
   error?: { message: string; stack?: string }
+  /** True when the pass threw and strict mode did not rethrow. */
+  failed?: boolean
 }
 
 export interface RestorePassReport {
