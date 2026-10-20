@@ -191,7 +191,8 @@ const DEFANG_HINT_RE = /hxxp|\[\.\]|\(\.\)|\{\.\}|\[dot\]|\(dot\)|\{dot\}|\[:\]|
 
 const URL_RE = /\b(?:https?|wss?|ftp):\/\/[^\s"'`<>\\]+/gi
 const DOMAIN_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b/gi
-const EMAIL_RE = /[\w.+-]+@(?:[a-z0-9-]+\.)+[a-z]{2,24}/gi
+// Bounded local-part (O(64n)); unbounded `[\w.+-]+` was quadratic on dense input (P0-11).
+const EMAIL_RE = /(?<![A-Za-z0-9._%+-])[\w.+-]{1,64}@(?:[a-z0-9-]{1,63}\.)+[a-z]{2,24}/gi
 const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g
 const IPV6_RE = /(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])/gi
 const HASH_RE = /(?<![0-9a-f])([0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{128})(?![0-9a-f])/gi
@@ -513,6 +514,7 @@ function scanDomains(result, text, state, offsetOf) {
   // string literal, comment, URL context, or as a standalone token. This is what
   // separates `"c2.example.test"` from `window.top` / `document.body.style`.
   const literalMask = buildLiteralMask(text)
+  let firstNonSpaceIndex = -1
   for (const match of matches(DOMAIN_RE, text)) {
     if (!takeCandidate(state)) return
     const value = match[0].toLowerCase()
@@ -525,8 +527,13 @@ function scanDomains(result, text, state, offsetOf) {
     if (match.index > 0 && /[A-Za-z0-9_$.\])]/.test(text[match.index - 1])) continue
     const inLiteral = literalMask[match.index] === 1
     const urlContext = /(?:\/\/|@)$/.test(text.slice(Math.max(0, match.index - 3), match.index))
+    // Precompute once: per-match `text.slice(0, index).trim()` was O(n²) (P0-11).
+    if (firstNonSpaceIndex < 0) {
+      const leading = text.match(/^\s*/)
+      firstNonSpaceIndex = leading ? leading[0].length : 0
+    }
     const standalone =
-      text.slice(0, match.index).trim() === '' &&
+      match.index === firstNonSpaceIndex &&
       /^(?:\s|$)/.test(text.slice(match.index + match[0].length, match.index + match[0].length + 1))
     if (!inLiteral && !urlContext && !standalone) continue
     const record = { offset: offsetOf(match.index) }
