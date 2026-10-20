@@ -58,10 +58,17 @@ The platform therefore **classifies from the engine signal only** and then
 abandons the runtime:
 
 - `tools/sandbox/runtime.js` `isHostStackExhaustion(thrown)` accepts only a
-  host-thrown `RangeError`/`Error` carrying the engine's wording;
-  `isGuestStackExhaustion(dumped)` accepts only QuickJS's own `InternalError`
-  name **with** that wording. No caller may apply the wording test to arbitrary
-  guest data.
+  host-thrown `RangeError`/`Error` carrying the engine's wording — the WASM
+  native-stack path.
+- `tools/invocation/invoke.js` `isEngineStackError(stealth, handle)` asks
+  `stealth.isIntrinsicStackError(handle)` about the **live guest handle**: the
+  thrown value's prototype chain must contain the engine's own
+  `InternalError.prototype`, captured in `stealth.install()` *before*
+  `env/globals.js` removes the global binding, and the probe refuses to certify
+  while that constructor is still guest-reachable (a Firefox profile keeps it,
+  because real Firefox has it). No caller applies a name or message test to
+  guest data, so `{ name: 'InternalError', … }`, a renamed `Error` and a
+  prototype stand-in all stay ordinary exceptions.
 - `tools/invocation/invoke.js` records the breach as the explicit marker
   `stackExhaustion: true` (also inside a timer or promise callback, where the
   script itself still succeeds and the record appears in `run.settle`).
@@ -75,17 +82,30 @@ abandons the runtime:
   regression test (`tests/resilience.test.js`).
 
 **No engine abort is expected on this path**, and the suite asserts that no
-`Aborted(` line reaches stderr from a stack, timer or promise-job breach. The
+`Aborted(` line reaches stderr from a stack, timer or promise-job breach: the
+full 600-test run prints zero of them (`tests/resilience.test.js` captures engine
+output around the overflow, timer and promise cases and fails on any match). The
 engine still prints that assertion when a *non-stack* handle leak occurs; that is
 the engine's own diagnostic, is converted into `disposal.ok === false`, and is a
 platform bug — not a sample-visible signal.
 
-**Residual risk (measured, documented):** the guest name `InternalError` is
-writable, so a sample that throws `{ name: 'InternalError', message: 'stack
-overflow' }` is classified as a breach and costs one abandoned runtime plus one
-WASM recompile. A sample that only throws `Error('stack overflow')` is **not**
-classified (`limitsHit: []`, `disposal {ok:true}`). Honest samples cannot produce
-a false leak, and memory plateaus rather than growing without bound.
+**Residual risk (measured, documented):** classification is by intrinsic
+identity, so the old forgery — a guest setting `error.name = 'InternalError'` (or
+throwing a matching object literal, or renaming its own `Error`) — no longer
+classifies: each reports `limitsHit: []`, `stackExhaustion: false` and
+`disposal { ok:true, errors: [] }`, and the module is not swapped. The narrow
+remainder needs **two** conditions: a reduced `limits.stackBytes`, under which
+QuickJS's interpreter check fires first and the overflow arrives as a *guest*
+`InternalError`, **and** a guest that catches that genuine overflow, keeps the
+caught object's prototype and re-throws a forged value with it. That costs one
+abandoned runtime for a run that already hit a real breach, and the default 1 MB
+limit is not exposed to it (there the overflow is a host throw with no
+guest-reachable prototype). Measured: the same script reports
+`limitsHit: ['stack']`, `stackExhaustion: true` and
+`disposal { ok:false, leaked:true, stage:'runtime', skipped:true }` at
+`stackBytes: 64 KiB`, while throwing a plain error after the caught overflow
+reports `limitsHit: []`, `disposal { ok:true }`. Honest samples cannot produce a
+false leak, and memory plateaus rather than growing without bound.
 
 ## Concurrency: one guest run at a time
 
@@ -199,6 +219,15 @@ still alive. The platform treats disposal as a correctness invariant:
   deferred promises, store handles), run LIFO, each in its own `try/catch`;
 - `run.disposal.ok` asserted in tests; a leak surfaces as a failed run
   (`ok:false`, `leaked:true`, `stage`) rather than a silent process abort.
+- a handle that must outlive the bridge call that created it is **owned** and
+  released explicitly: `canvas.js` keeps one `retain()` teardown set for
+  `FontFaceSet` faces and for handles handed to virtual-clock tasks (`toBlob`,
+  `img.src`) and frees them with `release()` once their owner is done, because a
+  run that ends before the task runs otherwise leaves the duplicate alive;
+  `observers.js` queues plain record descriptors and builds the entry at
+  delivery time, then releases the `observe()` target duplicate once the entry
+  copied it. Both were real engine aborts found while raising coverage
+  (`4201ae9`, `8473a6a`, `335c2d0`).
 
 The one sanctioned exception is a stack-limit breach, described above: there the
 runtime cannot be released at all and is abandoned instead.
