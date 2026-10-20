@@ -158,3 +158,154 @@ test('AST hooks count calls, members and interesting identifiers', async () => {
   assert.ok(stats.apiIdentifiers.eval >= 1)
   assert.ok(stats.apiIdentifiers.fetch >= 1)
 })
+
+// ---- lifecycle and introspection -----------------------------------------
+
+test('off/clear/setEnabled/has keep the registry observable', () => {
+  const bus = createHookBus()
+  const removed = bus.on('api:before', () => undefined, { id: 'first', owner: 'alpha' })
+  bus.on('api:before', () => undefined, { id: 'second', owner: 'beta' })
+  bus.on('code:before', () => undefined, { id: 'third', owner: 'alpha' })
+
+  assert.equal(bus.has('api:before'), true)
+  assert.equal(bus.has('api:after'), false, 'an unregistered phase has no hooks')
+  assert.equal(bus.off('missing-id'), false, 'off() reports an unknown id')
+  assert.equal(removed(), true)
+  assert.equal(bus.has('api:before'), true, 'the second hook still listens')
+  assert.equal(bus.off('second'), true)
+  assert.equal(bus.has('api:before'), false, 'the phase is gone once its last hook is removed')
+
+  bus.on('api:before', () => undefined, { id: 'fourth', owner: 'beta' })
+  bus.clear('alpha')
+  assert.deepEqual(bus.stats().byPhase, Object.fromEntries([['api:before', 1]]))
+  assert.deepEqual(bus.describe().map((entry) => entry.id), ['fourth'])
+
+  bus.clear()
+  assert.deepEqual(bus.stats().byPhase, {})
+  assert.deepEqual(bus.describe(), [])
+})
+
+test('setEnabled disables a hook without unregistering it', () => {
+  const bus = createHookBus()
+  let calls = 0
+  bus.on('api:before', () => {
+    calls += 1
+    return { block: 'muted' }
+  }, { id: 'toggle', priority: 5 })
+
+  assert.equal(bus.setEnabled('toggle', false), true)
+  assert.equal(bus.has('api:before'), false, 'a disabled hook is not a listener')
+  const muted = bus.dispatch('api:before', { api: 'fetch' })
+  assert.equal(muted.blocked, false, 'a disabled hook never runs')
+  assert.equal(calls, 0)
+  assert.equal(bus.describe()[0].enabled, false, 'describe still reports the registration')
+
+  assert.equal(bus.setEnabled('toggle', true), true)
+  const live = bus.dispatch('api:before', { api: 'fetch' })
+  assert.equal(live.blocked, true)
+  assert.equal(calls, 1)
+  assert.equal(bus.setEnabled('nope', false), false, 'an unknown id cannot be toggled')
+})
+
+test('wildcard registrations answer has() for their domain and the global bus', () => {
+  const bus = createHookBus()
+  bus.on('api:*', () => undefined, { id: 'domain' })
+  bus.on('*', () => undefined, { id: 'global' })
+  assert.equal(bus.has('api:after'), true)
+  assert.equal(bus.has('exception:uncaught'), true, 'the global wildcard matches every phase')
+  assert.deepEqual(bus.stats().byPhase, { 'api:*': 1, '*': 1 })
+})
+
+test('pipeline rejects phases that are not transforms', () => {
+  const bus = createHookBus()
+  assert.throws(() => bus.pipeline('api:after', 'x'), (error) => {
+    assert.equal(error.name, 'HookError')
+    assert.match(error.message, /not a transform phase/)
+    assert.deepEqual(error.details.mutating.sort(), ['api:before', 'ast:node', 'ast:transform', 'code:before'])
+    return true
+  })
+  assert.throws(() => bus.pipeline('exception:uncaught', 'x'), /not a transform phase/)
+  assert.doesNotThrow(() => bus.pipeline('api:before', 'x'))
+})
+
+test('pipeline accepts domain wildcards and honours stop', () => {
+  const bus = createHookBus()
+  const seen = []
+  bus.on('code:*', (source) => {
+    seen.push(source)
+    return `${source}/*first*/`
+  }, { id: 'wild-1', priority: 10 })
+  bus.on('code:before', (source) => ({ stop: true, source }), { id: 'stopper', priority: 5 })
+  bus.on('code:before', () => assert.fail('the stop must end the pipeline'), { id: 'never', priority: 1 })
+
+  const result = bus.pipeline('code:before', 'var x = 1')
+  assert.equal(result.changed, true)
+  assert.deepEqual(seen, ['var x = 1'])
+  assert.deepEqual(result.steps.map((step) => step.id), ['wild-1', 'stopper'])
+  assert.equal(result.value.stop, true)
+})
+
+test('pipeline records no-change steps, once removal and failures', () => {
+  const logger = { warnings: [], warn(payload) { this.warnings.push(payload) } }
+  const bus = createHookBus({ logger, record: false })
+  bus.on('ast:transform', () => undefined, { id: 'noop' })
+  bus.on('ast:transform', () => {
+    throw new Error('transform exploded')
+  }, { id: 'explodes' })
+  bus.on('ast:transform', (value) => value, { id: 'same-value', once: true })
+
+  const result = bus.pipeline('ast:transform', 'unchanged')
+  assert.equal(result.value, 'unchanged')
+  assert.equal(result.changed, false)
+  assert.deepEqual(result.steps.map((step) => step.changed), [false, true])
+  assert.deepEqual(bus.describe().map((entry) => entry.id), ['noop', 'explodes'], 'the once hook is gone')
+  assert.equal(bus.stats().dispatches, 1)
+
+  const stats = bus.stats()
+  assert.equal(stats.errors.length, 1)
+  assert.equal(stats.errors[0].message, 'transform exploded')
+  assert.equal(stats.errors[0].phase, 'ast:transform')
+  assert.equal(logger.warnings.length, 1)
+  assert.equal(logger.warnings[0].hook.phase, 'ast:transform')
+})
+
+test('emit stops at a handler that returns stop and honours once', () => {
+  const bus = createHookBus({ record: false })
+  const order = []
+  bus.on('lifecycle:run', () => ({ stop: true }), { id: 'stopper', priority: 10, once: true })
+  bus.on('lifecycle:run', () => order.push('after'), { id: 'after', priority: 1 })
+
+  const first = bus.emit('lifecycle:run', { run: 1 })
+  assert.deepEqual(first.results.map((entry) => entry.id), ['stopper'])
+  assert.deepEqual(order, [], 'stop prevents the lower-priority handler')
+  bus.emit('lifecycle:run', { run: 2 })
+  assert.deepEqual(order, ['after'], 'the once handler fired only once')
+})
+
+test('trace recording follows record/recordPhases/phase policy', () => {
+  const makeTrace = () => createTraceRecorder()
+
+  const silenced = makeTrace()
+  const quiet = createHookBus({ trace: silenced, record: false })
+  quiet.on('api:before', () => undefined)
+  quiet.emit('api:before', { api: 'x' })
+  quiet.dispatch('api:before', { api: 'x' })
+  assert.equal(silenced.events.length, 0, 'record:false writes no hook events')
+
+  const allowListed = makeTrace()
+  const allowBus = createHookBus({ trace: allowListed, recordPhases: ['ast:'] })
+  allowBus.on('ast:node', () => undefined)
+  allowBus.on('api:before', () => undefined)
+  allowBus.emit('ast:node', {})
+  allowBus.emit('api:before', { api: 'x' })
+  assert.deepEqual(allowListed.events.map((event) => event.phase ?? event.event), ['node'], 'only the allow-listed prefix is recorded')
+
+  const defaultTrace = makeTrace()
+  const bus = createHookBus({ trace: defaultTrace })
+  bus.on('jsvmp:step', () => undefined)
+  bus.on('lifecycle:run', () => undefined)
+  bus.emit('jsvmp:step', {})
+  bus.emit('lifecycle:run', {})
+  assert.equal(defaultTrace.events.length, 1, 'jsvmp phases stay out of the trace')
+  assert.equal(defaultTrace.events[0].kind, 'hook')
+})
