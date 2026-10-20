@@ -1160,7 +1160,8 @@ function normalizeTracing(value) {
 function normalizeHooks(value) {
   const input = obj(value)
   const rawErrors = asArray(input.errors)
-  const errors = rawErrors.slice(0, MAX_REPORTED_HOOK_ERRORS).map((entry) => {
+  // Keep the newest failures (schema / ACCEPTANCE H8); the ring is oldest→newest.
+  const errors = rawErrors.slice(-MAX_REPORTED_HOOK_ERRORS).map((entry) => {
     const item = obj(entry)
     return {
       hook: str(item.hook),

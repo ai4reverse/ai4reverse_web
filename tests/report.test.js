@@ -574,7 +574,9 @@ test('hooks.errors are preserved as evidence and bounded', () => {
   assert.equal(report.hooks.errors.length, 50)
   assert.equal(report.hooks.errorsTruncated, true)
   assert.deepEqual(Object.keys(report.hooks.errors[0]).sort(), ['hook', 'message', 'phase'])
-  assert.equal(report.hooks.errors[49].message, 'boom 49')
+  // Newest 50 of 120 (indices 70..119); schema keeps the newest failures.
+  assert.equal(report.hooks.errors[0].message, 'boom 70')
+  assert.equal(report.hooks.errors[49].message, 'boom 119')
   assert.match(renderMarkdown(report), /Hook errors:\*\* 50 \(older failures dropped\)/)
 
   const clean = buildReport({})
