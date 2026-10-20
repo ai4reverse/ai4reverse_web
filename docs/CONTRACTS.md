@@ -63,7 +63,7 @@ The envelope is applied **after** the payload, so a payload key named `kind`,
 | `clock` | `() => Date.now()` | Virtual clock for `t`. The sandbox passes its virtual clock. |
 | `sink` | `null` | Object with `write(event)` (the pino event sink). A throwing sink is swallowed. |
 | `actor` | `'instrumentation'` | Default `actor` stamped on every event. |
-| `strict` | `false` | When true, an unknown `kind`/`phase` throws **before** any state mutates (`TRACE_PHASES` is the gate). |
+| `strict` | `false` | When true, an unknown `phase` throws. `kind` is validated in **every** mode (it is a code-level constant from `TRACE_KINDS`, never guest data), and validation happens before any state mutates. |
 
 It returns:
 
@@ -81,10 +81,11 @@ It returns:
 }
 ```
 
-`sanitizePayload` bounds every payload: strings to 2 048 characters, arrays to
-100 items (plus a `[+N more]` marker), object depth to 5, `Error` to
-`{name, message, stack}` with 8 stack lines, functions to `[Function name]`,
-and handles to `'[Handle]'`.
+`sanitizePayload` bounds every payload: strings to 2 048 characters plus an
+elision marker (`…[N]`, so a clipped 3 000-character string measures 2 055
+characters), arrays to 100 items (plus a `[+N more]` marker), object depth to 5,
+`Error` to `{name, message, stack}` with 8 stack lines, functions to
+`[Function name]`, and handles to `'[Handle]'`.
 
 ## Hook bus contract (`tools/hook/hookbus.js`)
 
@@ -136,11 +137,40 @@ per-statement probe already emits a `code` event); `ast:*` and `jsvmp:*` → off
 (they have their own event kinds). `code:step` stays dispatchable: a hook may
 still subscribe to it, it is only never *traced* as a hook event.
 
-**Errors are isolated and bounded.** A throwing handler is recorded in the ring
-and never propagates to the guest. The ring keeps the newest 200 entries
-(`MAX_HOOK_ERRORS`) and sets `errorsTruncated: true` once anything was dropped,
-so a hook that throws on every statement cannot grow memory without limit.
-`stats()` returns `{ hooks, dispatches, errors: [...copy], errorsTruncated, byPhase }`.
+**Errors are isolated and bounded twice.** A throwing handler is recorded in the
+ring and never propagates to the guest. The ring keeps the newest 200 entries
+(`MAX_HOOK_ERRORS`), caps the retained message text at 64 KiB total
+(`MAX_HOOK_ERROR_CHARS`) and clips each message to 2 KiB
+(`MAX_HOOK_ERROR_MESSAGE`), and sets `errorsTruncated: true` once anything was
+dropped. A count-only bound is not a memory bound: 200 entries with megabyte
+stacks measured ~838 MB before the character bound existed. `stats()` returns
+`{ hooks, dispatches, errors: [...copy], errorsTruncated, byPhase }`.
+
+**Hook trace events use a trace phase, not the hook phase.** `emit` records
+`trace.emit('hook', 'emit', { phase, hook, … })` and `dispatch` records
+`phase: 'emit'`; `pipeline` records `phase: 'transform'`. The hook phase travels
+in the `hook` field (the event envelope owns `phase`), because hook phases
+include lifecycle names (`init`, `run`, `dispose`) that are not trace phases —
+forwarding them made a strict recorder throw.
+
+### `registerHooks(bus, registrations)`
+
+Registers one registration, a list of them, or the tuple form, and returns the
+registered ids:
+
+```js
+registerHooks(bus, { phase: 'api:before', handler })            // descriptor
+registerHooks(bus, ['api:before', handler])                     // tuple
+registerHooks(bus, ['api:before', handler, { priority: 10 }])   // tuple + options
+registerHooks(bus, [[ 'a:before', fn ], { phase: 'b:after', handler: fn2 }])
+registerHooks(bus, { registrations: [...] })                    // a hook set
+```
+
+A tuple is `[phase, handler, options?]`; a list is an array whose first element
+is not a phase string, so a nested tuple is never flattened into its parts.
+Anything else — no handler function, no phase, a non-object — throws `HookError`
+with the offending registration in `details`. Silently skipping a malformed
+registration would let a hook meant to *block* a behaviour never run.
 
 ## Host bridge contract (`tools/sandbox/bridge.js`)
 
@@ -194,6 +224,58 @@ when the implementation throws (`bridge.fn`'s trampoline).
 functions: **no host frames may ever appear in guest stack traces**, and no
 wrapper `name` may leak the platform (no `"sandbox"`, no `__`).
 
+### Handle ownership
+
+Three lifetimes, and a handle must belong to exactly one:
+
+| Owner | Lifetime | Examples |
+| --- | --- | --- |
+| **Per-call bag** | Created and released inside one host call, disposed in `finally` even when the implementation throws. | Temporary guest values a callback builds: `toGuest` results, argument arrays, intermediate objects. |
+| **Bridge** | Created at install time or explicitly retained, disposed once in `disposeAll()` (LIFO, each teardown in its own `try/catch`). | Values returned by `fn`/`obj`/`arr`/`install`/`nativeConstructor`, descriptor factories, module-level constants. |
+| **Explicit owner** | A `dup()` stored in module state, freed by that state. | `canvas.js` `retain()`/`release()`, `observers.js` delivery-time entries. |
+
+Two ownership-transfer rules make this work:
+
+- **The trampoline transfers.** A host callback may return a handle it built
+  (typically from the call bag) or a plain primitive; `fn`'s trampoline hands the
+  handle to the guest instead of duplicating it. Returning a *bag-owned* value
+  therefore does not leave a dangling handle, and the caller must not dispose
+  what it returned.
+- **A deferred promise releases at settle.** `deferred()` keeps its resolve/reject
+  host functions in the bridge-owned set and releases them when the promise
+  settles, or at the next call for a promise that never settles — so a sample
+  that creates 20 000 promises does not accumulate 20 000 hosts handles.
+  `tests/sandbox-core.test.js` pins the plateau ("a 20k-call builder loop stays
+  on a memory plateau", "bridge.deferred releases its host handles once the
+  promise has settled").
+
+A duplicate taken from a bag and stored for later is a use-after-free; a
+duplicate with no owner is an engine abort at `runtime.dispose()`. Both are
+platform bugs, not sample behaviour.
+
+## Limits, profile and option validation (`tools/sandbox/{limits,profile}.js`)
+
+```js
+normalizeLimits(input = {}, { strict = true, logger = null })  // -> limits
+createProfile(options = {})                                     // -> profile
+```
+
+- `normalizeLimits` copies `DEFAULT_LIMITS` (`timeoutMs` 5 000,
+  `maxVirtualMs` 60 000, `memoryBytes` 64 MiB, `stackBytes` 1 MiB,
+  `maxSourceBytes` 1 MiB, plus event/job/timer caps), clamps numeric values to
+  their bounds, and treats an unknown key (`maxEvent`) or a non-numeric value
+  (`timeoutMs: 'abc'`) as a **usage error**: with the default `strict: true` it
+  throws `SandboxError` with `code: 'SANDBOX_LIMITS'`, the offending keys and the
+  accepted key list. `strict: false` keeps the lenient path for callers that
+  forward foreign option bags and reports one `logger.warn` per ignored entry.
+- `createProfile` validates every table-backed option (`browser`, `os`,
+  `locale`, timezone, screen fields). An unknown value throws `SandboxError`
+  with `code: 'SANDBOX_PROFILE'` naming the accepted values, instead of reaching
+  the fingerprint builder as `undefined` and failing with a bare `TypeError`.
+- Both codes are part of the public contract: `err.code === 'SANDBOX_LIMITS'`
+  and `err.code === 'SANDBOX_PROFILE'` are stable, and `err.details` carries the
+  field, the value and the accepted set.
+
 ## Environment surface contract (`tools/sandbox/env/*.js`)
 
 ```js
@@ -205,7 +287,11 @@ export function install(bridge) {
 }
 ```
 
-`installEnvironment(bridge, { strict = true, only = null, exclude = [], logger })`:
+`installEnvironment(bridge, { strict = true, only = null, exclude = [], logger })`
+— note the **two defaults**: this library call is strict, while
+`TracelessSandbox.create({ env })` defaults `strict` to `false` and installs
+whatever resolves (an unmet `requires` edge then shows up as an `undefined`
+surface in the guest, not as an error).
 
 - loads only ids from `ENV_MODULE_IDS` (28) minus `exclude`/outside `only`;
 - sorts loaded modules by `(meta.order, meta.id)`, so the only tie (order 80:
@@ -293,8 +379,19 @@ classification (`tools/invocation/invoke.js` `isEngineStackError`):
 
 The host-side half is `isHostStackExhaustion(thrown)` in
 `tools/sandbox/runtime.js` (a host-thrown `RangeError` out of the WASM
-trampoline). Both feed the `stackExhaustion` marker, and only that marker drives
-abandonment.
+trampoline) plus the callback-boundary witness: `guardHostStackExhaustion`
+increments `runtime.stackSignals()` when the engine signal appears at a host
+callback before quickjs-emscripten converts it into a guest `Error`. The invoker
+reads that counter around the branch it just ran (`noteHostStack`), which is why
+a guest that catches the converted overflow is still classified. Both feed the
+`stackExhaustion` marker, and only that marker drives abandonment.
+
+`revokeStackEvidence(reason)` withdraws guest-dump certification for the rest of
+the run. An environment module that has to leave the engine's `InternalError`
+prototype reachable (the wrapper could not be installed) calls it; from then on
+`isIntrinsicStackError` returns `false` and only the host witness can classify.
+`env/stack.js` normally avoids that state by giving its `InternalError` wrapper a
+fresh prototype with the same own properties and the same `[[Prototype]]`.
 
 ## Restoration pass contract (`tools/restore/passes/*.js`)
 
