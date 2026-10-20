@@ -8,7 +8,7 @@
 export { TracelessSandbox, createProfile, consistencyReport } from './sandbox/sandbox.js'
 export { createHostBridge, isHandle } from './sandbox/bridge.js'
 export { createVirtualClock } from './sandbox/clock.js'
-export { normalizeLimits, DEFAULT_LIMITS } from './sandbox/limits.js'
+export { normalizeLimits, DEFAULT_LIMITS } from './engine/limits.js'
 export { captureIntegrity, diffIntegrity } from './sandbox/integrity.js'
 export { installEnvironment, ENV_MODULE_IDS, loadEnvModule } from './sandbox/env/index.js'
 

@@ -1,6 +1,6 @@
 import { shortHash } from '../util/hash.js'
-import { limitMessage } from '../sandbox/limits.js'
-import { isHostStackExhaustion } from '../sandbox/runtime.js'
+import { limitMessage } from '../engine/limits.js'
+import { isHostStackExhaustion } from '../engine/runtime.js'
 
 /**
  * Traceless invocation.
@@ -41,7 +41,7 @@ export function createInvoker(options) {
    * The number only ever increases, and only a host throw can increment it, so
    * comparing it around one branch attributes the signal to that branch without
    * reading any guest-controlled value. See `guardHostStackExhaustion` in
-   * `tools/sandbox/runtime.js`.
+   * `tools/engine/runtime.js`.
    * @returns {number}
    */
   const hostStackCount = () => {

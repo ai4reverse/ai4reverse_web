@@ -1,5 +1,5 @@
-import { loadQuickJS, createRuntime } from '../../tools/sandbox/runtime.js'
-import { normalizeLimits } from '../../tools/sandbox/limits.js'
+import { loadQuickJS, createRuntime } from '../../tools/engine/runtime.js'
+import { normalizeLimits } from '../../tools/engine/limits.js'
 import { createVirtualClock } from '../../tools/sandbox/clock.js'
 import { createProfile } from '../../tools/sandbox/profile.js'
 import { createHostBridge } from '../../tools/sandbox/bridge.js'

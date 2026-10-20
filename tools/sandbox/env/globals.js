@@ -29,7 +29,7 @@ export function install(bridge) {
   // Chrome and Edge have no `InternalError`; only Firefox (and old SpiderMonkey)
   // ships one. QuickJS does, so it must be removed for a Chromium profile even
   // when the `stack` module is not installed: `InternalError` is the name the
-  // engine uses for its own stack overflow (see `runtime.js`), so leaving the
+  // engine uses for its own stack overflow (see `engine/runtime.js`), so leaving the
   // guest constructor in place would let a sample forge that classification
   // from a reduced environment. A Firefox profile keeps it, because there it is
   // a real part of the surface.

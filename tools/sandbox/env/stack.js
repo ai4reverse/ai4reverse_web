@@ -134,7 +134,7 @@ export function install(bridge) {
 
       var out = {};
       out.Error = wrap('Error', OrigError, 1);
-      // InternalError is the engine's stack-overflow class (see runtime.js), so
+      // InternalError is the engine's stack-overflow class (see engine/runtime.js), so
       // it is the one constructor whose prototype must not be shared.
       out.InternalError = typeof global.InternalError === 'function'
         ? wrap('InternalError', global.InternalError, global.InternalError.length, true)

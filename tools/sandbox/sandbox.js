@@ -1,5 +1,5 @@
-import { loadQuickJS, createRuntime, isHostStackExhaustion, guardHostStackExhaustion } from './runtime.js'
-import { normalizeLimits, DEFAULT_LIMITS } from './limits.js'
+import { loadQuickJS, createRuntime, isHostStackExhaustion, guardHostStackExhaustion } from '../engine/runtime.js'
+import { normalizeLimits, DEFAULT_LIMITS } from '../engine/limits.js'
 import { createProfile, consistencyReport } from './profile.js'
 import { createVirtualClock } from './clock.js'
 import { createHostBridge } from './bridge.js'

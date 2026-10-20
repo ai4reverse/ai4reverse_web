@@ -1,6 +1,6 @@
 import { createSeededRandom } from '../util/random.js'
-import { DEFAULT_LIMITS } from './limits.js'
-import { isHostStackExhaustion } from './runtime.js'
+import { DEFAULT_LIMITS } from '../engine/limits.js'
+import { isHostStackExhaustion } from '../engine/runtime.js'
 
 /**
  * Virtual clock for the sandbox.

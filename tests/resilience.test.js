@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
-import { loadQuickJS, markModuleUnhealthy, resetQuickJS } from '../tools/sandbox/runtime.js'
+import { loadQuickJS, markModuleUnhealthy, resetQuickJS } from '../tools/engine/runtime.js'
 import { SandboxError } from '../tools/util/errors.js'
 
 // The full environment is irrelevant here and costs time per run; the limits
