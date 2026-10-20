@@ -324,6 +324,8 @@ export function run(ast, context) {
     enter(path) {
       if (!CANDIDATE_TYPES.has(path.node.type)) return
       if (!path.isExpression()) return
+      // A tag consumes a TemplateLiteral (including raw text), not a string value.
+      if (path.parentPath?.isTaggedTemplateExpression() && path.key === 'quasi') return
       if (isMutationTarget(path)) return
       if (isDirectiveSlot(path)) return
       const value = evaluate(t, path.node)

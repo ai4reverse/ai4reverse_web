@@ -2,24 +2,25 @@
  * Proxy unwrapping pass.
  *
  * Malware hides real values behind single-use wrappers: identity functions,
- * one-element arrays, arrow aliases, comma expressions with a literal head,
- * `void 0`, and IIFEs that only return an expression. Removing those wrappers
- * exposes the value the rest of the pipeline has to reason about.
+ * arrow aliases, comma expressions with a literal head, `void 0`, and IIFEs that
+ * only return an expression. Removing those wrappers exposes the value the rest
+ * of the pipeline has to reason about.
  *
  * Every rewrite is a local, semantics-preserving substitution: an identity
  * wrapper evaluates its argument exactly once and reads a fixed property chain,
- * `[fn][0]` only evaluates `fn`, comma heads are literals (no side effects), and
- * a single-expression IIFE is only unwrapped when it declares nothing and
- * references no `this`, `arguments`, `super`, `new.target` or its own name.
+ * comma heads are literals (no side effects), and single-element array calls
+ * retain their receiver. A single-expression IIFE is only unwrapped when it
+ * declares nothing and references no `this`, `arguments`, `super`, `new.target`
+ * or its own name.
  */
 
 import { generateExpression } from '../generate.js'
-import { isDirectiveSlot } from '../pass-context.js'
+import { isDirectiveSlot, inWithScope } from '../pass-context.js'
 
 export const meta = {
   id: 'proxy-unwrap',
   order: 60,
-  description: 'unwrap identity proxies, single-element arrays, comma wrappers, void 0 and expression IIFEs',
+  description: 'unwrap identity proxies, comma wrappers, void 0 and expression IIFEs',
   idempotent: true,
 }
 
@@ -146,21 +147,25 @@ function isDiscardableLiteral(t, node) {
 }
 
 /**
- * Calling a member expression binds `this` to its object, so a rewrite must not
- * turn a plain call target into a member expression in call position.
+ * Wrappers produce values, not references. Restoring a reference can bind a
+ * receiver, make eval direct, delete a property or suppress an unresolved read.
  *
  * @param {object} t
  * @param {object} path
  * @param {object} replacement
  * @returns {boolean}
  */
-function wouldRebindThis(t, path, replacement) {
+function wouldChangeReference(t, path, replacement) {
   const parent = path.parentPath
   if (!parent) return false
-  const callsNode =
-    parent.isCallExpression() || parent.isOptionalCallExpression() || parent.isTaggedTemplateExpression()
-  if (!callsNode || parent.node.callee !== path.node) return false
-  return t.isMemberExpression(replacement) || t.isOptionalMemberExpression(replacement)
+  const isMember = t.isMemberExpression(replacement) || t.isOptionalMemberExpression(replacement)
+  if (parent.isUnaryExpression({ operator: 'delete' })) return isMember || t.isIdentifier(replacement)
+  if (parent.isUnaryExpression({ operator: 'typeof' })) return t.isIdentifier(replacement)
+  const isCallTarget =
+    ((parent.isCallExpression() || parent.isOptionalCallExpression()) && parent.node.callee === path.node) ||
+    (parent.isTaggedTemplateExpression() && parent.node.tag === path.node)
+  if (!isCallTarget) return false
+  return isMember || (t.isIdentifier(replacement) && (replacement.name === 'eval' || inWithScope(path)))
 }
 
 /**
@@ -187,7 +192,7 @@ export function run(ast, context) {
         if (t.isFunctionExpression(callee) || t.isArrowFunctionExpression(callee)) {
           const identity = unwrapIdentityProxy(t, callee, args)
           const replacement = identity ?? unwrapExpressionIife(t, callee, args)
-          if (!replacement || wouldRebindThis(t, path, replacement)) return
+          if (!replacement || wouldChangeReference(t, path, replacement)) return
           report({
             rule: identity ? 'identity-proxy' : 'expression-iife',
             from: generateExpression(path.node),
@@ -197,30 +202,6 @@ export function run(ast, context) {
           path.skip()
           roundCount += 1
           return
-        }
-
-        // `[fn][0](x)` evaluates `fn` once and calls it; so does `fn(x)`.
-        if (
-          t.isMemberExpression(callee) &&
-          t.isArrayExpression(callee.object) &&
-          callee.object.elements.length === 1 &&
-          callee.object.elements[0] &&
-          !t.isSpreadElement(callee.object.elements[0])
-        ) {
-          const index = callee.computed && t.isNumericLiteral(callee.property) ? callee.property.value : null
-          if (index !== 0) return
-          const element = callee.object.elements[0]
-          const replacement = t.callExpression(element, args)
-          // `[obj.method][0]()` calls with `this === undefined`; `obj.method()` does not.
-          if (t.isMemberExpression(element) || t.isOptionalMemberExpression(element)) return
-          report({
-            rule: 'single-element-array',
-            from: generateExpression(path.node),
-            to: generateExpression(replacement),
-          })
-          path.replaceWith(replacement)
-          path.skip()
-          roundCount += 1
         }
       },
 
@@ -235,15 +216,13 @@ export function run(ast, context) {
       },
 
       SequenceExpression(path) {
-        const kept = path.node.expressions.filter((expression) => !isDiscardableLiteral(t, expression))
-        if (kept.length === path.node.expressions.length) return
-        const replacement =
-          kept.length === 0
-            ? path.node.expressions[path.node.expressions.length - 1]
-            : kept.length === 1
-              ? kept[0]
-              : t.sequenceExpression(kept)
-        if (wouldRebindThis(t, path, replacement)) return
+        const expressions = path.node.expressions
+        const kept = expressions.filter((expression, index) =>
+          index === expressions.length - 1 || !isDiscardableLiteral(t, expression),
+        )
+        if (kept.length === expressions.length) return
+        const replacement = kept.length === 1 ? kept[0] : t.sequenceExpression(kept)
+        if (wouldChangeReference(t, path, replacement)) return
         if (isDirectiveSlot(path)) return
         report({ rule: 'sequence-head', from: generateExpression(path.node), to: generateExpression(replacement) })
         path.replaceWith(replacement)

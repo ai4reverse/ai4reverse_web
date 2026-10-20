@@ -9,7 +9,8 @@
  *   eval-local `let`/`const` scope. Skipped (with a note) when the literal has
  *   a directive prologue (a `'use strict'` inside a block would stop applying),
  *   a top-level function declaration (Annex B block semantics), when `eval` is
- *   shadowed locally, or when the literal does not parse cleanly.
+ *   shadowed locally, when the calling code is strict (eval owns its var scope),
+ *   or when the literal does not parse cleanly.
  * - `new Function('a', 'b', 'return a + b')` / `Function(...)` with literal
  *   arguments: replaced by an equivalent function expression. The function
  *   constructor always creates *sloppy* functions that resolve free variables
@@ -218,6 +219,11 @@ function readDirectEvalStatements(expression, path, context, note) {
 
   if (path.scope.getBinding('eval')) {
     note(atLine(expression, 'eval-unwrap: local binding shadows eval, call left untouched'))
+    return null
+  }
+
+  if (path.isInStrictMode()) {
+    note(atLine(expression, 'eval-unwrap: eval in strict code left untouched (eval scope and syntax would change)'))
     return null
   }
 

@@ -120,13 +120,14 @@ log((function (_0xa) { return _0xa; })(_0xobj) === _0xobj,
   assert.deepEqual(runSnippet(code).logged, [[true, 7, 3, 42, undefined]])
 })
 
-test('proxy-unwrap: rewrites single-element array calls and expression IIFEs', () => {
+test('proxy-unwrap: preserves single-element array calls and unwraps expression IIFEs', () => {
   const source = `
 log([function (_0xx) { return _0xx * 2; }][0](21), (function () { return 40 + 2; })());
 `
   const { code, changed } = assertSemanticsPreserved(proxyUnwrap, source)
   assert.equal(changed, true)
   assert.deepEqual(runSnippet(code).logged, [[42, 42]])
+  assert.match(code, /\]\[0\]\(21\)/, 'the array receiver is retained')
   assert.match(code, /40 \+ 2/)
 })
 
