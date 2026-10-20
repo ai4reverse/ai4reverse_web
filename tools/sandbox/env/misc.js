@@ -690,7 +690,7 @@ function installStorageStubs(bridge, kit) {
     const name = kit.argumentText(args, 0) || 'default'
     if (!caches.has(name)) caches.set(name, createCache(name))
     bridge.emit('api', 'before', { api: 'CacheStorage.open', name })
-    return fulfilled(caches.get(name).dup())
+    return fulfilled(caches.get(name))
   }))
   method('has', bridge.fn('has', 1, ({ args }) =>
     caches.has(kit.argumentText(args, 0)) ? ctx.true : ctx.false,
@@ -877,7 +877,7 @@ function installRtc(bridge, kit) {
     })
     state.localDescription = offer
     bridge.emit('api', 'before', { api: 'RTCPeerConnection.createOffer' })
-    return fulfilled(offer.dup())
+    return fulfilled(offer)
   }))
   method('createAnswer', bridge.fn('createAnswer', 0, () => {
     bridge.emit('api', 'before', { api: 'RTCPeerConnection.createAnswer' })
