@@ -242,6 +242,8 @@ export async function main(argv = process.argv.slice(2)) {
     level: levelOption(values.level),
     passes: passListOption('passes', values.passes),
     exclude: passListOption('exclude', values.exclude),
+    profile: values.profile !== undefined ? parseJsonOption('profile', values.profile) : undefined,
+    mocks: values.mocks !== undefined ? parseJsonOption('mocks', values.mocks) : undefined,
     // Malformed numbers are usage errors too, and they are checked before any
     // file is read rather than when the limit object is finally built.
     limits: buildLimits(values),
@@ -300,6 +302,7 @@ export async function main(argv = process.argv.slice(2)) {
     const sandbox = await TracelessSandbox.create({
       seed: settings.seed ?? 0x5eed,
       limits: settings.limits,
+      profile: settings.profile,
       logger,
       env: { strict: false },
     })
@@ -310,6 +313,7 @@ export async function main(argv = process.argv.slice(2)) {
         level: settings.level,
         entry: values.entry,
         args: (values.arg ?? []).map(parseJsonArg),
+        mocks: settings.mocks,
       })
       if (values.events) {
         const lines = (run.events ?? []).map((event) => JSON.stringify(event)).join('\n')
@@ -353,8 +357,8 @@ export async function main(argv = process.argv.slice(2)) {
       level: settings.level,
       entry: values.entry,
       args: (values.arg ?? []).map(parseJsonArg),
-      profile: values.profile ? parseJsonOption('profile', values.profile) : undefined,
-      mocks: values.mocks ? parseJsonOption('mocks', values.mocks) : undefined,
+      profile: settings.profile,
+      mocks: settings.mocks,
       instrumentation: settings.level ? { code: { level: settings.level } } : undefined,
     })
     const output = values.json ? `${JSON.stringify(result.report, null, 2)}\n` : result.markdown

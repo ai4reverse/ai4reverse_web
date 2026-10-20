@@ -56,7 +56,8 @@ export function createDefaultHooks(options = {}) {
 function normalizeRegistration(registration) {
   if (Array.isArray(registration)) {
     const [phase, handler, options] = registration
-    if (typeof handler !== 'function') {
+    if (registration.length < 2 || registration.length > 3 || typeof handler !== 'function'
+      || (options !== undefined && (!options || typeof options !== 'object' || Array.isArray(options)))) {
       throw new HookError('hook tuple must be [phase, handler, options?] with a function handler', {
         details: { registration: describeRegistration(registration) },
       })
@@ -107,8 +108,9 @@ function describeRegistration(registration) {
  * Register a list of hook descriptors on a bus.
  *
  * Descriptors may be `{ phase, handler, … }` objects or `[phase, handler,
- * options?]` tuples, and an entry may itself be a list (flattened). A
- * malformed entry throws a `HookError` instead of being skipped, so "0 hooks
+ * options?]` tuples, and an entry may itself be a list (flattened) or a
+ * `{ registrations: [...] }` hook set. A malformed entry throws a `HookError`
+ * instead of being skipped, so "0 hooks
  * registered" is never the silent result of a shape mistake.
  *
  * @param {object} bus
@@ -120,6 +122,15 @@ export function registerHooks(bus, registrations) {
   /** @param {unknown} entry */
   const visit = (entry) => {
     if (entry === undefined || entry === null) return
+    if (entry && typeof entry === 'object' && !Array.isArray(entry) && 'registrations' in entry) {
+      if (!Array.isArray(entry.registrations)) {
+        throw new HookError('hook set registrations must be an array', {
+          details: { registration: describeRegistration(entry) },
+        })
+      }
+      visit(entry.registrations)
+      return
+    }
     if (Array.isArray(entry) && !isTuple(entry)) {
       for (const nested of entry) visit(nested)
       return
@@ -131,7 +142,6 @@ export function registerHooks(bus, registrations) {
     bus.on(phase, handler, { id, owner, priority, once, traceless, context })
     ids.push(id ?? 'anonymous')
   }
-  if (Array.isArray(registrations)) for (const entry of registrations) visit(entry)
-  else visit(registrations)
+  visit(registrations)
   return ids
 }

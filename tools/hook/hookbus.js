@@ -409,8 +409,7 @@ export function createHookBus(options = {}) {
      * @returns {boolean}
      */
     hasListeners(phase) {
-      const registrations = registry.get(normalizePhase(phase))
-      return registrations !== undefined && registrations.length > 0
+      return bus.has(normalizePhase(phase))
     },
 
     describe() {

@@ -79,6 +79,18 @@ export async function analyzeSample(source, options = {}) {
   let run = null
   let runError = null
   let sandbox = options.sandbox ?? null
+  const runOptions = {
+    sourceUrl,
+    filename: options.filename,
+    type: options.type,
+    level: options.level ?? options.instrumentation?.code?.level,
+    entry: options.entry,
+    args: options.args,
+    keepTrace: options.keepTrace !== false,
+    mocks: options.mocks,
+    network: options.network,
+    settle: options.settle,
+  }
   if (options.dynamic !== false) {
     try {
       if (!sandbox) {
@@ -93,18 +105,7 @@ export async function analyzeSample(source, options = {}) {
           env: { strict: options.strictEnv ?? false },
         })
       }
-      run = await sandbox.run(text, {
-        sourceUrl,
-        filename: options.filename,
-        type: options.type,
-        level: options.level ?? options.instrumentation?.code?.level,
-        entry: options.entry,
-        args: options.args,
-        keepTrace: options.keepTrace !== false,
-        mocks: options.mocks,
-        network: options.network,
-        settle: options.settle,
-      })
+      run = await sandbox.run(text, runOptions)
     } catch (error) {
       runError = { name: error.name, message: error.message, code: error.code }
       logger.warn({ err: error.message }, 'dynamic run failed')
@@ -137,12 +138,8 @@ export async function analyzeSample(source, options = {}) {
         env: { strict: options.strictEnv ?? false },
       })
       restoredRun = await restoredSandbox.run(restoration.code, {
-        sourceUrl,
+        ...runOptions,
         filename: options.filename ?? `${name}.restored.js`,
-        level: 'function',
-        keepTrace: true,
-        network: options.network,
-        mocks: options.mocks,
       })
     } catch (error) {
       logger.warn({ err: error.message }, 'restored-code run failed')

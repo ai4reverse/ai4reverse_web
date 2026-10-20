@@ -292,6 +292,7 @@ export interface HookBus {
   clear(owner?: string): void
   setEnabled(id: string, enabled: boolean): boolean
   has(phase: string): boolean
+  hasListeners(phase: string): boolean
   emit(phase: string, payload?: object, extraContext?: object): { phase: string; results: { id: string; result: unknown }[] }
   dispatch(phase: string, payload?: object, extraContext?: object): HookDispatchResult
   pipeline<T>(phase: string, initial: T, extraContext?: object): { value: T; changed: boolean; steps: object[] }
@@ -335,11 +336,10 @@ export interface EnvModule {
 }
 
 export interface EnvironmentInstallResult {
-  installed: { id: string; order: number; ms: number }[]
-  missing: { id: string; reason: string }[]
-  requested: string[]
-  tookMs: number
-  complete: boolean
+  installed: { id: string; order: number }[]
+  skipped: string[]
+  failed: { id: string; message: string }[]
+  missing: string[]
 }
 
 /* -------------------------------------------------------------------------- */
@@ -557,7 +557,6 @@ export interface SandboxSettleDrained {
   promiseErrors: number
   /** A job/timer/virtual-time budget ran out before the queues were empty. */
   exhausted: boolean
-  timedOut: boolean
   pendingTimers: number
   virtualMs: number
   limitsHit: string[]
@@ -1258,7 +1257,6 @@ export declare function createStealth(ctx: QuickJSContext, options?: StealthOpti
 export declare function createInvoker(options: {
   ctx: QuickJSContext
   runtime: QuickJSRuntime
-  limitReason?: () => string | null | undefined
   bridge: HostBridge
   stealth?: Stealth | null
   profile: Profile
