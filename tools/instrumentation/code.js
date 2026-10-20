@@ -239,14 +239,8 @@ export function createCodeInstrumenter(options) {
       node.expression?.type === 'StringLiteral' &&
       node.directive !== undefined
 
-    const offsetAfterDirectives = (body) => {
-      let offset = (body.start ?? 0) + 1
-      for (const statement of body.body ?? []) {
-        if (isDirective(statement)) offset = statement.end
-        else break
-      }
-      return offset
-    }
+    const offsetAfterDirectives = (body) =>
+      body.directives?.at(-1)?.end ?? (body.start ?? 0) + 1
 
     let currentFunctionName = ''
 
@@ -307,13 +301,13 @@ export function createCodeInstrumenter(options) {
         // undeclared binding at coarser levels (H1).
         if (activeRank >= LEVEL_RANK.function) {
           const body = path.node.body ?? []
-          // Program-level channel binding: `let` creates a lexical binding that
-          // is invisible to globalThis enumeration.
-          let offset = 0
-          for (const statement of body) {
-            if (isDirective(statement)) offset = statement.end
-            else break
-          }
+          const directives = path.node.directives ?? []
+          // A hashbang-only source has no probes to bind. Inserting at EOF
+          // would turn the opening marker into part of the interpreter line.
+          if (path.node.interpreter && body.length === 0 && directives.length === 0) return
+          // Babel stores the prologue separately from body. Starting at the
+          // first statement also leaves any hashbang and leading comments intact.
+          const offset = directives.at(-1)?.end ?? body[0]?.start ?? 0
           add(offset, 100, `\nlet ${bindingName()} = ${channelExpression};`)
         }
         if (activeRank < LEVEL_RANK.statement) return

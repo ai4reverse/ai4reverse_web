@@ -1,5 +1,6 @@
 import { parse } from '../restore/parse.js'
 import { traverse } from '../util/babel.js'
+import { analyzeVMStructure } from '../jsvmp/analyze.js'
 import { OPCODE_BY_CODE, SEMANTICS } from '../jsvmp/spec.js'
 
 /**
@@ -22,59 +23,52 @@ const JSVMP_LOOP_KIND = 11
 const ID_BASE = 1_000_000
 
 /**
- * Detect a dispatch loop without a full analysis pass (used when
- * tools/jsvmp/analyze.js is unavailable or the caller wants a quick check).
+ * Detect a dispatch loop using the static analyzer's interpreter evidence.
  * @param {object} ast Babel Program/File
  * @returns {{found: boolean, dispatch?: object}}
  */
 export function detectDispatch(ast) {
-  let best = null
-
-  traverse(ast, {
-    SwitchStatement(path) {
-      const node = path.node
-      if (!node.cases || node.cases.length < 5) return
-      if (!isInsideLoop(path)) return
-      const cases = node.cases.map((switchCase, index) => {
-        const consequent = switchCase.consequent ?? []
-        const first = consequent[0]
-        const label =
-          switchCase.test?.type === 'NumericLiteral'
-            ? String(switchCase.test.value)
-            : switchCase.test?.type === 'StringLiteral'
-              ? switchCase.test.value
-              : switchCase.test?.type === 'MemberExpression'
-                ? memberPath(switchCase.test)
-                : `case#${index}`
-        return {
-          index,
-          label,
-          start: switchCase.start,
-          end: switchCase.end,
-          bodyStart: first?.start ?? switchCase.start,
-          bodyEnd: switchCase.end,
-          consequentCount: consequent.length,
-        }
-      })
-      if (!best || cases.length > best.cases.length) {
-        best = {
-          switchStart: node.start,
-          switchEnd: node.end,
-          discriminant: memberPath(node.discriminant),
-          cases,
-          loopKind: loopKindOf(path),
-        }
-      }
-    },
+  const analysis = analyzeVMStructure(ast)
+  if (!analysis.detected) return { found: false }
+  const { node, loopNode } = analysis.dispatchInfo
+  const cases = node.cases.map((switchCase, index) => {
+    const consequent = switchCase.consequent ?? []
+    const label =
+      switchCase.test?.type === 'NumericLiteral'
+        ? String(switchCase.test.value)
+        : switchCase.test?.type === 'StringLiteral'
+          ? switchCase.test.value
+          : switchCase.test?.type === 'MemberExpression'
+            ? memberPath(switchCase.test)
+            : `case#${index}`
+    return {
+      index,
+      label,
+      start: switchCase.start,
+      end: switchCase.end,
+      bodyStart: consequent[0]?.start ?? switchCase.start,
+      bodyEnd: switchCase.end,
+      consequentCount: consequent.length,
+    }
   })
-
-  if (!best) return { found: false }
   return {
     found: true,
-    score: Math.min(100, best.cases.length * 4 + (best.discriminant ? 20 : 0)),
-    kind: 'switch-dispatch',
-    dispatch: best,
+    score: analysis.score,
+    kind: analysis.kind,
+    dispatch: {
+      switchStart: node.start,
+      switchEnd: node.end,
+      discriminant: memberPath(node.discriminant),
+      cases,
+      loopKind: LOOP_KINDS[loopNode?.type] ?? 'unknown',
+    },
   }
+}
+
+const LOOP_KINDS = {
+  WhileStatement: 'while',
+  ForStatement: 'for',
+  DoWhileStatement: 'do-while',
 }
 
 /**
@@ -269,20 +263,10 @@ export function devirtualize(sequence, semantics = {}, resolve = null) {
 
 /**
  * Offset just after a block's directive prologue.
- * @param {{start?: number, body?: object[]}} block
+ * @param {{start?: number, directives?: object[]}} block
  */
 function offsetAfterDirectives(block) {
-  let offset = (block.start ?? 0) + 1
-  for (const statement of block.body ?? []) {
-    const isDirective =
-      statement.type === 'Directive' ||
-      (statement.type === 'ExpressionStatement' &&
-        statement.directive !== undefined &&
-        statement.expression?.type === 'StringLiteral')
-    if (!isDirective) break
-    offset = statement.end
-  }
-  return offset
+  return block.directives?.at(-1)?.end ?? (block.start ?? 0) + 1
 }
 
 function applyInsertions(source, insertions) {
@@ -300,26 +284,6 @@ function applyInsertions(source, insertions) {
   }
   parts.push(source.slice(cursor))
   return parts.join('')
-}
-
-function isInsideLoop(path) {
-  let current = path
-  while (current) {
-    if (current.isLoop && current.isLoop()) return true
-    current = current.parentPath
-  }
-  return false
-}
-
-function loopKindOf(path) {
-  let current = path
-  while (current) {
-    if (current.isWhileStatement?.()) return 'while'
-    if (current.isForStatement?.()) return 'for'
-    if (current.isDoWhileStatement?.()) return 'do-while'
-    current = current.parentPath
-  }
-  return 'unknown'
 }
 
 function memberPath(node) {

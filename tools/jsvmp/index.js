@@ -8,4 +8,4 @@
 
 export * from './spec.js'
 export * from './builder.js'
-export * from './analyze.js'
+export { analyzeVM, extractHandlers, isJSVMP, summarizeVM } from './analyze.js'

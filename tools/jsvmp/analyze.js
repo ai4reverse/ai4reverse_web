@@ -14,6 +14,7 @@
 import { parse as babelParse } from '@babel/parser'
 import { generate } from '../restore/generate.js'
 import { BASE_PLUGINS, parse } from '../restore/parse.js'
+import { traverse } from '../util/babel.js'
 import { OPCODE_BY_CODE } from './spec.js'
 
 const SKIP_KEYS = new Set([
@@ -57,21 +58,21 @@ function isNode(node) {
  * from overflowing the stack before the outer try/catch can report it.
  *
  * @param {object} root
- * @param {(node: object, context: {inLoop: number, loopNode: object|null}) => void} visit
+ * @param {(node: object, context: {inLoop: number, loopNode: object|null, scope: object}) => void} visit
  */
 function walk(root, visit) {
-  /** @type {Array<{node: object, context: {inLoop: number, loopNode: object|null}}>} */
-  const pending = [{ node: root, context: { inLoop: 0, loopNode: null } }]
+  /** @type {Array<{node: object, context: {inLoop: number, loopNode: object|null, scope: object}}>} */
+  const pending = [{ node: root, context: { inLoop: 0, loopNode: null, scope: root } }]
   while (pending.length > 0) {
     const { node, context } = pending.pop()
     if (!isNode(node)) continue
     visit(node, context)
 
     let childContext = context
-    if (FUNCTION_TYPES.has(node.type)) {
-      childContext = { inLoop: 0, loopNode: null }
+    if (FUNCTION_TYPES.has(node.type) || node.type === 'Program') {
+      childContext = { inLoop: 0, loopNode: null, scope: node }
     } else if (LOOP_TYPES.has(node.type)) {
-      childContext = { inLoop: context.inLoop + 1, loopNode: node }
+      childContext = { ...context, inLoop: context.inLoop + 1, loopNode: node }
     }
 
     for (const key of Object.keys(node)) {
@@ -96,24 +97,59 @@ function walk(root, visit) {
  * @property {Set<string>} assignments
  * @property {Set<string>} pushPopVars
  * @property {object[]} loops
+ * @property {Map<string, object>} referencedPools
  */
 
-/**
- * @param {object} ast
- * @returns {Signals}
- */
-function collectSignals(ast) {
-  /** @type {Signals} */
-  const signals = {
+/** @returns {Signals} */
+function createSignals() {
+  return {
     switches: [],
     declarations: new Map(),
     updates: new Set(),
     assignments: new Set(),
     pushPopVars: new Set(),
     loops: [],
+    referencedPools: new Map(),
   }
+}
 
-  walk(ast, (node, context) => {
+/**
+ * Resolve only pool names actually referenced in each interpreter's lexical
+ * scope. Keep these separate from pc/stack/bytecode detection evidence.
+ * @param {object} ast
+ * @returns {Map<object, Map<string, object>>}
+ */
+function collectReferencedPools(ast) {
+  const pools = new Map()
+  if (!isNode(ast)) return pools
+  const file = ast.type === 'Program' ? { type: 'File', program: ast } : ast
+  traverse(file, {
+    ReferencedIdentifier(path) {
+      const name = path.node.name
+      if (!/const|pool|table/i.test(name)) return
+      const binding = path.scope.getBinding(name)
+      if (!binding?.path.isVariableDeclarator()) return
+      const init = binding.path.node.init
+      if (init?.type !== 'ArrayExpression') return
+      const owner = path.getFunctionParent()?.node ?? path.scope.getProgramParent().path.node
+      const previous = pools.get(owner) ?? new Map()
+      pools.set(owner, new Map([...previous, [name, init]]))
+    },
+  })
+  return pools
+}
+
+/**
+ * Collect evidence separately for each program/function scope. An unrelated
+ * interpreter must not lend its stack or program counter to an ordinary loop.
+ * @param {object} ast
+ * @returns {Signals[]}
+ */
+function collectSignals(ast) {
+  const scopes = new Map()
+  walk(ast?.program ?? ast, (node, context) => {
+    if (!scopes.has(context.scope)) scopes.set(context.scope, createSignals())
+    const signals = scopes.get(context.scope)
     if (node.type === 'SwitchStatement' && isNode(node.discriminant)) {
       signals.switches.push({
         node,
@@ -143,7 +179,11 @@ function collectSignals(ast) {
     if (LOOP_TYPES.has(node.type)) signals.loops.push(node)
   })
 
-  return signals
+  const referencedPools = collectReferencedPools(ast)
+  return [...scopes.entries()].map(([scope, signals]) => ({
+    ...signals,
+    referencedPools: referencedPools.get(scope) ?? new Map(),
+  }))
 }
 
 /** @param {object|null|undefined} node */
@@ -270,7 +310,8 @@ function readLiteral(node) {
  * @returns {unknown[]}
  */
 function findConsts(signals) {
-  const arrays = [...signals.declarations.entries()].filter(([, init]) => init?.type === 'ArrayExpression')
+  const arrays = [...signals.declarations.entries(), ...signals.referencedPools.entries()]
+    .filter(([, init]) => init?.type === 'ArrayExpression')
   const chosen =
     arrays.find(([name]) => name === 'consts') ??
     arrays.find(([name]) => /const|pool|table/i.test(name))
@@ -486,6 +527,60 @@ function describeLoop(loopNode) {
 }
 
 /**
+ * Shared structural detection for static analysis and runtime instrumentation.
+ * @param {object} ast Babel File/Program
+ * @returns {{detected: boolean, score: number, kind: string, dispatchInfo: object|null, consts: unknown[], interpreter: object}}
+ */
+export function analyzeVMStructure(ast) {
+  const candidates = collectSignals(ast).map(analyzeScope)
+  return candidates.reduce((best, candidate) => {
+    if (candidate.detected !== best.detected) return candidate.detected ? candidate : best
+    if (Boolean(candidate.dispatchInfo) !== Boolean(best.dispatchInfo)) {
+      return candidate.dispatchInfo ? candidate : best
+    }
+    return candidate.score > best.score ? candidate : best
+  }, analyzeScope(createSignals()))
+}
+
+/** @param {Signals} signals */
+function analyzeScope(signals) {
+  const dispatchInfo = pickDispatch(signals)
+  const hasSwitch = signals.switches.length > 0
+  const hasWhile = signals.loops.some(
+    (loop) => loop.type === 'WhileStatement' || loop.type === 'DoWhileStatement',
+  )
+  const stackVariables = findStackVariables(signals)
+  const pcVariables = collectPcVariables(signals)
+  const bytecodeVariable = findBytecodeVariable(signals)
+  const consts = findConsts(signals)
+  const indexed = Boolean(dispatchInfo && isIndexedDiscriminant(dispatchInfo.node.discriminant))
+  const inLoop = Boolean(dispatchInfo?.inLoop)
+
+  let score = 0
+  if (hasSwitch) score += 10
+  if (inLoop) score += 25
+  if (indexed) score += 20
+  if (stackVariables.length > 0) score += 15
+  if (pcVariables.length > 0) score += 10
+  if (bytecodeVariable) score += 15
+  if (consts.length > 0) score += 5
+  score = Math.min(100, score)
+
+  // A loop switch needs both an indexed discriminant and interpreter evidence.
+  const interpreterEvidence =
+    Boolean(bytecodeVariable) || stackVariables.length > 0 || pcVariables.length > 0
+  const detected = hasSwitch && inLoop && indexed && interpreterEvidence && score >= 50
+  return {
+    detected,
+    score,
+    kind: detected ? (score >= 80 ? 'stack-vm' : 'switch-dispatch') : 'none',
+    dispatchInfo,
+    consts,
+    interpreter: { hasSwitch, hasWhile, pcVariables },
+  }
+}
+
+/**
  * Analyze a candidate JSVMP source string.
  *
  * @param {string} source
@@ -510,42 +605,7 @@ export function analyzeVM(source, options = {}) {
       return { detected: false, note: `parse failed: ${error.message}` }
     }
 
-    const signals = collectSignals(parsed.ast)
-    const dispatchInfo = pickDispatch(signals)
-    const hasSwitch = signals.switches.length > 0
-    const hasWhile = signals.loops.some(
-      (loop) => loop.type === 'WhileStatement' || loop.type === 'DoWhileStatement',
-    )
-    const stackVariables = findStackVariables(signals)
-    const pcVariables = collectPcVariables(signals)
-    const bytecodeVariable = findBytecodeVariable(signals)
-    const consts = findConsts(signals)
-    const indexed = Boolean(dispatchInfo && isIndexedDiscriminant(dispatchInfo.node.discriminant))
-    const inLoop = Boolean(dispatchInfo?.inLoop)
-
-    let score = 0
-    if (hasSwitch) score += 10
-    if (inLoop) score += 25
-    if (indexed) score += 20
-    if (stackVariables.length > 0) score += 15
-    if (pcVariables.length > 0) score += 10
-    if (bytecodeVariable) score += 15
-    if (consts.length > 0) score += 5
-    score = Math.min(100, score)
-
-    // A switch inside a loop is not a JSVMP by itself: require interpreter
-    // evidence (bytecode array / value stack / program counter) and an indexed
-    // discriminant, otherwise ordinary dispatch tables are misclassified.
-    const interpreterEvidence =
-      Boolean(bytecodeVariable) || stackVariables.length > 0 || pcVariables.length > 0
-    const detected = hasSwitch && inLoop && indexed && interpreterEvidence && score >= 50
-    const kind = detected ? (score >= 80 ? 'stack-vm' : 'switch-dispatch') : 'none'
-
-    const interpreter = {
-      hasSwitch,
-      hasWhile,
-      pcVariables,
-    }
+    const { detected, score, kind, dispatchInfo, consts, interpreter } = analyzeVMStructure(parsed.ast)
 
     if (!dispatchInfo) {
       return {
