@@ -114,12 +114,14 @@ export function run(ast, context) {
   let changed = false
 
   /**
+   * Fold one candidate node. Source text is only rendered after the fold
+   * verdict is known, so rejected candidates never pay for the generator.
+   *
    * @param {object} path
    * @param {() => ({value: *, rule: string} | null)} fold
    */
   const foldAt = (path, fold) => {
-    const before = path.node
-    const source = safeExpressionText(before)
+    const node = path.node
     try {
       if (isMutationTarget(path)) return
       const folded = fold()
@@ -127,7 +129,7 @@ export function run(ast, context) {
       const replacement = toLiteral(t, folded.value)
       if (!replacement) return
       if (typeof folded.value === 'string' && isDirectiveSlot(path)) {
-        notes.push(`skipped ${source}: result would become a directive`)
+        notes.push(`skipped ${safeExpressionText(node)}: result would become a directive`)
         return
       }
       path.replaceWith(replacement)
@@ -136,11 +138,11 @@ export function run(ast, context) {
       context.report({
         pass: meta.id,
         rule: folded.rule,
-        from: truncate(source),
+        from: truncate(safeExpressionText(node)),
         to: truncate(safeExpressionText(replacement)),
       })
     } catch (error) {
-      notes.push(`fold of ${source} failed: ${error.message}`)
+      notes.push(`fold of ${safeExpressionText(node)} failed: ${error.message}`)
     }
   }
 

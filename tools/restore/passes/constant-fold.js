@@ -90,24 +90,27 @@ export function run(ast, context) {
   /**
    * Fold one candidate node. Returns true when the tree was rewritten.
    *
+   * Source text is only rendered after the fold verdict is known: the vast
+   * majority of candidates are not foldable, and generating their text here
+   * dominated restore time on obfuscated samples.
+   *
    * @param {object} path
    * @returns {boolean}
    */
   const foldPath = (path) => {
     const node = path.node
     if (path.findParent?.((parent) => parent.isWithStatement?.())) {
-      notes.push(`skipped ${safeExpressionText(node)}: inside a with statement`)
+      notes.push(`skipped ${describeNode(node)}: inside a with statement`)
       return false
     }
     if (isAlreadyCanonical(node, t)) return false
-    const source = safeExpressionText(node)
     try {
       const value = evaluate(node, { remaining: EVALUATION_BUDGET }, (name) => Boolean(path.scope?.getBinding(name)))
       if (value === NOT_FOLDABLE) return false
       const replacement = toLiteral(t, value)
       if (!replacement) return false
       if (typeof value === 'string' && isDirectiveSlot(path)) {
-        notes.push(`skipped ${source}: result would become a directive`)
+        notes.push(`skipped ${safeExpressionText(node)}: result would become a directive`)
         return false
       }
       path.replaceWith(replacement)
@@ -116,12 +119,12 @@ export function run(ast, context) {
       context.report({
         pass: meta.id,
         rule: `${node.type}:${operatorOf(node)}`,
-        from: truncate(source),
+        from: truncate(safeExpressionText(node)),
         to: truncate(safeExpressionText(replacement)),
       })
       return true
     } catch (error) {
-      notes.push(`fold of ${source} failed: ${error.message}`)
+      notes.push(`fold of ${safeExpressionText(node)} failed: ${error.message}`)
       return false
     }
   }
@@ -393,6 +396,20 @@ function isDirectiveSlot(path) {
 function isPrologueEntry(node) {
   if (node.type === 'Directive') return true
   return node.type === 'ExpressionStatement' && node.expression.type === 'StringLiteral'
+}
+
+/**
+ * Cheap description of a node we did NOT fold: parser offsets instead of
+ * generated text, so rejected candidates never pay for the generator.
+ *
+ * @param {object} node
+ * @returns {string}
+ */
+function describeNode(node) {
+  const start = typeof node.start === 'number' ? node.start : null
+  const end = typeof node.end === 'number' ? node.end : null
+  if (start === null || end === null) return node.type ?? 'unknown'
+  return `${node.type}@${start}-${end}`
 }
 
 /**
