@@ -176,6 +176,103 @@ for (const forgery of STACK_FORGERIES) {
   })
 }
 
+/**
+ * Forgery (R9b): the *name* is guest data too. QuickJS labels its own stack
+ * overflow `InternalError`, so a dumped `{name: 'InternalError'}` record used to
+ * be read as engine evidence — the remaining way to abandon a healthy runtime
+ * from pure guest data. Classification now uses intrinsic identity of the live
+ * handle (`stealth.isIntrinsicStackError`), so no crafted object classifies.
+ */
+const INTRINSIC_STACK_FORGERIES = [
+  {
+    label: 'plain object',
+    source: "throw { name: 'InternalError', message: 'Maximum call stack size exceeded', stack: '' }",
+  },
+  {
+    label: 'Error renamed to InternalError',
+    source: "var error = new Error('Maximum call stack size exceeded'); error.name = 'InternalError'; throw error",
+  },
+  {
+    label: 'object with an InternalError prototype stand-in',
+    source: `
+      var proto = Object.create(Error.prototype);
+      proto.name = 'InternalError';
+      var error = Object.create(proto);
+      error.message = 'Maximum call stack size exceeded';
+      error.stack = '';
+      throw error;
+    `,
+  },
+  {
+    label: 'InternalError recovered from the constructor name',
+    source: `
+      var ErrorCtor = new Error('probe').constructor;
+      var Fake = function InternalError(message) { this.message = message };
+      Fake.prototype = Object.create(ErrorCtor.prototype);
+      Fake.prototype.name = 'InternalError';
+      throw new Fake('Maximum call stack size exceeded');
+    `,
+  },
+]
+
+for (const forgery of INTRINSIC_STACK_FORGERIES) {
+  test(`${forgery.label} cannot forge engine stack exhaustion`, async () => {
+    const sb = await sandbox()
+    const printed = []
+    const restoreEngine = captureEngineOutput(printed)
+    try {
+      const run = await sb.run(forgery.source)
+      assert.equal(run.ok, false)
+      assert.deepEqual(run.limitsHit, [], `forged stack limit: ${JSON.stringify(run.limitsHit)}`)
+      assert.equal(run.stackExhaustion, false)
+      // A healthy runtime: no leak marker, no skipped disposal, no quarantine.
+      assert.deepEqual(run.disposal, { ok: true, errors: [] })
+
+      const next = await sb.run('1+1')
+      assert.equal(next.ok, true, JSON.stringify(next.error))
+      assert.equal(next.result.value, 2)
+      assert.deepEqual(next.disposal, { ok: true, errors: [] })
+    } finally {
+      restoreEngine()
+      sb.dispose()
+    }
+
+    assert.deepEqual(
+      printed.filter((chunk) => /Aborted/i.test(chunk)),
+      [],
+      `engine abort printed to stderr: ${printed.join('')}`,
+    )
+  })
+}
+
+test('the engine InternalError prototype is unreachable from the guest', async () => {
+  const sb = await sandbox()
+  try {
+    // The intrinsic is what the identity probe compares against; a guest that
+    // could reach it could craft a prototype-identical object. `globals`
+    // removes the constructor for every non-Firefox profile, so the only way to
+    // a matching object is a *real* engine overflow.
+    const surface = await sb.run(`
+      ({
+        type: typeof InternalError,
+        own: Object.getOwnPropertyNames(globalThis).indexOf('InternalError'),
+        inherit: (function () {
+          var proto = Object.getPrototypeOf(new Error('x'))
+          return proto !== null && proto !== Object.prototype && proto.name === 'InternalError'
+        })()
+      })
+    `)
+    assert.equal(surface.ok, true, JSON.stringify(surface.error))
+    const value = JSON.parse(surface.result.preview)
+    assert.equal(value.type, 'undefined', 'guest can still reach the engine InternalError')
+    assert.equal(value.own, -1)
+    assert.equal(value.inherit, false)
+    assert.deepEqual(surface.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('a forged stack message in a callback is a guest exception, not a stack limit', async () => {
   const sb = await sandbox()
   try {

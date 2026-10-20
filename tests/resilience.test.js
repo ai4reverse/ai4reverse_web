@@ -506,3 +506,105 @@ test('a reduced environment cannot construct the engine stack error', async () =
     sb.dispose()
   }
 })
+
+/**
+ * Intrinsic identity (R9b): classification asks the engine's own `InternalError`
+ * object, not the name in a dump. A reduced `limits.stackBytes` makes QuickJS'
+ * interpreter check fire before the WASM native stack, so the *genuine* overflow
+ * arrives as a guest `InternalError` instead of a host throw. That path must stay
+ * classified — otherwise a real breach is reported as a plain exception.
+ */
+test('a genuine engine InternalError from a reduced stack limit stays classified', async () => {
+  const sb = await sandbox({ limits: { stackBytes: 64 * 1024 } })
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    const run = await sb.run('function f(n){ return f(n + 1) } f(0)')
+    assert.equal(run.ok, false)
+    assert.equal(run.error?.name, 'InternalError', JSON.stringify(run.error))
+    assert.deepEqual(run.limitsHit, ['stack'], JSON.stringify(run.limitsHit))
+    assert.equal(run.stackExhaustion, true)
+    assert.equal(run.settle, null)
+
+    // The stack is gone, so the runtime is abandoned rather than disposed.
+    assert.equal(run.disposal.skipped, true)
+    assert.equal(run.disposal.leaked, true)
+
+    const followUp = await sb.run('1+1')
+    assert.equal(followUp.ok, true, JSON.stringify(followUp.error))
+    assert.equal(followUp.result.value, 2)
+  } finally {
+    restoreEngine()
+    sb.dispose()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+})
+
+/**
+ * Reachable-constructor forgery: a Firefox profile keeps `InternalError` as part
+ * of the surface (real Firefox has it), and QuickJS builds its own internal
+ * errors with that very prototype — so `new InternalError(...)` is
+ * indistinguishable from a real overflow by prototype identity alone. While the
+ * constructor is guest-reachable the probe therefore refuses to certify, and a
+ * sample cannot steer a run onto the quarantine path.
+ */
+test('a reachable InternalError constructor cannot forge engine stack exhaustion', async () => {
+  const sb = await sandbox({ profile: { browser: 'firefox', os: 'linux', locale: 'en-US' } })
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    const surface = await sb.run('typeof InternalError')
+    assert.equal(surface.ok, true, JSON.stringify(surface.error))
+    assert.equal(surface.result.value, 'function', 'Firefox profile must keep the constructor')
+
+    const forged = await sb.run('throw new InternalError("Maximum call stack size exceeded")')
+    assert.equal(forged.ok, false)
+    assert.equal(forged.error?.name, 'InternalError')
+    assert.deepEqual(forged.limitsHit, [], `forged stack limit: ${JSON.stringify(forged.limitsHit)}`)
+    assert.equal(forged.stackExhaustion, false)
+    assert.deepEqual(forged.disposal, { ok: true, errors: [] })
+    assert.equal('leaked' in forged.disposal, false, 'a forged overflow must not report a leak')
+
+    // The same profile still classifies a real overflow (a host throw at the
+    // default stack limit), so the guard costs no genuine signal here.
+    const real = await sb.run(OVERFLOW)
+    assert.equal(real.ok, false)
+    assert.deepEqual(real.limitsHit, ['stack'], JSON.stringify(real.limitsHit))
+    assert.equal(real.stackExhaustion, true)
+
+    const followUp = await sb.run('1+1')
+    assert.equal(followUp.ok, true, JSON.stringify(followUp.error))
+    assert.equal(followUp.result.value, 2)
+  } finally {
+    restoreEngine()
+    sb.dispose()
+  }
+
+  const aborts = printed.filter((chunk) => /Aborted/.test(chunk))
+  assert.deepEqual(aborts, [], `engine abort printed to stderr: ${aborts.join('')}`)
+})
+
+/**
+ * The reduced-stack configuration must not weaken the forgery defence: the
+ * guest-error classification path is now live there, and it is exactly the path
+ * a forged record used to exploit.
+ */
+test('forged stack records stay unclassified at a reduced stack limit', async () => {
+  const sb = await sandbox({ limits: { stackBytes: 64 * 1024 } })
+  try {
+    for (const source of [
+      "throw { name: 'InternalError', message: 'Maximum call stack size exceeded', stack: '' }",
+      "var error = new Error('Maximum call stack size exceeded'); error.name = 'InternalError'; throw error",
+    ]) {
+      const run = await sb.run(source)
+      assert.equal(run.ok, false)
+      assert.deepEqual(run.limitsHit, [], `forged stack limit: ${JSON.stringify(run.limitsHit)}`)
+      assert.equal(run.stackExhaustion, false)
+      assert.deepEqual(run.disposal, { ok: true, errors: [] })
+    }
+  } finally {
+    sb.dispose()
+  }
+})
