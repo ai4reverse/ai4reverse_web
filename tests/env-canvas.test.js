@@ -778,7 +778,7 @@ test('2D gradients, patterns and image data are recorded and validated', async (
     assert.equal(value.dataWidth, 2)
     assert.equal(value.dataLength, 16)
     assert.equal(value.drawnIsClamped, '[object Uint8ClampedArray]')
-    assert.ok(Array.isArray(value.dash), 'getLineDash returns a dash array')
+    assert.deepEqual(value.dash, [2, 4], 'getLineDash returns the segments set by setLineDash')
     assert.equal(value.measure, 'function')
     assert.equal(value.transform, 'function')
     assert.equal(value.ops, true)
@@ -786,6 +786,142 @@ test('2D gradients, patterns and image data are recorded and validated', async (
   } finally {
     harness.dispose()
   }
+})
+
+test('new ImageData is transparent black and the line dash round-trips', async () => {
+  // The constructor allocates a scratch image, so its pixels are real zeros:
+  // `getImageData` is the pixel-read fingerprint surface, `new ImageData` is
+  // not. `data` is one writable guest array, because a getter returning a fresh
+  // view per access would silently drop `image.data[0] = 255`. The line dash is
+  // drawing state: it survives save()/restore() and reads back as a copy.
+  const harness = await createCanvasHarness()
+  let disposal
+  try {
+    const value = JSON.parse(
+      runGuest(
+        harness,
+        `(function () {
+          var canvas = new HTMLCanvasElement();
+          var ctx = canvas.getContext('2d');
+          var image = new ImageData(3, 2);
+          var initial = Array.prototype.join.call(image.data, ',');
+          var sameView = image.data === image.data;
+          image.data[0] = 255;
+          image.data[5] = 128;
+          var written = [image.data[0], image.data[5]];
+          var drawn = ctx.getImageData(0, 0, 2, 2);
+          var scratch = ctx.createImageData(2, 2);
+          var emptyDash = ctx.getLineDash();
+          ctx.setLineDash([2, 4]);
+          var setDash = ctx.getLineDash();
+          ctx.save();
+          ctx.setLineDash([]);
+          var savedDash = ctx.getLineDash();
+          ctx.restore();
+          var restoredDash = ctx.getLineDash();
+          var copy = ctx.getLineDash();
+          copy.push(99);
+          var afterMutation = ctx.getLineDash();
+          ctx.setLineDash([3]);
+          var repeated = ctx.getLineDash();
+          var error = null;
+          ctx.setLineDash([2, 4]);
+          // Chrome ignores the whole call for a NaN or a negative segment and
+          // keeps the previous list; nothing throws.
+          var threw = 'no throw';
+          try { ctx.setLineDash([1, NaN]); } catch (thrown) { threw = thrown.name; }
+          var afterNaN = ctx.getLineDash();
+          ctx.setLineDash([-2, 4]);
+          var afterNegative = ctx.getLineDash();
+          ctx.setLineDash([]);
+          var cleared = ctx.getLineDash();
+          var dimensions = [];
+          [
+            [0, 2], [2, 0], [NaN, 2], [-1, 2], [100000, 100000]
+          ].forEach(function (pair) {
+            try {
+              var bad = new ImageData(pair[0], pair[1]);
+              dimensions.push('ok:' + bad.width + 'x' + bad.height);
+            } catch (thrown) {
+              dimensions.push(thrown.name);
+            }
+          });
+          var truncated = new ImageData(2.9, 3.2);
+          // A full-HD scratch image is legitimate; only absurd sizes are refused.
+          var screen = new ImageData(1920, 1080);
+          image.width = 9;
+          image.height = 9;
+          return JSON.stringify({
+            tag: Object.prototype.toString.call(image.data),
+            length: image.data.length,
+            nonZero: initial.split(',').filter(function (byte) { return byte !== '0'; }).length,
+            sameView: sameView,
+            written: written,
+            width: image.width,
+            height: image.height,
+            emptyDash: emptyDash,
+            emptyLength: emptyDash.length,
+            setDash: setDash,
+            savedDash: savedDash,
+            restoredDash: restoredDash,
+            afterMutation: afterMutation,
+            repeated: repeated,
+            threw: threw,
+            afterNaN: afterNaN,
+            afterNegative: afterNegative,
+            cleared: cleared,
+            dimensions: dimensions,
+            truncated: [truncated.width, truncated.height, truncated.data.length],
+            screenLength: screen.data.length,
+            screenZero: screen.data[0] + screen.data[screen.data.length - 1],
+            drawnLength: drawn.data.length,
+            scratchLength: scratch.data.length,
+          });
+        })()`,
+      ),
+    )
+
+    assert.equal(value.tag, '[object Uint8ClampedArray]')
+    assert.equal(value.length, 3 * 2 * 4, 'new ImageData(w, h).data must have w*h*4 entries')
+    assert.equal(value.nonZero, 0, 'new ImageData(w, h) starts as transparent black')
+    assert.equal(value.sameView, true, 'data must be the same array on every access')
+    assert.deepEqual(value.written, [255, 128], 'writes to data must reach the guest array')
+    // `width`/`height` stay read-only IDL attributes.
+    assert.equal(value.width, 3)
+    assert.equal(value.height, 2)
+    assert.deepEqual(value.emptyDash, [], 'getLineDash defaults to an empty array')
+    assert.equal(value.emptyLength, 0)
+    assert.deepEqual(value.setDash, [2, 4])
+    assert.deepEqual(value.savedDash, [], 'setLineDash([]) inside save() is visible')
+    assert.deepEqual(value.restoredDash, [2, 4], 'restore() must restore the line dash')
+    assert.deepEqual(value.afterMutation, [2, 4], 'getLineDash returns a copy, not the state')
+    assert.deepEqual(value.repeated, [3, 3], 'an odd-length dash list is repeated')
+    assert.equal(value.threw, 'no throw', 'an invalid dash entry must not throw')
+    assert.deepEqual(value.afterNaN, [2, 4], 'a NaN segment leaves the dash list alone')
+    assert.deepEqual(value.afterNegative, [2, 4], 'a negative segment leaves the dash list alone')
+    assert.deepEqual(value.cleared, [])
+    // Chrome rejects zero, NaN and oversize dimensions with `IndexSizeError`.
+    assert.deepEqual(value.dimensions, [
+      'IndexSizeError',
+      'IndexSizeError',
+      'IndexSizeError',
+      'IndexSizeError',
+      'IndexSizeError',
+    ])
+    assert.deepEqual(value.truncated, [2, 3, 24], 'dimensions truncate toward zero')
+    assert.equal(value.screenLength, 1920 * 1080 * 4, 'a full-HD scratch image must be allowed')
+    assert.equal(value.screenZero, 0, 'a large scratch image is still transparent black')
+    assert.equal(value.drawnLength, 16, 'getImageData keeps its noisy payload')
+    assert.equal(value.scratchLength, 16)
+    assert.ok(
+      harness.trace.events.some((event) => event.api === 'canvas.setLineDash'),
+      'setLineDash must stay in the dom trace',
+    )
+  } finally {
+    disposal = harness.dispose()
+  }
+  assert.equal(disposal.leaked, false, 'the data view must not outlive the bridge')
+  assert.equal(disposal.ok, true)
 })
 
 test('element style, events and box metrics are browser-shaped', async () => {

@@ -43,6 +43,17 @@ const OP_LOG_LIMIT = 256
 const OP_TEXT_LIMIT = 64
 /** `getImageData` refuses allocations larger than a browser-style guard. */
 const MAX_IMAGE_DATA_BYTES = 4 * 1024 * 1024
+/**
+ * Largest pixel buffer `new ImageData(w, h)` may allocate.
+ *
+ * Unlike `getImageData`, whose payload is the fingerprint, this buffer is host
+ * memory the engine never sees, so the runtime's `memoryBytes` limit does not
+ * cover it. The ceiling is therefore the default run budget
+ * (`limits.memoryBytes`, 64 MiB): a full-HD scratch image still fits, while an
+ * accidental `new ImageData(100000, 100000)` fails as `IndexSizeError` the way
+ * Chrome fails it instead of exhausting the host.
+ */
+const MAX_IMAGE_DATA_ALLOCATION = 64 * 1024 * 1024
 const DEFAULT_FONT = '10px sans-serif'
 
 /** PNG magic bytes; the base64 of this prefix is `iVBORw0KGgo`. */
@@ -508,6 +519,28 @@ function round3(value) {
 function truncate(value, limit = OP_TEXT_LIMIT) {
   const text = String(value)
   return text.length > limit ? `${text.slice(0, limit)}…` : text
+}
+
+/**
+ * Coerce a `setLineDash` argument list the way the browser binding does.
+ *
+ * Entries are converted with ToNumber and an odd-length list is repeated once,
+ * so `setLineDash([2])` reads back as `[2, 2]`. A NaN, an infinite or a negative
+ * entry makes the whole call a no-op instead of throwing: Chrome keeps the
+ * previous dash list, so a sample that probes invalid input sees Chrome's
+ * behaviour (verified against Chrome 155).
+ *
+ * @param {unknown[]} segments plain argument values
+ * @returns {number[] | null} segments to store, or null to leave the dash alone
+ */
+function parseLineDash(segments) {
+  const numbers = []
+  for (const value of segments) {
+    const number = typeof value === 'number' ? value : Number(value)
+    if (!Number.isFinite(number) || number < 0) return null
+    numbers.push(number)
+  }
+  return numbers.length % 2 === 1 ? [...numbers, ...numbers] : numbers
 }
 
 /**
@@ -1266,7 +1299,10 @@ export function install(bridge) {
       length: 0,
       run: (state, call) => {
         recordOp(state.canvas, call.thisHandle, 'save', [])
-        state.stack.push(snapshotContext(call.thisHandle))
+        // The line dash is drawing state too, but it is host-side bookkeeping
+        // rather than a guest property, so it rides next to the property
+        // snapshot instead of inside it (`writeValue` would shadow the method).
+        state.stack.push({ props: snapshotContext(call.thisHandle), lineDash: [...state.lineDash] })
         return ctx.undefined
       },
     },
@@ -1275,7 +1311,9 @@ export function install(bridge) {
       run: (state, call) => {
         recordOp(state.canvas, call.thisHandle, 'restore', [])
         const snapshot = state.stack.pop()
-        if (snapshot) for (const [key, value] of Object.entries(snapshot)) writeValue(call.thisHandle, key, value)
+        if (!snapshot) return ctx.undefined
+        for (const [key, value] of Object.entries(snapshot.props)) writeValue(call.thisHandle, key, value)
+        state.lineDash = snapshot.lineDash
         return ctx.undefined
       },
     },
@@ -1352,9 +1390,17 @@ export function install(bridge) {
     },
     getLineDash: {
       length: 0,
-      run: () => {
+      run: (state) => {
         bridge.emit('dom', 'before', { api: 'canvas.getLineDash' })
-        return ctx.newArray()
+        // A browser returns a copy: mutating the result must not change the
+        // context, so the stored segments are only read here.
+        const dash = ctx.newArray()
+        state.lineDash.forEach((value, index) => {
+          const handle = ctx.newNumber(value)
+          ctx.setProp(dash, index, handle)
+          handle.dispose()
+        })
+        return dash
       },
     },
     setLineDash: {
@@ -1362,23 +1408,70 @@ export function install(bridge) {
       run: (state, call) => {
         const segments = call.args[0] ? bridge.list(call.args[0], 32) : []
         recordOp(state.canvas, call.thisHandle, 'setLineDash', segments)
+        const dash = parseLineDash(segments)
+        if (dash) state.lineDash = dash
         return ctx.undefined
       },
     },
     getTransform: { length: 0, run: () => plainObject({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) },
   })
 
-  const createImageData = (request) => {
-    const data = imageDataBytes(request)
-    const bufferHandle = ctx.newArrayBuffer(data.buffer)
+  /**
+   * Attach the pixel state and the guest `data` view to an `ImageData`
+   * instance.
+   *
+   * `data` is an own property holding one guest `Uint8ClampedArray` over a
+   * guest `ArrayBuffer`, so a sample that writes `image.data[0] = 255` and reads
+   * it back sees its own write (a getter returning a fresh view per access would
+   * silently drop every write, which is itself a detection signal). The bytes
+   * are copied into guest memory; the host array stays private.
+   *
+   * @param {object} imageHandle guest `ImageData`
+   * @param {{width: number, height: number, bytes: Uint8ClampedArray}} image
+   */
+  const attachImageData = (imageHandle, image) => {
+    const { width, height, bytes } = image
+    attachState(imageHandle, { id: nextStateId++, group: 'image-data', width, height, data: bytes })
+    const bufferHandle = ctx.newArrayBuffer(bytes.buffer)
     const view = invoke(helpers.Uint8ClampedArray, [bufferHandle])
     bufferHandle.dispose()
-    const image = createInstance(ImageDataCtor)
-    attachState(image, { id: nextStateId++, group: 'image-data', width: request.width, height: request.height, data })
-    ctx.setProp(image, 'data', view)
+    ctx.setProp(imageHandle, 'data', view)
     view.dispose()
+  }
+
+  const createImageData = (request) => {
+    const image = createInstance(ImageDataCtor)
+    attachImageData(image, {
+      width: request.width,
+      height: request.height,
+      bytes: imageDataBytes(request),
+    })
     return image
   }
+
+  /**
+   * The browser's `IndexSizeError` for an `ImageData` dimension. The env ships no
+   * `DOMException` class, so this names a plain `Error` like the rest of the
+   * module; the name is what a sample reads.
+   *
+   * @param {string} message
+   * @returns {Error}
+   */
+  const imageSizeError = (message) => {
+    const error = new Error(`Failed to construct 'ImageData': ${message}`)
+    error.name = 'IndexSizeError'
+    return error
+  }
+
+  /**
+   * WebIDL `unsigned long` conversion for an `ImageData` dimension: ToNumber,
+   * then truncate toward zero. NaN survives so the caller can report
+   * "zero or not a number".
+   *
+   * @param {object} handle guest argument handle
+   * @returns {number}
+   */
+  const imageDimension = (handle) => Math.trunc(Number(handle ? bridge.fromGuest(handle) : NaN))
 
   const createGradient = (kind) => {
     const gradient = createInstance(CanvasGradientCtor)
@@ -2096,7 +2189,7 @@ export function install(bridge) {
     if (type === '2d') {
       return cachedContext(call, CONTEXT_2D_KEY, () => {
         const context = createInstance(CanvasRenderingContext2DCtor)
-        attachState(context, { id: nextStateId++, group: '2d', canvas: canvasState, stack: [] })
+        attachState(context, { id: nextStateId++, group: '2d', canvas: canvasState, stack: [], lineDash: [] })
         ctx.setProp(context, 'canvas', call.thisHandle)
         for (const [key, value] of Object.entries(CONTEXT_2D_STATE)) writeValue(context, key, value)
         return context
@@ -2342,10 +2435,22 @@ export function install(bridge) {
     arity: 2,
     group: 'image-data',
     init: bridge.fn('initialize', 2, ({ args }) => {
-      const width = Math.max(0, bridge.int(args, 1, 0))
-      const height = Math.max(0, bridge.int(args, 2, 0))
-      const request = { seed: canvasSeed, noise: canvasNoise, x: 0, y: 0, width, height }
-      attachState(args[0], { id: nextStateId++, group: 'image-data', width, height, data: imageDataBytes(request) })
+      // `new ImageData(w, h)` starts as transparent black in a browser, unlike
+      // `getImageData`, whose noise is the pixel-read fingerprint: a sample that
+      // allocates a scratch image and reads it back must see zeros.
+      //
+      // The dimension rules are Chrome's, checked in this order: a negative
+      // value wraps during the unsigned conversion, a NaN is "zero or not a
+      // number", and a positive value is truncated toward zero.
+      const width = imageDimension(args[1])
+      const height = imageDimension(args[2])
+      if (width < 0 || height < 0) throw imageSizeError('The requested image size exceeds the supported range.')
+      if (!(width > 0)) throw imageSizeError('The source width is zero or not a number.')
+      if (!(height > 0)) throw imageSizeError('The source height is zero or not a number.')
+      if (width * height * 4 > MAX_IMAGE_DATA_ALLOCATION) {
+        throw imageSizeError('The requested image size exceeds the supported range.')
+      }
+      attachImageData(args[0], { width, height, bytes: new Uint8ClampedArray(width * height * 4) })
       return ctx.undefined
     }),
     accessors: imageDataAccessors,
