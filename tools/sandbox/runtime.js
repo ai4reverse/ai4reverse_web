@@ -22,8 +22,9 @@ import { getQuickJS, newQuickJSWASMModule } from 'quickjs-emscripten'
  * throws, which pollutes CI logs and any operator watching the process. A run
  * that already knows the stack limit was breached abandons the runtime instead
  * — see `abandon()`. A host throw out of a WASM call is the only unforgeable
- * evidence (`isHostStackExhaustion`); a guest error is at best classified from
- * its engine-assigned name (`isGuestStackExhaustion`).
+ * evidence (`isHostStackExhaustion`); an interpreter-level `InternalError` is
+ * classified from intrinsic identity in `tools/invocation/stealth.js`, never
+ * from the dumped `name`/`message` a sample can copy.
  */
 
 let modulePromise = null
@@ -205,17 +206,19 @@ export function createRuntime(options) {
 /**
  * The wording of a real engine stack overflow.
  *
- * QuickJS does not raise it as a guest exception: the WASM trampoline throws a
- * *host* `RangeError` (`Maximum call stack size exceeded`) out of
+ * At the default stack limit the WASM trampoline throws a *host* `RangeError`
+ * (`Maximum call stack size exceeded`) out of
  * `evalCode`/`callFunction`/`executePendingJobs`. That host object is created
  * outside the guest heap, so a sample cannot fabricate it with
  * `throw new Error('stack overflow')` — which is why host throws, and only host
  * throws, may be read as proof that the stack is gone.
+ *
+ * A reduced `limits.stackBytes` lets QuickJS' own interpreter check fire first,
+ * which surfaces `InternalError: stack overflow` as a *guest* value instead.
+ * That value carries no provenance, so it is classified in
+ * `tools/invocation/stealth.js` from intrinsic identity, never from this text.
  */
 const ENGINE_STACK_MESSAGE = /maximum call stack size exceeded|stack overflow/i
-
-/** QuickJS' own name for the stack-overflow error it raises itself. */
-const ENGINE_STACK_NAME = 'InternalError'
 
 /**
  * Does this string (or `{message}` record) carry the engine's stack wording?
@@ -253,26 +256,3 @@ export function isHostStackExhaustion(thrown) {
   return isEngineStackMessage(thrown)
 }
 
-/**
- * Is this *dumped guest* error QuickJS' own stack overflow?
- *
- * QuickJS raises `InternalError: stack overflow` when unbounded work happens
- * inside the interpreter (deep intrinsic recursion) rather than through a host
- * call, and that reaches the host as a *guest* error.
- *
- * A dump is attacker-controlled data and carries no provenance, so this test is
- * weaker than `isHostStackExhaustion`: a guest that renames its own error to
- * `InternalError` with the engine's wording is indistinguishable from the
- * engine's own throw here. The environment narrows the surface (`globals`
- * removes the engine's `InternalError` constructor for every non-Firefox
- * profile, `stack` deletes it for Chromium), but only the host-throw predicate
- * is proof. Callers must therefore treat a match as a classification, never as
- * a reason to trust guest data.
- *
- * @param {unknown} dumped plain value produced by `ctx.dump(handle)`
- * @returns {boolean}
- */
-export function isGuestStackExhaustion(dumped) {
-  if (!dumped || typeof dumped !== 'object') return false
-  return dumped.name === ENGINE_STACK_NAME && isEngineStackMessage(dumped)
-}

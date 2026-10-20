@@ -37,9 +37,102 @@ export function createStealth(ctx, options = {}) {
   const stats = { masked: 0, shims: 0, markers: markers.size, errors: 0 }
   let originalToString = null
   let installed = false
+  // Guest predicates that answer "is this the engine's own stack overflow?"
+  // from intrinsic identity; built once, before the environment removes the
+  // engine's `InternalError` from the global object.
+  let intrinsicStackMatch = null
+  let intrinsicStackReachable = null
+  let stackProbeAttempted = false
 
   const beginFor = (token) => `/*#${token}*/`
   const endFor = (token) => `/*#/${token}*/`
+
+  /**
+   * Build the stack-overflow probe from the engine's own `InternalError`.
+   *
+   * Why a guest predicate: `instanceof` is not available from the host, and the
+   * dumped record (`ctx.dump`) is attacker-controlled data. The predicate closes
+   * over the intrinsic `InternalError.prototype` *and* the `Object.getPrototypeOf`
+   * it was created with, so a sample that later rewrites `InternalError.prototype`
+   * or `Symbol.hasInstance` cannot redirect the check.
+   *
+   * It must run during `install()`: `env/globals.js` deletes the global for every
+   * non-Firefox profile, after which the constructor is no longer reachable here.
+   *
+   * @returns {{match: object|null, reachable: object|null}}
+   */
+  function ensureStackProbe() {
+    if (stackProbeAttempted) return { match: intrinsicStackMatch, reachable: intrinsicStackReachable }
+    stackProbeAttempted = true
+    const ctor = safeEval('typeof InternalError === "function" ? InternalError : undefined')
+    if (!ctor) return { match: null, reachable: null }
+    let probe = null
+    try {
+      probe = safeEval(STACK_PROBE_SOURCE)
+      if (!probe) return { match: null, reachable: null }
+      const built = ctx.callFunction(probe, ctx.undefined, [ctor])
+      if (built.error) {
+        built.error.dispose()
+        return { match: null, reachable: null }
+      }
+      try {
+        intrinsicStackMatch = safeProp(built.value, 'isIntrinsicStackError')
+        intrinsicStackReachable = safeProp(built.value, 'isConstructorReachable')
+      } finally {
+        built.value.dispose()
+      }
+    } finally {
+      probe?.dispose?.()
+      ctor.dispose()
+    }
+    return { match: intrinsicStackMatch, reachable: intrinsicStackReachable }
+  }
+
+  /** Evaluate internal probe source; never leaves an undisposed handle behind. */
+  function safeEval(source) {
+    const result = ctx.evalCode(source, 'ai4r-internal:stack-probe')
+    if (result.error) {
+      result.error.dispose()
+      return null
+    }
+    return result.value
+  }
+
+  /** `getProp` that tolerates a missing property instead of throwing. */
+  function safeProp(target, key) {
+    try {
+      return ctx.getProp(target, key)
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Call one probe predicate and read its boolean verdict.
+   * @param {object|null} predicate guest function handle
+   * @param {object[]} [args] guest argument handles
+   * @returns {boolean}
+   */
+  function callProbe(predicate, args = []) {
+    if (!predicate) return false
+    let result
+    try {
+      result = ctx.callFunction(predicate, ctx.undefined, args)
+    } catch {
+      // Probing is diagnostics: it must never turn a guest failure into a host
+      // throw, and an unanswerable probe is reported as "not the engine error".
+      return false
+    }
+    if (result.error) {
+      result.error.dispose()
+      return false
+    }
+    try {
+      return ctx.dump(result.value) === true
+    } finally {
+      result.value.dispose()
+    }
+  }
 
   /** Escape a string for use inside a RegExp. */
   const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -163,12 +256,41 @@ export function createStealth(ctx, options = {}) {
     },
 
     /**
+     * Is this live guest error the engine's own stack overflow?
+     *
+     * Identity, not the dumped name: a sample can throw
+     * `{ name: 'InternalError', message: 'Maximum call stack size exceeded' }`
+     * or rename its own `Error`, and the old dump-based test classified both as
+     * real engine exhaustion — abandoning a healthy runtime and writing a false
+     * leak marker. This predicate is true only for an object whose prototype
+     * chain contains the *captured* intrinsic `InternalError.prototype`, and it
+     * refuses evidence while the guest can still reach that constructor itself
+     * (`new InternalError(...)` is prototype-identical to the engine's own
+     * throw, so reachability cancels the proof).
+     *
+     * The handle stays owned by the caller: nothing is consumed or disposed.
+     *
+     * @param {object} handle guest value handle of the thrown value
+     * @returns {boolean}
+     */
+    isIntrinsicStackError(handle) {
+      if (!handle || typeof handle.dispose !== 'function') return false
+      const { match, reachable } = ensureStackProbe()
+      if (!match) return false
+      if (callProbe(reachable)) return false
+      return callProbe(match, [handle])
+    },
+
+    /**
      * Install `Function.prototype.toString` masking.
      * Must run before guest code and before any shim identity check.
      */
     install() {
       if (installed) return
       installed = true
+      // Capture the engine's `InternalError` before `env/globals.js` deletes the
+      // global binding; after that the intrinsic is only reachable from here.
+      ensureStackProbe()
       originalToString = ctx.unwrapResult(ctx.evalCode('Function.prototype.toString'))
       const fnProto = ctx.unwrapResult(ctx.evalCode('Function.prototype'))
       const masker = ctx.newFunctionWithOptions({
@@ -263,11 +385,64 @@ export function createStealth(ctx, options = {}) {
         /* already gone */
       }
       originalToString = null
+      for (const predicate of [intrinsicStackMatch, intrinsicStackReachable]) {
+        try {
+          predicate?.dispose()
+        } catch {
+          /* already gone */
+        }
+      }
+      intrinsicStackMatch = null
+      intrinsicStackReachable = null
     },
   }
 
   return stealth
 }
+
+/**
+ * Guest-side stack-overflow probe.
+ *
+ * `target` is the engine's `InternalError`, captured before any environment
+ * module removes it. The returned predicates answer two questions from identity
+ * alone, so no dumped (attacker-controlled) name or message takes part:
+ *
+ *  - `isIntrinsicStackError(value)`: is this object an instance of the engine's
+ *    own error class? Walks the prototype chain against the captured
+ *    `target.prototype` instead of using `instanceof`, so guest mutation of
+ *    `Symbol.hasInstance` or `InternalError.prototype` cannot steer it.
+ *  - `isConstructorReachable()`: can the guest still reach `target` through the
+ *    global object? QuickJS builds its own internal errors with that same
+ *    prototype, so while the constructor is in reach, a guest-constructed
+ *    `new InternalError(...)` is indistinguishable from a real overflow and the
+ *    identity proof is void.
+ */
+const STACK_PROBE_SOURCE = `(function (target) {
+  var proto = target.prototype
+  var getProto = Object.getPrototypeOf
+  return {
+    isIntrinsicStackError: function (value) {
+      if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return false
+      try {
+        var current = getProto(value)
+        for (var depth = 0; current !== null && depth < 64; depth += 1) {
+          if (current === proto) return true
+          current = getProto(current)
+        }
+        return false
+      } catch (error) {
+        return false
+      }
+    },
+    isConstructorReachable: function () {
+      try {
+        return globalThis.InternalError === target
+      } catch (error) {
+        return true
+      }
+    }
+  }
+})`
 
 /** Deterministic marker token; a sandbox passes its own seeded nonce. */
 function randomNonce() {

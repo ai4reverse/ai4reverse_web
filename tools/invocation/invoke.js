@@ -1,9 +1,6 @@
 import { shortHash } from '../util/hash.js'
 import { limitMessage } from '../sandbox/limits.js'
-import {
-  isGuestStackExhaustion,
-  isHostStackExhaustion,
-} from '../sandbox/runtime.js'
+import { isHostStackExhaustion } from '../sandbox/runtime.js'
 
 /**
  * Traceless invocation.
@@ -129,11 +126,16 @@ export function createInvoker(options) {
     const durationMs = Date.now() - startedAt
 
     if (evalResult.error) {
+      // Intrinsic identity, read from the live handle: the dumped record is
+      // guest data, so `{ name: 'InternalError', message: 'Maximum call stack
+      // size exceeded' }` or an `Error` renamed to `InternalError` can never
+      // decide that the engine's stack is gone.
+      const engineStack = isEngineStackError(stealth, evalResult.error)
       const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(evalResult.error)) : ctx.dump(evalResult.error)
       evalResult.error.dispose()
-      const classified = classifyLimit(dumped, runtime, limits)
-      // `stack` here can only come from QuickJS' own `InternalError`; a forged
-      // guest message is classified as a plain error (see `classifyLimit`).
+      const classified = classifyLimit(dumped, runtime, limits, engineStack)
+      // Only the engine's own `InternalError` produces `stack` here; a forged
+      // guest message stays a plain error (see `classifyLimit`).
       const stackExhaustion = classified === 'stack'
       if (instrumentation?.exceptions) {
         instrumentation.exceptions.reportUncaught(dumped, mode === 'module' ? 'module' : 'eval', { filename })
@@ -271,10 +273,14 @@ export function createInvoker(options) {
         return { ok: false, error: dumped, stackExhaustion: true }
       }
       if (result.error) {
+        // Same intrinsic-identity evidence as in `invoke()`: the engine's own
+        // `InternalError` is a *guest* value here, so the name it carries proves
+        // nothing.
+        const engineStack = isEngineStackError(stealth, result.error)
         const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
         result.error.dispose()
         instrumentation?.exceptions?.reportUncaught(dumped, 'call', { entry: name })
-        return { ok: false, error: dumped }
+        return { ok: false, error: dumped, stackExhaustion: engineStack }
       }
       trace?.emit('code', 'after', { event: 'entry.called', name, args: args.length })
       return { ok: true, handle: result.value }
@@ -325,18 +331,21 @@ export function createInvoker(options) {
      * `value` is host evidence only: either the host exception thrown out of the
      * WASM trampoline, or the record the virtual clock returns for a timer
      * callback that did (`stackExhaustion: true`) — the clock inspects the host
-     * throw itself, so no caller has to match a message.
+     * throw itself, so no caller has to match a message. `guestEvidence` is the
+     * one guest-derived signal allowed through, and it is never a dump: the
+     * caller passes the verdict of `stealth.isIntrinsicStackError()` on the live
+     * handle (see `isEngineStackError`).
      *
      * @param {string} origin
      * @param {unknown} value
+     * @param {boolean} [guestEvidence] intrinsic-identity verdict for a guest error
      * @returns {boolean} true when the value was the stack signal
      */
-    const noteStack = (origin, value) => {
+    const noteStack = (origin, value, guestEvidence = false) => {
       if (stackExhaustion) return false
       const fromClock = Boolean(value) && typeof value === 'object' && typeof value.timerId === 'number'
-      const isStackSignal = fromClock
-        ? value.stackExhaustion === true
-        : isHostStackExhaustion(value)
+      const isStackSignal =
+        guestEvidence === true || (fromClock ? value.stackExhaustion === true : isHostStackExhaustion(value))
       if (!isStackSignal) return false
       stackExhaustion = true
       stackError = { origin, ...stackLimitError() }
@@ -372,9 +381,10 @@ export function createInvoker(options) {
           break
         }
         if (result.error) {
+          const engineStack = isEngineStackError(stealth, result.error)
           const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
           result.error.dispose()
-          if (noteStack('promise-job', dumped)) break
+          if (noteStack('promise-job', dumped, engineStack)) break
           instrumentation?.exceptions?.reportPromiseJob(dumped)
           pendingRejections += 1
         } else {
@@ -400,6 +410,10 @@ export function createInvoker(options) {
       for (const error of run.errors) {
         // A callback that exhausted the stack is classified, not retried: the
         // clock stops the batch at that throw and the runtime is unrecoverable.
+        //
+        // Guest errors never reach this loop: the timer shim catches them inside
+        // the guest and reports them as uncaught exceptions, so the clock only
+        // ever sees the host stack throw it marks itself — no handle to probe.
         if (noteStack('timer', error)) break
         instrumentation?.exceptions?.reportUncaught(
           { name: 'Error', message: error.message },
@@ -450,19 +464,39 @@ function safeProp(ctx, target, key) {
   }
 }
 
-function classifyLimit(dumped, runtime, limits) {
+function classifyLimit(dumped, runtime, limits, engineStack = false) {
   const message = String(dumped?.message ?? '')
   if (runtime.state?.reason === 'timeout') return 'timeout'
   if (runtime.state?.reason === 'virtual-time') return 'virtual-time'
   if (/interrupted/i.test(message)) return 'timeout'
   if (/out of memory|allocation failed|string too long|array too long|memory limit/i.test(message)) return 'memory'
-  // Never the message: a sample can throw `RangeError('Maximum call stack size
-  // exceeded')` (and does, to force a WASM recompile per run). Only the error
-  // name the engine assigns itself may be read as real stack exhaustion.
-  if (isGuestStackExhaustion(dumped)) return 'stack'
+  // Never the message and never the dumped name: a sample can throw
+  // `RangeError('Maximum call stack size exceeded')`, an object that looks like
+  // `{name: 'InternalError'}`, or an `Error` renamed to `InternalError` (and
+  // does, to force a WASM recompile per run). Only `engineStack` — the verdict
+  // of an intrinsic-identity probe on the live handle — counts as the engine's
+  // own stack exhaustion.
+  if (engineStack === true) return 'stack'
   if (/source/i.test(message) && /too large/i.test(message)) return 'source-size'
   void limits
   return null
+}
+
+/**
+ * Ask the stealth layer whether a live guest error is the engine's own stack
+ * overflow. Missing stealth (unit callers) or a missing probe means "no".
+ *
+ * @param {object|undefined} stealth
+ * @param {object} handle guest error handle, still owned by the caller
+ * @returns {boolean}
+ */
+function isEngineStackError(stealth, handle) {
+  if (typeof stealth?.isIntrinsicStackError !== 'function') return false
+  try {
+    return stealth.isIntrinsicStackError(handle) === true
+  } catch {
+    return false
+  }
 }
 
 /**
