@@ -128,9 +128,7 @@ test('P0-4 throw a, b yields the same caught value with instrumentation on and o
   }
 })
 
-test('P0-6 keepTrace does not change the verdict score for the same sample', {
-  todo: 'ACCEPTANCE P0-6 — score from guest-filtered counters; flag truncation',
-}, async () => {
+test('P0-6 keepTrace does not change the verdict score for the same sample', async () => {
   const source = `
     var s = 0;
     for (var i = 0; i < 6000; i++) { s += i }
@@ -147,20 +145,18 @@ test('P0-6 keepTrace does not change the verdict score for the same sample', {
     codes(reportKept).includes('DYNAMIC_NETWORK'),
     codes(reportDropped).includes('DYNAMIC_NETWORK'),
   )
+  assert.equal(codes(reportKept).includes('DYNAMIC_NETWORK'), true)
+  assert.deepEqual(reportKept.provenance, reportDropped.provenance)
 })
 
-test('P0-7 string-array keeps a dynamically referenced array on window', {
-  todo: 'ACCEPTANCE P0-7 — dynamic-access bail-out in string-array',
-}, () => {
+test('P0-7 string-array keeps a dynamically referenced array on window', () => {
   const input = "var _0xa = ['alpha','bravo','charlie','delta']; window.log(window._0xa[0]);"
   const result = restore(input, { only: ['string-array'], maxRounds: 1 })
   assert.match(result.code, /_0xa\s*=\s*\[/)
   assert.match(result.code, /window\._0xa/)
 })
 
-test('P0-8 dead-code keeps the else arm of if (0n)', {
-  todo: 'ACCEPTANCE P0-8 — bigint truthiness in dead-code',
-}, () => {
+test('P0-8 dead-code keeps the else arm of if (0n)', () => {
   const result = restore('if (0n) { live() } else { dead() }', {
     only: ['dead-code'],
     maxRounds: 1,

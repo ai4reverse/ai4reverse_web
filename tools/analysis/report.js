@@ -1387,6 +1387,8 @@ function normalizeIocs(value, sourceCode) {
 function normalizeDynamic(input, profile) {
   const countsInput = obj(input.counts)
   const behaviorInput = obj(input.behavior)
+  const rawBehaviorCounts = behaviorInput.counts
+  const behaviorCounts = obj(rawBehaviorCounts)
   const environment = obj(input.environment)
   const resultInput = input.result
   return {
@@ -1398,8 +1400,10 @@ function normalizeDynamic(input, profile) {
           ? input.error
           : str(input.error.message ?? input.error.name ?? input.error),
     limitsHit: asArray(input.limitsHit),
+    provisional: input.provisional === true,
     result: normalizeResult(resultInput),
     events: asArray(input.events),
+    eventsTruncated: input.eventsTruncated === true,
     counts: { byKind: obj(countsInput.byKind ?? countsInput) },
     behavior: {
       apis: asArray(behaviorInput.apis).map((api) => {
@@ -1410,6 +1414,45 @@ function normalizeDynamic(input, profile) {
       storage: behaviorInput.storage ?? {},
       dom: behaviorInput.dom ?? {},
       timers: behaviorInput.timers ?? {},
+      // Guest-filtered counters must survive normalisation so scoreVerdict can
+      // use them instead of the retained event slice (P0-6). Omit when absent
+      // so hand-built fixtures can still fall back to events/raw counters.
+      ...(rawBehaviorCounts && typeof rawBehaviorCounts === 'object'
+        ? {
+            counts: {
+              events: toCount(behaviorCounts.events),
+              platform: toCount(behaviorCounts.platform),
+              apiCalls: toCount(behaviorCounts.apiCalls),
+              network: toCount(behaviorCounts.network),
+              storage: toCount(behaviorCounts.storage),
+              dom: toCount(behaviorCounts.dom),
+              timers: toCount(behaviorCounts.timers),
+              exceptions: toCount(behaviorCounts.exceptions),
+              evals: toCount(behaviorCounts.evals),
+              mocks: toCount(behaviorCounts.mocks),
+              iocs: toCount(behaviorCounts.iocs),
+            },
+          }
+        : {}),
+      evalStages: asArray(behaviorInput.evalStages),
+      killChain: asArray(behaviorInput.killChain).map((entry) => {
+        const item = obj(entry)
+        const stage = str(item.stage)
+        return {
+          stage,
+          stageId: str(item.stageId) || (stage ? `kc:${stage}` : ''),
+          detail: str(item.detail),
+        }
+      }),
+      mocks: asArray(behaviorInput.mocks).map((entry) => {
+        const item = obj(entry)
+        return {
+          api: str(item.api),
+          reason: str(item.reason),
+          ...(Number.isFinite(item.seq) ? { seq: item.seq } : {}),
+        }
+      }),
+      console: asArray(behaviorInput.console),
     },
     exceptions: {
       uncaught: toCount(obj(input.exceptions).uncaught),

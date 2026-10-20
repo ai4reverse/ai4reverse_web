@@ -174,12 +174,24 @@ test('buildReport produces the full top-level schema', () => {
     'environment',
     'error',
     'events',
+    'eventsTruncated',
     'exceptions',
     'limitsHit',
     'ok',
+    'provisional',
     'result',
   ])
-  assert.deepEqual(Object.keys(report.dynamic.behavior).sort(), ['apis', 'dom', 'network', 'storage', 'timers'])
+  assert.deepEqual(Object.keys(report.dynamic.behavior).sort(), [
+    'apis',
+    'console',
+    'dom',
+    'evalStages',
+    'killChain',
+    'mocks',
+    'network',
+    'storage',
+    'timers',
+  ])
   assert.deepEqual(Object.keys(report.tracing.jsvmp).sort(), ['detected', 'opcodes', 'steps'])
   assert.deepEqual(Object.keys(report.tracing).sort(), [
     'dropped',

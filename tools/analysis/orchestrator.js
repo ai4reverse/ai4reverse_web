@@ -86,7 +86,9 @@ export async function analyzeSample(source, options = {}) {
     level: options.level ?? options.instrumentation?.code?.level,
     entry: options.entry,
     args: options.args,
-    keepTrace: options.keepTrace !== false,
+    // Analysis always needs the full trace for behaviour/verdict. Report
+    // retention is decided below from `options.keepTrace` (P0-6).
+    keepTrace: true,
     mocks: options.mocks,
     network: options.network,
     settle: options.settle,
@@ -112,7 +114,10 @@ export async function analyzeSample(source, options = {}) {
     }
   }
 
+  // Sandbox always keeps the full trace for scoring (keepTrace forced true
+  // above). Honour the caller's keepTrace for the returned run record only.
   const events = run?.events ?? []
+  if (options.keepTrace === false && run) run.events = null
   const dynamicIocs = extractFromEvents(events)
   const mergedIocs = mergeIocs(staticIocs, dynamicIocs, restoredIocs)
   const behavior = summarizeBehavior(events)
@@ -141,6 +146,7 @@ export async function analyzeSample(source, options = {}) {
         ...runOptions,
         filename: options.filename ?? `${name}.restored.js`,
       })
+      if (options.keepTrace === false && restoredRun) restoredRun.events = null
     } catch (error) {
       logger.warn({ err: error.message }, 'restored-code run failed')
       restoredRun = { ok: false, error: { name: error.name, message: error.message } }
@@ -217,12 +223,17 @@ export async function analyzeSample(source, options = {}) {
     techniques: facts?.techniques ?? [],
   }
 
+  const maxRetainedEvents = options.maxRetainedEvents ?? 5000
+  const retainEvents = options.keepTrace !== false
+  const retainedEvents = retainEvents ? events.slice(0, maxRetainedEvents) : []
   const dynamicSection = {
     ok: Boolean(run?.ok),
     error: run?.error ?? runError ?? null,
     limitsHit: run?.limitsHit ?? [],
+    provisional: Boolean(run?.provisional),
     result: run?.result ?? null,
-    events: events.slice(0, options.maxRetainedEvents ?? 5000),
+    events: retainedEvents,
+    eventsTruncated: (retainEvents && events.length > maxRetainedEvents) || Boolean(run?.provisional),
     counts: { byKind: run?.traceStats?.byKind ?? {}, total: run?.traceStats?.total ?? 0 },
     behavior: {
       apis: behavior.apis,
@@ -233,6 +244,7 @@ export async function analyzeSample(source, options = {}) {
       console: behavior.console,
       evalStages: behavior.evalStages,
       killChain: behavior.killChain,
+      mocks: behavior.mocks,
       counts: behavior.counts,
     },
     exceptions: behavior.exceptions,

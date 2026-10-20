@@ -294,3 +294,47 @@ test('a webinject-style overlay scores DYNAMIC_DOM from real mutations', async (
   // DOM injection is visible as a kill-chain stage, not just a number.
   assert.ok(behavior.killChain.some((stage) => stage.stage === 'injection'), JSON.stringify(behavior.killChain))
 })
+
+
+test('keepTrace true/false preserves score and provenance for sample-loader', async () => {
+  const source = await loaderSource()
+  const kept = await analyzeSample(source, {
+    name: 'sample-loader.js',
+    logLevel: 'silent',
+    seed: 0x5eed,
+    env: { strict: false },
+    keepTrace: true,
+  })
+  const dropped = await analyzeSample(source, {
+    name: 'sample-loader.js',
+    logLevel: 'silent',
+    seed: 0x5eed,
+    env: { strict: false },
+    keepTrace: false,
+  })
+
+  assert.equal(kept.report.verdict.score, dropped.report.verdict.score)
+  assert.deepEqual(
+    kept.report.verdict.reasons.map((r) => r.code),
+    dropped.report.verdict.reasons.map((r) => r.code),
+  )
+  assert.deepEqual(kept.report.provenance, dropped.report.provenance)
+
+  for (const entry of kept.report.provenance) {
+    assert.ok(entry.refs.length >= 1, entry.reasonCode)
+    for (const ref of entry.refs) {
+      assert.ok(['event', 'ioc', 'artifact', 'stage', 'killChain'].includes(ref.kind), JSON.stringify(ref))
+      assert.equal(typeof ref.id, 'string')
+      assert.ok(ref.id.length > 0)
+    }
+    // Event refs must not point at known platform install seq labels.
+    const eventIds = entry.refs.filter((ref) => ref.kind === 'event').map((ref) => String(ref.id))
+    assert.equal(eventIds.includes('document.installed'), false)
+  }
+
+  // Retained-event absence must not drop evidence: dropped run has empty events.
+  assert.equal(dropped.report.dynamic.events.length, 0)
+  assert.ok(kept.report.dynamic.events.length > 0)
+  assert.ok(kept.report.provenance.length > 0)
+  assert.match(kept.markdown, /\*\*Evidence \(/)
+})
