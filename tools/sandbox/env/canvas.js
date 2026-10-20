@@ -582,17 +582,37 @@ function deterministicPayload(keyParts) {
  * @returns {Uint8ClampedArray}
  */
 function imageDataBytes(request) {
-  const rng = createSeededRandom(
-    `${request.seed}::${request.noise}::image:${request.x},${request.y}:${request.width}x${request.height}`,
-  )
-  const data = new Uint8ClampedArray(request.width * request.height * 4)
-  for (let index = 0; index < data.length; index += 4) {
-    data[index] = Math.floor(rng.next() * 256)
-    data[index + 1] = Math.floor(rng.next() * 256)
-    data[index + 2] = Math.floor(rng.next() * 256)
-    data[index + 3] = 255
+  // Spec-faithful blank buffer for createImageData; getImageData reads the
+  // per-canvas pixel store painted by fillRect (ACCEPTANCE H3).
+  return new Uint8ClampedArray(Math.max(0, request.width) * Math.max(0, request.height) * 4)
+}
+
+/** Parse a CSS color string used as canvas fillStyle into RGBA bytes. */
+function parseFillStyleRgba(style) {
+  const text = String(style ?? '#000000').trim().toLowerCase()
+  if (text === 'transparent') return [0, 0, 0, 0]
+  const hex = text.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i)
+  if (hex) {
+    let body = hex[1]
+    if (body.length === 3) body = body.split('').map((ch) => ch + ch).join('')
+    const r = Number.parseInt(body.slice(0, 2), 16)
+    const g = Number.parseInt(body.slice(2, 4), 16)
+    const b = Number.parseInt(body.slice(4, 6), 16)
+    const a = body.length === 8 ? Number.parseInt(body.slice(6, 8), 16) : 255
+    return [r, g, b, a]
   }
-  return data
+  const rgb = text.match(/^rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)(?:\s*,\s*([0-9.]+))?\s*\)$/)
+  if (rgb) {
+    const r = Math.max(0, Math.min(255, Math.round(Number(rgb[1]))))
+    const g = Math.max(0, Math.min(255, Math.round(Number(rgb[2]))))
+    const b = Math.max(0, Math.min(255, Math.round(Number(rgb[3]))))
+    const a = rgb[4] === undefined ? 255 : Math.max(0, Math.min(255, Math.round(Number(rgb[4]) * 255)))
+    return [r, g, b, a]
+  }
+  if (text === 'red') return [255, 0, 0, 255]
+  if (text === 'black') return [0, 0, 0, 255]
+  if (text === 'white') return [255, 255, 255, 255]
+  return [0, 0, 0, 255]
 }
 
 /**
@@ -1241,7 +1261,15 @@ export function install(bridge) {
     context2dMethods[name] = {
       length: arity,
       run: (state, call) => {
-        recordOp(state.canvas, call.thisHandle, name, plainArgs(call, arity))
+        const entry = recordOp(state.canvas, call.thisHandle, name, plainArgs(call, arity))
+        if (name === 'fillRect' || name === 'clearRect') {
+          const x = bridge.num(call.args, 0, 0)
+          const y = bridge.num(call.args, 1, 0)
+          const width = bridge.num(call.args, 2, 0)
+          const height = bridge.num(call.args, 3, 0)
+          const rgba = name === 'clearRect' ? [0, 0, 0, 0] : parseFillStyleRgba(entry.fillStyle)
+          paintRect(state.canvas, x, y, width, height, rgba)
+        }
         return ctx.undefined
       },
     }
@@ -1327,7 +1355,13 @@ export function install(bridge) {
           throw new RangeError('The source width and height are too large for getImageData')
         }
         bridge.emit('dom', 'before', { api: 'canvas.getImageData', x, y, width, height })
-        return createImageData({ seed: canvasSeed, noise: canvasNoise, x, y, width, height })
+        const image = createInstance(ImageDataCtor)
+        attachImageData(image, {
+          width,
+          height,
+          bytes: readPixels(state.canvas, x, y, width, height),
+        })
+        return image
       },
     },
     putImageData: {
@@ -1484,8 +1518,59 @@ export function install(bridge) {
     return Math.max(0, Math.min(MAX_CANVAS_DIMENSION, Math.trunc(value)))
   }
 
+  const ensurePixels = (state) => {
+    const need = Math.max(0, state.width) * Math.max(0, state.height) * 4
+    if (!state.pixels || state.pixels.length !== need) {
+      state.pixels = new Uint8ClampedArray(need)
+    }
+    return state.pixels
+  }
+
+  const paintRect = (state, x, y, width, height, rgba) => {
+    const pixels = ensurePixels(state)
+    const x0 = Math.max(0, Math.floor(x))
+    const y0 = Math.max(0, Math.floor(y))
+    const x1 = Math.min(state.width, Math.ceil(x + width))
+    const y1 = Math.min(state.height, Math.ceil(y + height))
+    for (let row = y0; row < y1; row += 1) {
+      for (let col = x0; col < x1; col += 1) {
+        const index = (row * state.width + col) * 4
+        pixels[index] = rgba[0]
+        pixels[index + 1] = rgba[1]
+        pixels[index + 2] = rgba[2]
+        pixels[index + 3] = rgba[3]
+      }
+    }
+  }
+
+  const readPixels = (state, x, y, width, height) => {
+    const pixels = ensurePixels(state)
+    const out = new Uint8ClampedArray(Math.max(0, width) * Math.max(0, height) * 4)
+    for (let row = 0; row < height; row += 1) {
+      for (let col = 0; col < width; col += 1) {
+        const srcX = x + col
+        const srcY = y + row
+        const dest = (row * width + col) * 4
+        if (srcX < 0 || srcY < 0 || srcX >= state.width || srcY >= state.height) {
+          out[dest] = 0
+          out[dest + 1] = 0
+          out[dest + 2] = 0
+          out[dest + 3] = 0
+          continue
+        }
+        const src = (srcY * state.width + srcX) * 4
+        out[dest] = pixels[src]
+        out[dest + 1] = pixels[src + 1]
+        out[dest + 2] = pixels[src + 2]
+        out[dest + 3] = pixels[src + 3]
+      }
+    }
+    return out
+  }
+
   const resetCanvas = (state) => {
     if (Array.isArray(state.ops)) state.ops.length = 0
+    state.pixels = new Uint8ClampedArray(Math.max(0, state.width) * Math.max(0, state.height) * 4)
   }
 
   const optionNumber = (options, key, fallback) => {
@@ -2161,6 +2246,7 @@ export function install(bridge) {
     width: clampCanvasDimension(optionNumber(options, 'width', DEFAULT_CANVAS_WIDTH)),
     height: clampCanvasDimension(optionNumber(options, 'height', DEFAULT_CANVAS_HEIGHT)),
     ops: [],
+    pixels: null,
   })
 
   /**

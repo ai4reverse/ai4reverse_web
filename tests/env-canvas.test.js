@@ -292,29 +292,31 @@ test('measureText is deterministic and proportional to text length', async () =>
   }
 })
 
-test('getImageData returns deterministic opaque noise', async () => {
+test('getImageData returns transparent blank pixels and reflects fillRect', async () => {
   const harness = await createCanvasHarness()
   try {
     const pixels = runGuest(
       harness,
       `(function(){
-        function read(x, y, w, h) {
-          var canvas = new HTMLCanvasElement()
-          var ctx = canvas.getContext('2d')
-          var image = ctx.getImageData(x, y, w, h)
-          return [image.width, image.height, Array.prototype.join.call(image.data, ',')]
+        var blankCanvas = new HTMLCanvasElement()
+        var blankCtx = blankCanvas.getContext('2d')
+        var blank = blankCtx.getImageData(0, 0, 1, 1)
+        var paintedCanvas = new HTMLCanvasElement()
+        var paintedCtx = paintedCanvas.getContext('2d')
+        paintedCtx.fillStyle = '#ff0000'
+        paintedCtx.fillRect(0, 0, 1, 1)
+        var painted = paintedCtx.getImageData(0, 0, 1, 1)
+        return {
+          blank: Array.prototype.slice.call(blank.data),
+          painted: Array.prototype.slice.call(painted.data),
+          blankAgain: Array.prototype.slice.call(blankCtx.getImageData(0, 0, 1, 1).data),
         }
-        return [read(0, 0, 4, 4), read(0, 0, 4, 4), read(0, 0, 4, 5)]
       })()`,
     )
 
-    assert.equal(pixels[0][0], 4)
-    assert.equal(pixels[0][1], 4)
-    const bytes = pixels[0][2].split(',').map(Number)
-    assert.equal(bytes.length, 4 * 4 * 4, 'RGBA data must have width*height*4 entries')
-    assert.ok(bytes.every((value, index) => (index % 4 === 3 ? value === 255 : value >= 0 && value <= 255)))
-    assert.equal(pixels[0][2], pixels[1][2], 'identical rectangles must yield identical pixels')
-    assert.notEqual(pixels[0][2], pixels[2][2], 'different rectangles must yield different pixels')
+    assert.deepEqual(pixels.blank, [0, 0, 0, 0])
+    assert.deepEqual(pixels.blankAgain, [0, 0, 0, 0])
+    assert.deepEqual(pixels.painted, [255, 0, 0, 255])
   } finally {
     harness.dispose()
   }
