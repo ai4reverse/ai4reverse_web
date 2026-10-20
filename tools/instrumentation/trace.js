@@ -77,6 +77,12 @@ export function createTraceRecorder(options = {}) {
 
   /** @type {TraceEvent[]} */
   const events = []
+  // Ring bookkeeping: `head` is the index of the oldest retained event, so the
+  // logical window is `events[head..]`. Eviction advances `head` instead of
+  // `shift()`ing every remaining event forward (O(window) per emit once the
+  // buffer is full); the dead prefix is reclaimed in one memmove per `limit`
+  // events, which keeps emit O(1) amortized.
+  let head = 0
   const counts = new Map()
   const listeners = new Set()
   let seq = 0
@@ -84,10 +90,12 @@ export function createTraceRecorder(options = {}) {
 
   const recorder = {
     get events() {
-      return events
+      // Only reads after the first eviction pay for a copy; before that the
+      // live array is handed out exactly as before.
+      return head === 0 ? events : events.slice(head)
     },
     get size() {
-      return events.length
+      return events.length - head
     },
     get dropped() {
       return dropped
@@ -130,11 +138,18 @@ export function createTraceRecorder(options = {}) {
       }
       counts.set(kind, (counts.get(kind) ?? 0) + 1)
 
-      if (limit > 0 && events.length >= limit) {
-        events.shift()
+      if (limit > 0 && events.length - head >= limit) {
+        head += 1
         dropped += 1
       }
       events.push(event)
+      if (head > 0 && head >= limit) {
+        // One O(window) memmove per `limit` events instead of one O(window)
+        // shift per event; `head > 0` implies `limit > 0`.
+        events.copyWithin(0, head)
+        events.length -= head
+        head = 0
+      }
 
       if (sink) {
         try {
@@ -162,7 +177,9 @@ export function createTraceRecorder(options = {}) {
       return {
         emit: (nextPhase, payload) => recorder.emit(kind, nextPhase ?? phase, payload),
         child: (subKind, subPhase) => recorder.child(`${kind}.${subKind}`, subPhase ?? phase),
-        events,
+        get events() {
+          return recorder.events
+        },
         subscribe: recorder.subscribe,
         stats: recorder.stats,
       }
@@ -176,15 +193,16 @@ export function createTraceRecorder(options = {}) {
 
     /** Return all events and clear the retained buffer (counters are kept). */
     drain() {
-      const copy = events.slice()
+      const copy = events.slice(head)
       events.length = 0
+      head = 0
       return copy
     },
 
     stats() {
       return {
         total: seq,
-        retained: events.length,
+        retained: events.length - head,
         dropped,
         byKind: Object.fromEntries(counts),
       }
@@ -192,6 +210,7 @@ export function createTraceRecorder(options = {}) {
 
     clear() {
       events.length = 0
+      head = 0
       counts.clear()
       seq = 0
       dropped = 0

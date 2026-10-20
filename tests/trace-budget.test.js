@@ -208,3 +208,31 @@ test('an unknown trace kind is rejected without strict phase validation', () => 
   assert.doesNotThrow(() => recorder.emit('api', 'guest-supplied-phase', {}))
   assert.equal(recorder.seq, 1)
 })
+
+test('a limited recorder retains exactly the newest maxEvents events in emit order', () => {
+  // A small limit keeps the test fast while still running the ring's
+  // dead-prefix reclaim (one per `limit` evictions) more than once.
+  const limit = 2000
+  const recorder = createTraceRecorder({ limit })
+
+  for (let index = 0; index < limit + 5000; index += 1) {
+    recorder.emit('api', 'emit', { index })
+  }
+
+  const events = recorder.events
+  assert.equal(events.length, limit, 'exposed events stay capped at the limit')
+  assert.equal(recorder.size, limit)
+  assert.equal(recorder.dropped, 5000)
+  const stats = recorder.stats()
+  assert.equal(stats.retained, limit)
+  assert.equal(stats.total, limit + 5000)
+
+  // The window is the newest `limit` events, oldest first: seqs are contiguous
+  // and the first payload index is the one that survived eviction.
+  assert.equal(events[0].seq, 5001)
+  assert.equal(events[0].index, 5000)
+  assert.equal(events.at(-1).seq, limit + 5000)
+  for (let index = 1; index < events.length; index += 1) {
+    assert.equal(events[index].seq, events[index - 1].seq + 1, `seq contiguity at index ${index}`)
+  }
+})
