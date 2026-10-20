@@ -467,7 +467,7 @@ test('tracing carries an explicit, bounded truncation flag', () => {
   const clean = buildReport({ tracing: { enabled: true, events: 137, dropped: 0 } })
   assert.equal(clean.tracing.truncated, false)
   assert.deepEqual(clean.tracing.truncatedBy, [])
-  assert.match(renderMarkdown(clean), /Truncated:\*\* no/)
+  assert.match(renderMarkdown(clean), /Trace truncated:\*\* no/)
 
   const truncated = buildReport({
     tracing: {
@@ -481,7 +481,7 @@ test('tracing carries an explicit, bounded truncation flag', () => {
   assert.equal(truncated.tracing.truncated, true)
   assert.deepEqual(truncated.tracing.truncatedBy, ['event-limit', 'code-budget'])
   const markdown = renderMarkdown(truncated)
-  assert.match(markdown, /Truncated:\*\* yes/)
+  assert.match(markdown, /Trace truncated:\*\* yes/)
   assert.match(markdown, /code-step budget reached/)
   assert.match(markdown, /80 event\(s\) dropped/)
 })

@@ -555,7 +555,7 @@ export function renderMarkdown(report) {
   lines.push('## Tracing/JSVMP', '')
   lines.push(`- **Tracing enabled:** ${formatBoolean(tracing.enabled)}`)
   lines.push(`- **Events:** ${formatNumber(tracing.events)} (${formatNumber(tracing.dropped)} dropped)`)
-  lines.push(`- **Truncated:** ${renderTraceTruncation(tracing)}`)
+  lines.push(`- **Trace truncated:** ${renderTraceTruncation(tracing)}`)
   lines.push(`- **JSVMP detected:** ${formatBoolean(jsvmp.detected)}`)
   lines.push(`- **Opcodes:** ${formatNumber(jsvmp.opcodes)}; steps: ${formatNumber(jsvmp.steps)}`)
   lines.push(

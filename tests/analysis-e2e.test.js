@@ -150,7 +150,7 @@ test('trace-budget truncation is explicit and survives the lost marker (F9)', as
   assert.ok(result.traceTruncation.truncatedBy.includes('code-budget'), JSON.stringify(result.traceTruncation))
   assert.equal(result.report.tracing.truncated, true)
   assert.ok(result.report.tracing.truncatedBy.includes('code-budget'))
-  assert.match(result.markdown, /Truncated:\*\* yes/)
+  assert.match(result.markdown, /Trace truncated:\*\* yes/)
   assert.match(result.markdown, /code-step budget reached/)
 })
 
