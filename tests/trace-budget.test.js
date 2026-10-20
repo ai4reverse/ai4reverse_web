@@ -209,6 +209,67 @@ test('an unknown trace kind is rejected without strict phase validation', () => 
   assert.equal(recorder.seq, 1)
 })
 
+test('events snapshots stay detached across appends, eviction, compaction, drain and clear', () => {
+  const recorder = createTraceRecorder({ limit: 2 })
+  const empty = recorder.events
+  recorder.emit('api', 'emit', { index: 0 })
+  recorder.emit('api', 'emit', { index: 1 })
+  assert.deepEqual(empty, [])
+  const beforeEviction = recorder.events
+  recorder.emit('api', 'emit', { index: 2 })
+  assert.deepEqual(beforeEviction.map(({ index }) => index), [0, 1])
+  const afterEviction = recorder.events
+  recorder.emit('api', 'emit', { index: 3 })
+  assert.deepEqual(afterEviction.map(({ index }) => index), [1, 2])
+  const afterCompaction = recorder.events
+  assert.deepEqual(recorder.stats(), { total: 4, retained: 2, dropped: 2, byKind: { api: 4 } })
+  const drained = recorder.drain()
+  assert.deepEqual(recorder.stats(), { total: 4, retained: 0, dropped: 2, byKind: { api: 4 } })
+  recorder.emit('api', 'emit', { index: 4 })
+  const beforeClear = recorder.events
+  recorder.clear()
+
+  assert.deepEqual(empty, [])
+  assert.deepEqual(beforeEviction.map(({ index }) => index), [0, 1])
+  assert.deepEqual(afterEviction.map(({ index }) => index), [1, 2])
+  assert.deepEqual(afterCompaction.map(({ index }) => index), [2, 3])
+  assert.deepEqual(drained.map(({ index }) => index), [2, 3])
+  assert.deepEqual(beforeClear.map(({ index }) => index), [4])
+  assert.deepEqual(recorder.events, [])
+  assert.deepEqual(recorder.stats(), { total: 0, retained: 0, dropped: 0, byKind: {} })
+})
+
+test('events snapshots freeze the array without deep-freezing event payloads', () => {
+  const recorder = createTraceRecorder()
+  const event = recorder.emit('api', 'emit', { nested: { value: 1 } })
+  const snapshot = recorder.events
+
+  assert.equal(Object.isFrozen(snapshot), true)
+  assert.equal(Object.isFrozen(event), false)
+  assert.equal(Object.isFrozen(event.nested), false)
+  assert.equal(snapshot[0], event, 'event identity remains shallow')
+  assert.notEqual(recorder.events, snapshot, 'every access returns a detached array')
+  assert.throws(() => snapshot.push(event), TypeError)
+  assert.throws(() => { snapshot[0] = null }, TypeError)
+  assert.throws(() => { snapshot.length = 0 }, TypeError)
+  assert.equal(recorder.size, 1)
+  assert.equal(recorder.events[0], event)
+  assert.deepEqual(recorder.stats(), { total: 1, retained: 1, dropped: 0, byKind: { api: 1 } })
+})
+
+test('a child recorder exposes detached snapshots and a write-object sink receives events', () => {
+  const written = []
+  const recorder = createTraceRecorder({ sink: { write: (event) => written.push(event) } })
+  const child = recorder.child('api')
+  const before = child.events
+  const event = child.emit('emit', { value: 42 })
+
+  assert.deepEqual(before, [])
+  assert.deepEqual(written, [event])
+  assert.deepEqual(child.events, [event])
+  assert.equal(Object.isFrozen(child.events), true)
+})
+
 test('a limited recorder retains exactly the newest maxEvents events in emit order', () => {
   // A small limit keeps the test fast while still running the ring's
   // dead-prefix reclaim (one per `limit` evictions) more than once.

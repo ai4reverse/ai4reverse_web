@@ -210,12 +210,23 @@ export interface TraceStats {
   byKind: Record<string, number>
 }
 
+export interface TraceRecorderChild {
+  readonly events: ReadonlyArray<TraceEvent>
+  emit(phase?: string, payload?: object): TraceEvent | null
+  child(kind: string, phase?: string): TraceRecorderChild
+  subscribe(listener: (event: TraceEvent) => void): () => void
+  stats(): TraceStats
+}
+
 export interface TraceRecorder {
-  readonly events: TraceEvent[]
+  /** Detached frozen array snapshot; event objects remain shallow and shared. */
+  readonly events: ReadonlyArray<TraceEvent>
   readonly size: number
   readonly dropped: number
   readonly seq: number
   emit(kind: string, phase: string, payload?: object): TraceEvent | null
+  child(kind: string, phase?: string): TraceRecorderChild
+  drain(): TraceEvent[]
   subscribe(listener: (event: TraceEvent) => void): () => void
   stats(): TraceStats
   clear(): void
@@ -224,7 +235,7 @@ export interface TraceRecorder {
 export interface TraceRecorderOptions {
   limit?: number
   clock?: () => number
-  sink?: ((event: TraceEvent) => void) | null
+  sink?: { write(event: TraceEvent): void } | null
   actor?: string
   strict?: boolean
 }
@@ -336,10 +347,11 @@ export interface EnvModule {
 }
 
 export interface EnvironmentInstallResult {
-  installed: { id: string; order: number }[]
-  skipped: string[]
-  failed: { id: string; message: string }[]
-  missing: string[]
+  installed: { id: string; order: number; ms: number }[]
+  missing: { id: string; reason: string }[]
+  requested: string[]
+  tookMs: number
+  complete: boolean
 }
 
 /* -------------------------------------------------------------------------- */
@@ -489,7 +501,7 @@ export interface Instrumentation {
     options?: { filename?: string; level?: string; sourceType?: 'script' | 'module'; traceCode?: boolean },
   ): InstrumentationPrepared
   analyze(source: string, options?: AnalyzeSourceOptions): AnalyzeSourceResult
-  summarizeVm(events: unknown[], semantics?: Record<string, string>): object
+  summarizeVm(events: readonly unknown[], semantics?: Record<string, string>): object
   describe(): InstrumentationDescribe
   stats(): InstrumentationDescribe
   dispose(): void
@@ -557,6 +569,7 @@ export interface SandboxSettleDrained {
   promiseErrors: number
   /** A job/timer/virtual-time budget ran out before the queues were empty. */
   exhausted: boolean
+  timedOut: boolean
   pendingTimers: number
   virtualMs: number
   limitsHit: string[]
@@ -1152,7 +1165,7 @@ export interface MemoryDestination {
 /** Trace consumer that forwards every event to a logger. */
 export interface EventSink {
   write(event: object): void
-  writeAll(events: object[]): void
+  writeAll(events: readonly object[]): void
   flush(): void
   counts(): Record<string, number>
   buffer: object[]
@@ -1257,6 +1270,7 @@ export declare function createStealth(ctx: QuickJSContext, options?: StealthOpti
 export declare function createInvoker(options: {
   ctx: QuickJSContext
   runtime: QuickJSRuntime
+  limitReason?: () => string | null | undefined
   bridge: HostBridge
   stealth?: Stealth | null
   profile: Profile
@@ -1359,7 +1373,7 @@ export declare function instrumentDispatch(
 export declare function locateInterpreter(source: string, dispatch: object): string | null
 
 export declare function summarizeOpcodeTrace(
-  events: unknown[],
+  events: readonly unknown[],
   options?: { semantics?: Record<string, string>; limit?: number },
 ): object
 
@@ -1383,7 +1397,7 @@ export declare function analyzeSample(source: string, options?: AnalyzeSampleOpt
 
 export declare function extractIOCs(text: string, options?: IocOptions): IOCResult
 
-export declare function extractFromEvents(events: object[], options?: IocOptions): IOCResult
+export declare function extractFromEvents(events: readonly object[], options?: IocOptions): IOCResult
 
 export declare function buildReport(analysis: object): AnalysisReport
 
@@ -1391,7 +1405,7 @@ export declare function renderMarkdown(report: object): string
 
 export declare function scoreVerdict(input?: object): Verdict
 
-export declare function summarizeBehavior(events?: object[]): object
+export declare function summarizeBehavior(events?: readonly object[]): object
 
 export declare function createArtifactStore(options?: {
   maxBytes?: number
@@ -1400,7 +1414,7 @@ export declare function createArtifactStore(options?: {
 }): ArtifactStore
 
 export declare function extractStagedPayloads(
-  events?: object[],
+  events?: readonly object[],
   sourceText?: string,
   options?: object,
 ): ArtifactStore

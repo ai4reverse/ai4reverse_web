@@ -63,7 +63,7 @@ export const TRACE_PHASES = Object.freeze([
  * @param {object} [options]
  * @param {number} [options.limit] max retained events (0 = unbounded)
  * @param {() => number} [options.clock] virtual clock in ms
- * @param {(event: TraceEvent) => void} [options.sink] pino sink
+ * @param {{write(event: TraceEvent): void} | null} [options.sink] pino sink
  * @param {string} [options.actor]
  */
 export function createTraceRecorder(options = {}) {
@@ -89,10 +89,10 @@ export function createTraceRecorder(options = {}) {
   let dropped = 0
 
   const recorder = {
+    /** @returns {ReadonlyArray<TraceEvent>} Detached, shallow snapshot. */
     get events() {
-      // Only reads after the first eviction pay for a copy; before that the
-      // live array is handed out exactly as before.
-      return head === 0 ? events : events.slice(head)
+      // Freeze only the detached array; event objects retain their identity.
+      return Object.freeze(events.slice(head))
     },
     get size() {
       return events.length - head

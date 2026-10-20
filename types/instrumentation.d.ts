@@ -24,6 +24,7 @@ export {
 
 export type {
   TraceRecorder,
+  TraceRecorderChild,
   TraceRecorderOptions,
   TraceEvent,
   TraceStats,

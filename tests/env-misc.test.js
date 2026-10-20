@@ -576,7 +576,7 @@ test('window dialogs answer like a chrome dialog box and tick the clock', () => 
 })
 
 test('window.open records the popup target as an IOC', () => {
-  chromium.trace.events.length = 0
+  chromium.trace.clear()
   assert.equal(guest(chromium, `window.open('https://popup.example.test/stage2.js')`), null)
   assert.equal(guest(chromium, `window.open('')`), null)
   const iocs = chromium.trace.events.filter((event) => event.kind === 'ioc')
