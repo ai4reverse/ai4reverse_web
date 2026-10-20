@@ -211,17 +211,35 @@ export function createCodeInstrumenter(options) {
     let budgetExceeded = false
 
     const add = (offset, priority, code) => {
-      if (budgetExceeded) return
+      if (budgetExceeded) return false
       if (insertionCount >= maxInsertions) {
         budgetExceeded = true
         trace?.emit('code', 'error', { event: 'instrument.budget', maxInsertions, filename })
-        return
+        return false
       }
       insertionCount += 1
       insertions.push({ offset, priority, text: wrap(code) })
+      return true
+    }
+
+    /** Atomic multi-fragment probe: all fragments or none (P0-5). */
+    const addAtomic = (fragments) => {
+      if (budgetExceeded) return false
+      if (insertionCount + fragments.length > maxInsertions) {
+        budgetExceeded = true
+        trace?.emit('code', 'error', { event: 'instrument.budget', maxInsertions, filename })
+        return false
+      }
+      for (const fragment of fragments) {
+        insertionCount += 1
+        insertions.push({ offset: fragment.offset, priority: fragment.priority, text: wrap(fragment.code) })
+      }
+      return true
     }
 
     const record = (event, node, fnName) => {
+      // H21: plan retention is gated by the insertion budget.
+      if (budgetExceeded || plan.size >= maxInsertions) return -1
       nextId += 1
       plan.set(nextId, {
         event,
@@ -374,14 +392,34 @@ export function createCodeInstrumenter(options) {
         if (callee.type === 'Identifier' && callee.name === 'Function' && !path.scope.getBinding('Function')) {
           if (activeRank < LEVEL_RANK.function) return
           const id = record('Function', path.node, currentFunctionName)
-          add(callee.start, 60, `(${bindingName()}(${kind('Function')},${id}),`)
-          add(callee.end, 60, ')')
-          stats.evalSites += 1
+          if (id < 0) return
+          if (addAtomic([
+            { offset: callee.start, priority: 60, code: `(${bindingName()}(${kind('Function')},${id}),` },
+            { offset: callee.end, priority: 60, code: ')' },
+          ])) stats.evalSites += 1
         }
       },
     })
 
-    const code = applyInsertions(source, insertions)
+    let code = applyInsertions(source, insertions)
+    // P0-5: a mid-pair budget split must not ship syntax-invalid text blamed on
+    // the sample. Re-parse and fall back to the original source when invalid.
+    if (insertions.length > 0) {
+      try {
+        parse(code, { sourceType, errorRecovery: false, filename }).ast
+      } catch (error) {
+        stats.parseFailures += 1
+        trace?.emit('code', 'error', {
+          event: 'instrument.invalid',
+          message: error.message,
+          filename,
+          maxInsertions,
+        })
+        code = source
+        plan.clear()
+        insertions.length = 0
+      }
+    }
     const result = {
       code,
       plan,
