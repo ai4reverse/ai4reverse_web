@@ -119,6 +119,9 @@ evidence was missing at review time. Its material findings were addressed:
 
 ## Re-validation
 
+Snapshot at Review 6 (the current tree is measured in "Re-validation after
+Review 6" below: 600 tests / 46 files):
+
 ```
 $ pnpm test
 ℹ tests 484
