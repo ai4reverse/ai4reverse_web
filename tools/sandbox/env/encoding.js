@@ -24,7 +24,55 @@ export function install(bridge) {
   const Uint8ArrayFactory = ctx.unwrapResult(
     ctx.evalCode('(function(buffer){ return new Uint8Array(buffer) })'),
   )
-  bridge.onDispose(() => Uint8ArrayFactory.dispose())
+  const fromCharCodes = ctx.unwrapResult(
+    ctx.evalCode(
+      '(function(codes){ return String.fromCharCode.apply(null, codes) })',
+      'ai4r-internal:encoding-from-codes',
+    ),
+  )
+  const toCharCodes = ctx.unwrapResult(
+    ctx.evalCode(
+      '(function(s){ var out = []; for (var i = 0; i < s.length; i++) out.push(s.charCodeAt(i)); return out })',
+      'ai4r-internal:encoding-to-codes',
+    ),
+  )
+  bridge.onDispose(() => {
+    Uint8ArrayFactory.dispose()
+    try { fromCharCodes.dispose() } catch { /* already gone */ }
+    try { toCharCodes.dispose() } catch { /* already gone */ }
+  })
+
+  const newJsString = (text) => {
+    const value = String(text)
+    if (!value.includes('\0')) return ctx.newString(value)
+    const codes = ctx.newArray()
+    try {
+      for (let index = 0; index < value.length; index += 1) {
+        const code = ctx.newNumber(value.charCodeAt(index))
+        ctx.setProp(codes, index, code)
+        code.dispose()
+      }
+      return ctx.unwrapResult(ctx.callFunction(fromCharCodes, ctx.undefined, [codes]))
+    } finally {
+      codes.dispose()
+    }
+  }
+
+  const readJsString = (handle) => {
+    if (!handle || ctx.typeof(handle) !== 'string') return bridge.str([handle], 0, '')
+    const codesHandle = ctx.callFunction(toCharCodes, ctx.undefined, [handle])
+    if (codesHandle.error) {
+      codesHandle.error.dispose()
+      return ctx.getString(handle)
+    }
+    try {
+      const codes = ctx.dump(codesHandle.value)
+      if (!Array.isArray(codes)) return ctx.getString(handle)
+      return String.fromCharCode(...codes)
+    } finally {
+      codesHandle.value.dispose()
+    }
+  }
 
   const toGuestBytes = (bytes) => {
     const buffer = ctx.newArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
@@ -42,23 +90,37 @@ export function install(bridge) {
     if (!handle) return new Uint8Array(0)
     if (ctx.typeof(handle) !== 'object') return new Uint8Array(0)
     try {
-      const direct = ctx.getArrayBuffer(handle)
-      const copy = direct.value.slice()
-      direct.dispose()
-      return copy
-    } catch {
-      let inner
+      const inner = ctx.getProp(handle, 'buffer')
+      const offsetHandle = ctx.getProp(handle, 'byteOffset')
+      const lengthHandle = ctx.getProp(handle, 'byteLength')
       try {
-        inner = ctx.getProp(handle, 'buffer')
-        const viaBuffer = ctx.getArrayBuffer(inner)
-        const copy = viaBuffer.value.slice()
-        viaBuffer.dispose()
-        return copy
-      } catch {
-        return new Uint8Array(0)
+        if (ctx.typeof(inner) === 'object' && ctx.typeof(offsetHandle) === 'number') {
+          const offset = ctx.getNumber(offsetHandle)
+          const length = ctx.getNumber(lengthHandle)
+          const viaBuffer = ctx.getArrayBuffer(inner)
+          try {
+            return new Uint8Array(viaBuffer.value.slice(offset, offset + length))
+          } finally {
+            viaBuffer.dispose()
+          }
+        }
       } finally {
-        if (inner) inner.dispose()
+        offsetHandle.dispose()
+        lengthHandle.dispose()
+        inner.dispose()
       }
+    } catch {
+      /* fall through */
+    }
+    try {
+      const direct = ctx.getArrayBuffer(handle)
+      try {
+        return new Uint8Array(direct.value.slice())
+      } finally {
+        direct.dispose()
+      }
+    } catch {
+      return new Uint8Array(0)
     }
   }
 
@@ -66,7 +128,7 @@ export function install(bridge) {
     bridge.global,
     'atob',
     bridge.fn('atob', 1, ({ args }) => {
-      const raw = bridge.str(args, 0, '')
+      const raw = args[0] ? readJsString(args[0]) : ''
       const input = raw.replace(/[\t\n\f\r ]/g, '')
       const padded = input.padEnd(Math.ceil(input.length / 4) * 4, '=')
       if (input.length > 0 && (input.length % 4 === 1 || !BASE64.test(padded))) {
@@ -80,7 +142,7 @@ export function install(bridge) {
         decodedLength: decoded.length,
         value: text.length > 8192 ? `${text.slice(0, 8192)}…` : text,
       })
-      return ctx.newString(text)
+      return newJsString(text)
     }),
     { enumerable: true, configurable: true, writable: true },
   )
@@ -89,7 +151,7 @@ export function install(bridge) {
     bridge.global,
     'btoa',
     bridge.fn('btoa', 1, ({ args }) => {
-      const input = bridge.str(args, 0, '')
+      const input = args[0] ? readJsString(args[0]) : ''
       for (let i = 0; i < input.length; i += 1) {
         if (input.charCodeAt(i) > 0xff) {
           throw invalidCharacter(
@@ -111,29 +173,37 @@ export function install(bridge) {
 
   // ---- TextEncoder -------------------------------------------------------
   const encodeInto = (destination, text) => {
-    const bytes = Buffer.from(text, 'utf8')
+    if (!destination) return bridge.obj({ read: 0, written: 0 })
+    const lengthValue = ctx.getProp(destination, 'byteLength')
+    const capacity = ctx.getNumber(lengthValue)
+    lengthValue.dispose()
+    let read = 0
     let written = 0
-    if (destination) {
-      const lengthValue = ctx.getProp(destination, 'length')
-      const capacity = ctx.getNumber(lengthValue)
-      lengthValue.dispose()
-      written = Math.min(capacity, bytes.length)
-      for (let i = 0; i < written; i += 1) {
+    // Spec: never write an incomplete UTF-8 sequence (P0-9).
+    while (read < text.length) {
+      const codePoint = text.codePointAt(read)
+      const units = codePoint > 0xffff ? 2 : 1
+      const piece = String.fromCodePoint(codePoint)
+      const bytes = Buffer.from(piece, 'utf8')
+      if (written + bytes.length > capacity) break
+      for (let i = 0; i < bytes.length; i += 1) {
         const byte = ctx.newNumber(bytes[i])
-        ctx.setProp(destination, i, byte)
+        ctx.setProp(destination, written + i, byte)
         byte.dispose()
       }
+      written += bytes.length
+      read += units
     }
-    return bridge.obj({ read: written === bytes.length ? text.length : Math.floor(written), written })
+    return bridge.obj({ read, written })
   }
 
   const encodeHost = bridge.fn('encode', 1, ({ args }) => {
-    const text = bridge.str(args, 0, '')
+    const text = args[0] ? readJsString(args[0]) : ''
     bridge.emit('api', 'before', { api: 'TextEncoder.encode', length: text.length })
     return toGuestBytes(new Uint8Array(Buffer.from(text, 'utf8')))
   })
   const encodeIntoHost = bridge.fn('encodeInto', 2, ({ args }) =>
-    encodeInto(args[1], bridge.str(args, 0, '')),
+    encodeInto(args[1], args[0] ? readJsString(args[0]) : ''),
   )
 
   const TextEncoderCtor = bridge.nativeConstructor({
@@ -191,7 +261,7 @@ export function install(bridge) {
       try {
         const decoded = new TextDecoder(encoding, { fatal, ignoreBOM }).decode(bytes) // Node host codec
         bridge.emit('api', 'before', { api: 'TextDecoder.decode', encoding, length: bytes.length })
-        return ctx.newString(decoded)
+        return newJsString(decoded)
       } catch (error) {
         throw Object.assign(new Error(error.message), { name: 'TypeError' })
       }
@@ -217,7 +287,7 @@ export function install(bridge) {
       const bytes = readBytes(args[0])
       const decoded = new TextDecoder('utf-8').decode(bytes)
       bridge.emit('api', 'before', { api: 'TextDecoder.decode', encoding: 'utf-8', length: bytes.length })
-      return ctx.newString(decoded)
+      return newJsString(decoded)
     }),
     { enumerable: true, configurable: true, writable: true },
   )

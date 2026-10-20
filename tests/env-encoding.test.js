@@ -195,14 +195,15 @@ test('TextEncoder.encodeInto reports read and written counts', async () => {
     // "héllo" is 6 UTF-8 bytes: 5 code units, all of them fit in 16 bytes.
     assert.deepEqual(parsed.roomy, { read: 5, written: 6 })
     assert.deepEqual(parsed.roomyBytes.slice(0, 6), [104, 195, 169, 108, 108, 111])
-    // A 2-byte destination cuts the multibyte sequence after two bytes.
-    assert.deepEqual(parsed.tight, { read: 2, written: 2 })
-    assert.deepEqual(parsed.tightBytes, [104, 195])
+    // A 2-byte destination fits 'h' then refuses a partial 'é' (P0-9 / Encoding spec).
+    assert.deepEqual(parsed.tight, { read: 1, written: 1 })
+    assert.deepEqual(parsed.tightBytes, [104, 0])
     assert.deepEqual(parsed.exact, { read: 1, written: 3 })
     assert.deepEqual(parsed.exactBytes.slice(0, 3), [226, 130, 172], 'the decoder writes three bytes and leaves the rest')
     assert.equal(parsed.exactBytes.length, 4)
-    assert.deepEqual(parsed.wide, { read: 1, written: 1 }, 'one byte of a three-byte sequence fits')
-    assert.deepEqual(parsed.wideBytes, [226])
+    // Spec: never write an incomplete UTF-8 sequence (ACCEPTANCE P0-9).
+    assert.deepEqual(parsed.wide, { read: 0, written: 0 }, 'one byte cannot hold a three-byte sequence')
+    assert.deepEqual(parsed.wideBytes, [0])
     assert.deepEqual(parsed.missing, { read: 0, written: 0 })
   } finally {
     harness.dispose()

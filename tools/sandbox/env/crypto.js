@@ -22,30 +22,53 @@ export function install(bridge) {
   const { ctx, profile } = bridge
   const rng = createSeededRandom(`${profile.seed}::crypto`)
   const crypto = bridge.obj()
+  // Write entropy into the view's byte window (not element indices) — P0-9.
+  const fillView = ctx.unwrapResult(
+    ctx.evalCode(
+      '(function(view, bytes){ var u8 = new Uint8Array(view.buffer, view.byteOffset, view.byteLength); for (var i = 0; i < bytes.length; i++) u8[i] = bytes[i]; return view; })',
+      'ai4r-internal:crypto-fill',
+    ),
+  )
+  const asUint8 = ctx.unwrapResult(
+    ctx.evalCode('(function(b){ return new Uint8Array(b) })', 'ai4r-internal:crypto-u8'),
+  )
+  bridge.onDispose(() => {
+    try { fillView.dispose() } catch { /* already gone */ }
+    try { asUint8.dispose() } catch { /* already gone */ }
+  })
 
   bridge.install(crypto, 'getRandomValues', bridge.fn('getRandomValues', 1, ({ args }) => {
     const target = args[0]
     if (!target) {
       throw Object.assign(new TypeError("Failed to execute 'getRandomValues' on 'Crypto': 1 argument required, but only 0 present."), {})
     }
-    let length = 0
+    let byteLength = 0
     try {
-      const lengthValue = ctx.getProp(target, 'length')
-      length = ctx.getNumber(lengthValue)
+      const lengthValue = ctx.getProp(target, 'byteLength')
+      byteLength = ctx.getNumber(lengthValue)
       lengthValue.dispose()
     } catch {
-      length = 0
+      byteLength = 0
     }
-    if (length > 65536) {
-      throw Object.assign(new Error("Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length (" + length + ') exceeds the number of bytes of entropy available via this API (65536).'), { name: 'QuotaExceededError' })
+    if (byteLength > 65536) {
+      throw Object.assign(new Error("Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length (" + byteLength + ') exceeds the number of bytes of entropy available via this API (65536).'), { name: 'QuotaExceededError' })
     }
-    const bytes = rng.bytes(length)
-    for (let i = 0; i < length; i += 1) {
-      const value = ctx.newNumber(bytes[i])
-      ctx.setProp(target, i, value)
-      value.dispose()
+    const bytes = rng.bytes(byteLength)
+    const bytesHandle = ctx.newArrayBuffer(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+    let bytesArray
+    try {
+      bytesArray = ctx.unwrapResult(ctx.callFunction(asUint8, ctx.undefined, [bytesHandle]))
+      const filled = ctx.callFunction(fillView, ctx.undefined, [target, bytesArray])
+      if (filled.error) {
+        filled.error.dispose()
+        throw new TypeError("Failed to execute 'getRandomValues' on 'Crypto': parameter 1 is not of type 'ArrayBufferView'.")
+      }
+      filled.value.dispose()
+    } finally {
+      bytesArray?.dispose?.()
+      bytesHandle.dispose()
     }
-    bridge.emit('api', 'before', { api: 'crypto.getRandomValues', length })
+    bridge.emit('api', 'before', { api: 'crypto.getRandomValues', length: byteLength })
     return target
   }), { enumerable: true, configurable: true, writable: true })
 
@@ -259,19 +282,51 @@ function normalizeAlgorithm(value) {
 
 function readBytes(ctx, handle) {
   if (!handle) return new Uint8Array(0)
+  // Prefer the view window (byteOffset/byteLength) so TypedArray slices are
+  // hashed/digested correctly (P0-9).
+  try {
+    const inner = ctx.getProp(handle, 'buffer')
+    const offsetHandle = ctx.getProp(handle, 'byteOffset')
+    const lengthHandle = ctx.getProp(handle, 'byteLength')
+    try {
+      if (ctx.typeof(inner) === 'object' && ctx.typeof(offsetHandle) === 'number') {
+        const offset = ctx.getNumber(offsetHandle)
+        const length = ctx.getNumber(lengthHandle)
+        const buffer = ctx.getArrayBuffer(inner)
+        try {
+          return new Uint8Array(buffer.value.slice(offset, offset + length))
+        } finally {
+          buffer.dispose()
+        }
+      }
+    } finally {
+      offsetHandle.dispose()
+      lengthHandle.dispose()
+      inner.dispose()
+    }
+  } catch {
+    /* fall through to ArrayBuffer / full-buffer paths */
+  }
   try {
     const buffer = ctx.getArrayBuffer(handle)
-    const bytes = buffer.value.slice()
-    buffer.dispose()
-    return bytes
+    try {
+      return new Uint8Array(buffer.value.slice())
+    } finally {
+      buffer.dispose()
+    }
   } catch {
     try {
       const inner = ctx.getProp(handle, 'buffer')
-      const buffer = ctx.getArrayBuffer(inner)
-      inner.dispose()
-      const bytes = buffer.value.slice()
-      buffer.dispose()
-      return bytes
+      try {
+        const buffer = ctx.getArrayBuffer(inner)
+        try {
+          return new Uint8Array(buffer.value.slice())
+        } finally {
+          buffer.dispose()
+        }
+      } finally {
+        inner.dispose()
+      }
     } catch {
       return new Uint8Array(0)
     }
