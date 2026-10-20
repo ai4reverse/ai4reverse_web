@@ -50,6 +50,18 @@ export const TRACE_PHASES = Object.freeze([
 ])
 
 /**
+ * Root kinds plus dotted namespaces from `child(a).child(b)` → `a.b`.
+ * CONTRACTS: `trace.child(kind).child(sub)` namespaces as `kind.sub`.
+ * @param {string} kind
+ */
+function isKnownTraceKind(kind) {
+  if (TRACE_KINDS.includes(kind)) return true
+  if (typeof kind !== 'string' || !kind.includes('.')) return false
+  const root = kind.slice(0, kind.indexOf('.'))
+  return TRACE_KINDS.includes(root)
+}
+
+/**
  * @typedef {object} TraceEvent
  * @property {number} seq
  * @property {number} t virtual epoch ms
@@ -111,11 +123,11 @@ export function createTraceRecorder(options = {}) {
      * @returns {TraceEvent|null}
      */
     emit(kind, phase, payload = {}) {
-      // `kind` is a code-level constant from TRACE_KINDS, never guest data, so
-      // an unknown kind is a programming error in every mode. It is validated
-      // before anything is mutated: a rejected event must not advance the
-      // sequence or pollute the counters.
-      if (!TRACE_KINDS.includes(kind)) throw new Error(`unknown trace kind: ${kind}`)
+      // `kind` is a code-level constant from TRACE_KINDS (or a dotted child
+      // namespace under one), never guest data, so an unknown kind is a
+      // programming error in every mode. Validated before mutation so a
+      // rejected event cannot advance the sequence or pollute counters.
+      if (!isKnownTraceKind(kind)) throw new Error(`unknown trace kind: ${kind}`)
       if (strict) {
         // Phases are stricter than kinds on purpose: non-strict callers (the
         // guest trace hook) may pass a descriptive phase string, while strict

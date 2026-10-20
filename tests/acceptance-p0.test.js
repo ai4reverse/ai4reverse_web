@@ -199,9 +199,7 @@ test('H9 a throwing logger does not escape dispatch', () => {
   assert.doesNotThrow(() => bus.dispatch('api:before', { api: 'x' }))
 })
 
-test('H9 chained trace.child kinds remain emit-safe', {
-  todo: 'ACCEPTANCE H9 — child namespaces must be valid trace kinds',
-}, () => {
+test('H9 chained trace.child kinds remain emit-safe', () => {
   const root = createTraceRecorder()
   const child = root.child('hook').child('net')
   assert.doesNotThrow(() => child.emit('probe', { ok: true }))
