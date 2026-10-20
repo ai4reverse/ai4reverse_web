@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto'
 import { createSeededRandom, hashSeed } from '../../util/random.js'
 import { isHandle } from '../bridge.js'
 import { elementPrototypifier } from './dom.js'
+import { ensureNetwork } from './network.js'
 
 export const meta = { id: 'canvas', order: 105, requires: ['globals'] }
 
@@ -2369,7 +2370,15 @@ export function install(bridge) {
       set: (state, call) => {
         state.src = bridge.str(call.args, 0, '')
         state.complete = false
-        bridge.emit('dom', 'before', { api: 'img.src', length: state.src.length })
+        bridge.emit('dom', 'before', { api: 'img.src', length: state.src.length, url: state.src })
+        // Classic beacon: every request is a net event + IOC (P0-10).
+        if (state.src) {
+          try {
+            ensureNetwork(bridge).computeResult({ method: 'GET', url: state.src, headers: {}, body: null })
+          } catch {
+            bridge.reportIOC('url', state.src)
+          }
+        }
         const element = retain(call.thisHandle.dup())
         schedule(1, () => {
           state.complete = true
