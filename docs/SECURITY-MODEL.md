@@ -16,7 +16,7 @@ shared host, and it is not a browser.
 | Guest ↔ network | No socket API is reachable. `fetch`/XHR/WebSocket/EventSource are synthetic services driven by the virtual clock; policies are `deny` (default), `empty`, `echo`, or explicit routes. Every request is a trace event + IOC. |
 | CPU | Interrupt handler enforces a host deadline (default 5 s) and a virtual-time budget (default 60 s). Infinite loops are interrupted and classified. |
 | Memory | `setMemoryLimit` (default 64 MB) and `setMaxStackSize` (default 1 MB); breaches become structured limit results. |
-| Event volume | Trace ring buffer limit; instrumentation event budget; console buffer cap; artifact size/count caps; hook error ring (200). |
+| Event volume | Trace ring buffer limit; instrumentation event budget; console buffer cap; artifact size/count caps; hook error ring (200 entries **and** 64 KiB of message text, 2 KiB per message). |
 | State leakage between samples | A **fresh runtime and context per run**; guest execution serialized one run at a time per process; intrinsic snapshot before/after proves no cross-run residue. |
 
 The sandbox is *not* a kernel-level isolation boundary. QuickJS/WASM has a strong
@@ -55,23 +55,44 @@ list, so `runtime.dispose()` would abort the WASM engine and print
 `Aborted(Assertion failed: list_empty(&rt->gc_obj_list))` to stderr.
 
 The platform therefore **classifies from the engine signal only** and then
-abandons the runtime:
+abandons the runtime. Two engine shapes exist, and the platform records the
+signal host-side for both:
 
-- `tools/sandbox/runtime.js` `isHostStackExhaustion(thrown)` accepts only a
-  host-thrown `RangeError`/`Error` carrying the engine's wording — the WASM
-  native-stack path.
-- `tools/invocation/invoke.js` `isEngineStackError(stealth, handle)` asks
+1. **Host throw.** A host `RangeError` escapes `evalCode`, `callFunction` or
+   `executePendingJobs`. `runtime.js` `isHostStackExhaustion(thrown)` accepts
+   only a host-thrown `RangeError`/`Error` carrying the engine's exact wording.
+2. **Converted guest error.** The overflow happens inside a host callback and
+   quickjs-emscripten rethrows it into the guest as `ctx.newError(...)`, which is
+   shape-identical to `throw new RangeError('Maximum call stack size exceeded')`.
+   `guardHostStackExhaustion` increments `runtime.stackSignals()` *before* that
+   conversion; the invoker reads the counter around the branch it ran and
+   classifies from it. Guest code cannot write this counter, so neither a
+   `catch {}` nor a forged message can suppress or fake it.
+
+Everything else about the classification:
+- Guest-side evidence is used for one case only: interpreter recursion under a
+  reduced `limits.stackBytes`, which no host throw announces.
+  `tools/invocation/invoke.js` `isEngineStackError(stealth, handle)` asks
   `stealth.isIntrinsicStackError(handle)` about the **live guest handle**: the
   thrown value's prototype chain must contain the engine's own
   `InternalError.prototype`, captured in `stealth.install()` *before*
   `env/globals.js` removes the global binding, and the probe refuses to certify
-  while that constructor is still guest-reachable (a Firefox profile keeps it,
-  because real Firefox has it). No caller applies a name or message test to
-  guest data, so `{ name: 'InternalError', … }`, a renamed `Error` and a
-  prototype stand-in all stay ordinary exceptions.
+  while that constructor is still guest-reachable. `env/stack.js` keeps the
+  constructor faithful but unreachable by giving its wrapper a fresh prototype
+  (same own properties, same `[[Prototype]]`, as Firefox has); if the wrapper
+  cannot be installed, the module calls `stealth.revokeStackEvidence()` and
+  guest-side certification is off for the rest of the run. The host witness is
+  never affected. No caller applies a name or message test to guest data, so
+  `{ name: 'InternalError', … }`, a renamed `Error`, a plain
+  `Error('stack overflow')` and a prototype stand-in all stay ordinary
+  exceptions.
 - `tools/invocation/invoke.js` records the breach as the explicit marker
   `stackExhaustion: true` (also inside a timer or promise callback, where the
-  script itself still succeeds and the record appears in `run.settle`).
+  script itself still succeeds and the record appears in `run.settle`). One
+  record builder normalises both shapes: `error.stack === ''` (it would encode
+  the recursion depth), the engine's name/message, `limitsHit: ['stack']` and the
+  abandoned-runtime disposal. A guest that swallows the converted overflow is
+  still `ok:true` **and** `limitsHit: ['stack']`.
 - `tools/sandbox/sandbox.js` takes the abandon decision from that marker alone:
   it calls `runtimeHandle.abandon()` (which never calls `runtime.dispose()`),
   quarantines the WASM module, and reports
@@ -83,8 +104,10 @@ abandons the runtime:
 
 **No engine abort is expected on this path**, and the suite asserts that no
 `Aborted(` line reaches stderr from a stack, timer or promise-job breach: the
-full 600-test run prints zero of them (`tests/resilience.test.js` captures engine
-output around the overflow, timer and promise cases and fails on any match). The
+612-test run on the pinned commit prints zero of them (`tests/resilience.test.js`
+captures engine output around the overflow, timer and promise cases and fails on
+any match). The 40-run full-environment loop is part of that guarantee: every
+run classifies, and the follow-up run is clean. The
 engine still prints that assertion when a *non-stack* handle leak occurs; that is
 the engine's own diagnostic, is converted into `disposal.ok === false`, and is a
 platform bug — not a sample-visible signal.
@@ -106,6 +129,15 @@ guest-reachable prototype). Measured: the same script reports
 `stackBytes: 64 KiB`, while throwing a plain error after the caught overflow
 reports `limitsHit: []`, `disposal { ok:true }`. Honest samples cannot produce a
 false leak, and memory plateaus rather than growing without bound.
+
+**The price of continuing.** A quarantined module keeps its WASM heap until the
+engine's module is collected, so each breach costs host memory: measured
+**21.7 MB RSS per breach** over six consecutive breaches on one host (~17 MB in
+the final-audit measurement). The process keeps working (`1+1` still returns
+`ok:true` after them), which is the trade this design makes: a poisoned engine is
+replaced, not a whole process restarted. A batch that expects hostile samples
+should therefore bound the number of breaches per worker process rather than
+process an entire corpus in one.
 
 ## Concurrency: one guest run at a time
 
@@ -212,9 +244,14 @@ quickjs-emscripten aborts the WASM module on `runtime.dispose()` if any handle i
 still alive. The platform treats disposal as a correctness invariant:
 
 - per-callback `HandleBag` disposal (LIFO, exception-safe) for every host
-  callback;
+  callback: values a call creates die with the call, so a guest cannot grow host
+  memory by calling a host API in a loop (a 20 000-call builder loop plateaus;
+  `tests/sandbox-core.test.js`);
 - bridge-owned handles (created by `fn`/`obj`/`arr`/`install`/`nativeConstructor`)
-  disposed once in `disposeAll()`;
+  disposed once in `disposeAll()`. A handle returned from a host callback is
+  transferred to the guest by the trampoline, not duplicated, and a deferred
+  promise releases its record when it settles (or at teardown for a promise that
+  never settles), so resolver pairs do not accumulate per promise;
 - per-run teardown callbacks registered through `bridge.onDispose` (timers,
   deferred promises, store handles), run LIFO, each in its own `try/catch`;
 - `run.disposal.ok` asserted in tests; a leak surfaces as a failed run
