@@ -1,0 +1,48 @@
+{
+  "id": "01",
+  "slug": "bank-webinject",
+  "name": "HELIOS-WEBINJECT",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "financial-services",
+  "category": "banking-trojan",
+  "platform": "browser-javascript",
+  "summary": "面向零售银行的浏览器注入产品：按目标银行匹配页面，注入虚假登录/OTP 浮层，捕获凭据并通过加密信道回传。",
+  "capabilities": [
+    "DOM 注入与样式伪装",
+    "表单/OTP 捕获",
+    "动态代码执行（注入模板探针）",
+    "HTTPS C2 回传",
+    "本地持久化",
+    "反调试与异常吞噬"
+  ],
+  "mitre": [
+    "T1185",
+    "T1056.003",
+    "T1566.002",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string",
+      "network-body"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "dom-injection",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "id": "15",
+  "slug": "qr-airgap-exfil",
+  "name": "AIRQR",
+  "grade": "military",
+  "severity": "critical",
+  "sector": "defense",
+  "category": "airgap-exfiltration",
+  "platform": "browser-javascript",
+  "summary": "气隙环境视觉外传：把窃取数据编码为二维码矩阵绘制到 canvas，再以图片/像素请求外传，模拟屏幕拍摄信道。",
+  "capabilities": [
+    "二维码矩阵绘制",
+    "canvas 渲染",
+    "图像外传",
+    "校验和",
+    "气隙视觉信道"
+  ],
+  "mitre": [
+    "T1048",
+    "T1027",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "dom",
+      "storage"
+    ]
+  }
+}

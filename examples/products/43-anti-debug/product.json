@@ -1,0 +1,43 @@
+{
+  "id": "43",
+  "slug": "anti-debug",
+  "name": "TRAPDOOR",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "evasion",
+  "category": "anti-debugging",
+  "platform": "browser-javascript",
+  "summary": "反调试器：debugger 陷阱、计时差、函数栈/原生品牌检查与定时自毁逻辑，检测到分析后停止载荷。",
+  "capabilities": [
+    "debugger 陷阱",
+    "计时检测",
+    "栈/品牌检查",
+    "条件执行",
+    "判定回传"
+  ],
+  "mitre": [
+    "T1497.001",
+    "T1622",
+    "T1027"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

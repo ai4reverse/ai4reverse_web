@@ -1,0 +1,41 @@
+{
+  "id": "29",
+  "slug": "clickfraud",
+  "name": "CLICKFARM",
+  "grade": "commercial",
+  "severity": "medium",
+  "sector": "adtech-fraud",
+  "category": "click-fraud",
+  "platform": "browser-javascript",
+  "summary": "点击欺诈引擎：隐藏 iframe 加载广告位、自动点击与刷新，伪造 referrer 与交互，回传点击统计。",
+  "capabilities": [
+    "隐藏 iframe",
+    "自动点击",
+    "参数轮换",
+    "收益统计",
+    "可见性规避"
+  ],
+  "mitre": [
+    "T1499",
+    "T1657",
+    "T1185"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 35,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [],
+    "requireTechniques": [
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "timer",
+      "dom"
+    ]
+  }
+}

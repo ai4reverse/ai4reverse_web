@@ -1,0 +1,43 @@
+{
+  "id": "30",
+  "slug": "adware-popunder",
+  "name": "POPUNDER",
+  "grade": "commercial",
+  "severity": "medium",
+  "sector": "adware",
+  "category": "popunder",
+  "platform": "browser-javascript",
+  "summary": "弹窗/弹下广告：捕获首次点击后打开隐藏窗口，定时重定向与历史操控，回传展示与点击。",
+  "capabilities": [
+    "弹窗/弹下",
+    "点击劫持",
+    "历史操控",
+    "广告轮换",
+    "事件回传"
+  ],
+  "mitre": [
+    "T1185",
+    "T1657",
+    "T1499"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "timer",
+      "dom"
+    ]
+  }
+}

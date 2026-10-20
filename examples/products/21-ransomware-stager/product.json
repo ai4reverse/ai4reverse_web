@@ -1,0 +1,47 @@
+{
+  "id": "21",
+  "slug": "ransomware-stager",
+  "name": "LOCKSTAGE",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "ransomware",
+  "category": "ransomware-stager",
+  "platform": "browser-javascript",
+  "summary": "勒索软件前端投放器：拉取加密模块、用 WebCrypto 加密本地数据、生成勒索信并回传密钥材料。",
+  "capabilities": [
+    "远程模块加载",
+    "WebCrypto 加密",
+    "密钥外传",
+    "勒索信 UI",
+    "数据清理",
+    "卸载阻断"
+  ],
+  "mitre": [
+    "T1486",
+    "T1059.007",
+    "T1105",
+    "T1041"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "cryptography",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

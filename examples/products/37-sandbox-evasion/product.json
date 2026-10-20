@@ -1,0 +1,44 @@
+{
+  "id": "37",
+  "slug": "sandbox-evasion",
+  "name": "SANDBOXGHOST",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "evasion",
+  "category": "sandbox-evasion",
+  "platform": "browser-javascript",
+  "summary": "沙箱规避器：延时执行、指针/可见性/开发者工具检测，只有“真实用户”交互后才解密并执行第二阶段。",
+  "capabilities": [
+    "延时执行",
+    "交互检测",
+    "devtools 检测",
+    "条件载荷",
+    "环境回传"
+  ],
+  "mitre": [
+    "T1497.003",
+    "T1497.001",
+    "T1027"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 35,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

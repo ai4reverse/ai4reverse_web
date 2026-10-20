@@ -1,0 +1,43 @@
+{
+  "id": "26",
+  "slug": "anti-recovery",
+  "name": "NOBOOT",
+  "grade": "military",
+  "severity": "high",
+  "sector": "cyber-operations",
+  "category": "anti-recovery",
+  "platform": "browser-javascript",
+  "summary": "反恢复组件：清空缓存/Cookie/存储、阻塞卸载与刷新、破坏页面结构，增加取证与恢复难度。",
+  "capabilities": [
+    "存储清理",
+    "Cookie 清理",
+    "卸载阻断",
+    "DOM 破坏",
+    "状态回传"
+  ],
+  "mitre": [
+    "T1485",
+    "T1561",
+    "T1491"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "id": "36",
+  "slug": "phishing-kit",
+  "name": "PHISHKIT",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "credential-phishing",
+  "category": "phishing-kit",
+  "platform": "browser-javascript",
+  "summary": "钓鱼套件：仿冒登录页收集账号密码，实时中继 2FA 验证码，成功后跳转真实站点并回传凭据。",
+  "capabilities": [
+    "仿冒登录页",
+    "凭据捕获",
+    "2FA 中继",
+    "双通道回传",
+    "成功跳转"
+  ],
+  "mitre": [
+    "T1566.002",
+    "T1056.003",
+    "T1111",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 50,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

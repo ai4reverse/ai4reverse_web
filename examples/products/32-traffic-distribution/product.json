@@ -1,0 +1,43 @@
+{
+  "id": "32",
+  "slug": "traffic-distribution",
+  "name": "TDSROUTE",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "malvertising",
+  "category": "traffic-distribution",
+  "platform": "browser-javascript",
+  "summary": "流量分发系统：根据 UA/语言/时区/来源对访问者分流，合格目标重定向到漏洞页或诈骗页，其余跳转到良性页。",
+  "capabilities": [
+    "目标画像",
+    "规则分流",
+    "条件重定向",
+    "来源过滤",
+    "统计回传"
+  ],
+  "mitre": [
+    "T1071.001",
+    "T1204.002",
+    "T1656"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

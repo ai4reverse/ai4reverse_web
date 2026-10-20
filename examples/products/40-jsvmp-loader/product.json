@@ -1,0 +1,42 @@
+{
+  "id": "40",
+  "slug": "jsvmp-loader",
+  "name": "VMORPH",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "malware-protection",
+  "category": "jsvmp",
+  "platform": "browser-javascript",
+  "summary": "JSVMP 保护加载器：业务逻辑编译为自定义字节码，由混淆 dispatch 解释器执行，静态分析难以还原；用于载荷分发与反分析。",
+  "capabilities": [
+    "字节码解释器",
+    "opcode 混淆",
+    "常量池编码",
+    "反静态分析",
+    "C2 拼接"
+  ],
+  "mitre": [
+    "T1027",
+    "T1140",
+    "T1059.007"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ],
+    "requireVm": true
+  }
+}

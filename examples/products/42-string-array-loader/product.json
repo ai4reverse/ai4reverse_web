@@ -1,0 +1,43 @@
+{
+  "id": "42",
+  "slug": "string-array-loader",
+  "name": "HEXARRAY",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "malware-protection",
+  "category": "string-array",
+  "platform": "browser-javascript",
+  "summary": "字符串数组+控制流平坦化加载器：数组旋转、解码函数、switch 顺序表组合，运行时拼接 C2 并执行阶段。",
+  "capabilities": [
+    "数组旋转",
+    "解码函数",
+    "控制流平坦化",
+    "eval",
+    "C2 拼接"
+  ],
+  "mitre": [
+    "T1027",
+    "T1140",
+    "T1059.007"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

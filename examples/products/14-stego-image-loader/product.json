@@ -1,0 +1,43 @@
+{
+  "id": "14",
+  "slug": "stego-image-loader",
+  "name": "PIXELVAULT",
+  "grade": "military",
+  "severity": "critical",
+  "sector": "intelligence",
+  "category": "steganography",
+  "platform": "browser-javascript",
+  "summary": "图片隐写载荷加载器：下载 PNG，从像素 alpha/LSB 提取 Base64 代码，拼接后 eval；用于规避内容检测。",
+  "capabilities": [
+    "LSB 隐写",
+    "canvas 像素读取",
+    "载荷拼装",
+    "eval 执行",
+    "失败重试"
+  ],
+  "mitre": [
+    "T1027.003",
+    "T1059.007",
+    "T1105"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "dom"
+    ]
+  }
+}

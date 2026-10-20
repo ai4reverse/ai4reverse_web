@@ -1,0 +1,40 @@
+{
+  "id": "04",
+  "slug": "clipboard-swapper",
+  "name": "SWAPCLIP",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "crypto",
+  "category": "clipboard-hijacker",
+  "platform": "browser-javascript",
+  "summary": "剪贴板地址替换产品：轮询读取剪贴板，识别 BTC/ETH 地址并替换为攻击者地址，配合页面收款地址替换和回传。",
+  "capabilities": [
+    "剪贴板轮询与覆盖",
+    "多链地址识别",
+    "页面地址替换",
+    "轻量级持久化"
+  ],
+  "mitre": [
+    "T1115",
+    "T1657",
+    "T1185"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "clipboard-access"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

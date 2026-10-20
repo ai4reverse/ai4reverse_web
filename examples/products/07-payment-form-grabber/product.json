@@ -1,0 +1,42 @@
+{
+  "id": "07",
+  "slug": "payment-form-grabber",
+  "name": "PAYGRAB",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "e-commerce",
+  "category": "form-grabber",
+  "platform": "browser-javascript",
+  "summary": "支付表单抓取产品：全局键盘监听 + 表单序列化，采集卡号、有效期、CVV、账单地址，加密后经 fetch 回传。",
+  "capabilities": [
+    "键击记录",
+    "表单序列化",
+    "支付字段识别",
+    "加密回传",
+    "本地重试"
+  ],
+  "mitre": [
+    "T1056.001",
+    "T1056.003",
+    "T1041"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "keylogging"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

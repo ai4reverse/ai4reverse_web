@@ -1,0 +1,35 @@
+{
+  "id": "24",
+  "slug": "destructive-prank",
+  "name": "GLITCHBOMB",
+  "grade": "commercial",
+  "severity": "medium",
+  "sector": "nuisance",
+  "category": "destructive-prank",
+  "platform": "browser-javascript",
+  "summary": "破坏性恶作剧页面：高频弹窗/重定向/历史污染与阻止关闭，消耗受害者时间并制造恐慌。",
+  "capabilities": [
+    "卸载阻断",
+    "历史污染",
+    "定时器滥用",
+    "弹窗",
+    "伪造告警"
+  ],
+  "mitre": [
+    "T1499",
+    "T1491",
+    "T1185"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 25,
+    "requireIocs": [],
+    "artifactsAny": [],
+    "requireTechniques": [],
+    "requireTraceKinds": [
+      "timer",
+      "dom"
+    ]
+  }
+}

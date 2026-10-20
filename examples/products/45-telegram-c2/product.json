@@ -1,0 +1,44 @@
+{
+  "id": "45",
+  "slug": "telegram-c2",
+  "name": "TELEBOT",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "remote-access",
+  "category": "telegram-c2",
+  "platform": "browser-javascript",
+  "summary": "Telegram Bot C2：使用 bot token 与 chat_id 拉取/发送消息，命令 Base64 解码后 eval，结果以消息回传。",
+  "capabilities": [
+    "Telegram Bot API",
+    "命令轮询",
+    "eval 执行",
+    "消息回传",
+    "offset 持久化"
+  ],
+  "mitre": [
+    "T1102.002",
+    "T1059.007",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls",
+      "telegram"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

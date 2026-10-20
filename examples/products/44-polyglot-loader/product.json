@@ -1,0 +1,44 @@
+{
+  "id": "44",
+  "slug": "polyglot-loader",
+  "name": "POLYGLOT",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "malware-protection",
+  "category": "polyglot",
+  "platform": "browser-javascript",
+  "summary": "多语言/多形态加载器：文件同时是 HTML/JS，注释与模板串隐藏 Base64 载荷，浏览器与 Node 行为不同，运行时 eval。",
+  "capabilities": [
+    "HTML/JS 多形态",
+    "环境分支",
+    "Base64 载荷",
+    "eval",
+    "环境回传"
+  ],
+  "mitre": [
+    "T1027",
+    "T1140",
+    "T1059.007"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 35,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "id": "02",
+  "slug": "card-skimmer",
+  "name": "MAGEPAY-SKIMMER",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "e-commerce",
+  "category": "card-skimming",
+  "platform": "browser-javascript",
+  "summary": "电商结账页面窃取产品：Magecart 风格，监听结算表单与输入事件，提取卡号/CVV/有效期，通过图片像素与 fetch 双通道外传。",
+  "capabilities": [
+    "表单抓取与键盘记录",
+    "图片像素隐蔽外传",
+    "失败重试与本地缓存",
+    "代码解混淆加载（eval）",
+    "CSP 宽松路径利用"
+  ],
+  "mitre": [
+    "T1056.003",
+    "T1041",
+    "T1027",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string",
+      "network-body"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

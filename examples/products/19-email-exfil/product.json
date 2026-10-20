@@ -1,0 +1,41 @@
+{
+  "id": "19",
+  "slug": "email-exfil",
+  "name": "MAILSPY",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "enterprise",
+  "category": "email-exfiltration",
+  "platform": "browser-javascript",
+  "summary": "邮件信道外传：把采集内容编码为表单字段，通过 sendBeacon/fetch 投递到 webmail 收集端，模拟邮件外发。",
+  "capabilities": [
+    "sendBeacon 外传",
+    "表单编码",
+    "失败回退",
+    "会话摘要",
+    "本地缓存"
+  ],
+  "mitre": [
+    "T1048",
+    "T1567",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 26,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

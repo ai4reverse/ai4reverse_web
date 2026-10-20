@@ -1,0 +1,44 @@
+{
+  "id": "23",
+  "slug": "ransom-note",
+  "name": "NOTEFORGE",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "ransomware",
+  "category": "ransom-note",
+  "platform": "browser-javascript",
+  "summary": "勒索信生成器：渲染倒计时、付款地址与威胁话术，复制钱包地址到剪贴板并回传受害者会话。",
+  "capabilities": [
+    "勒索 UI",
+    "倒计时",
+    "剪贴板",
+    "C2 回传",
+    "紧迫感话术"
+  ],
+  "mitre": [
+    "T1657",
+    "T1486",
+    "T1115"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "clipboard-access",
+      "dom-injection",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

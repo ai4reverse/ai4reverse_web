@@ -1,0 +1,43 @@
+{
+  "id": "39",
+  "slug": "anti-forensics",
+  "name": "CLEANTRACE",
+  "grade": "military",
+  "severity": "high",
+  "sector": "cyber-operations",
+  "category": "anti-forensics",
+  "platform": "browser-javascript",
+  "summary": "反取证清理器：清空存储/Cookie/缓存、覆盖历史与页面痕迹、阻断卸载，并回传清理清单。",
+  "capabilities": [
+    "存储清理",
+    "缓存清理",
+    "历史覆盖",
+    "卸载阻断",
+    "清理审计"
+  ],
+  "mitre": [
+    "T1070",
+    "T1485",
+    "T1561"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "id": "05",
+  "slug": "bec-invoice-fraud",
+  "name": "LEDGERBEC",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "enterprise",
+  "category": "business-email-compromise",
+  "platform": "browser-javascript",
+  "summary": "商业邮件诈骗配套页面：在发票/付款页面替换收款账户，收集供应商与金额信息，回传并展示“付款成功”降低警觉。",
+  "capabilities": [
+    "DOM 表单篡改",
+    "发票数据采集",
+    "HTTPS 回传",
+    "状态欺骗"
+  ],
+  "mitre": [
+    "T1656",
+    "T1185",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 25,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [],
+    "requireTechniques": [
+      "dom-injection",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "id": "28",
+  "slug": "botnet-agent",
+  "name": "SWARM",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "botnet",
+  "category": "botnet-agent",
+  "platform": "browser-javascript",
+  "summary": "浏览器僵尸网络节点：注册心跳、拉取 DDoS/点击任务，使用 Worker 并发执行并上报吞吐，支持任务 eval。",
+  "capabilities": [
+    "节点注册",
+    "任务拉取",
+    "Worker 并发",
+    "eval 任务",
+    "吞吐上报"
+  ],
+  "mitre": [
+    "T1498",
+    "T1499",
+    "T1059.007",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "worker-thread"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

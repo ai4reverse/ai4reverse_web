@@ -1,0 +1,57 @@
+{
+  "id": "13",
+  "slug": "dead-drop-resolver",
+  "name": "DEADDROP",
+  "grade": "military",
+  "severity": "critical",
+  "sector": "intelligence",
+  "category": "dead-drop",
+  "platform": "browser-javascript",
+  "summary": "死信箱任务解析器：从公开文本托管读取伪装为配置的任务，Base64 解码后 eval，失败时回退到备用通道。",
+  "capabilities": [
+    "公开服务死信箱",
+    "任务解析",
+    "eval 执行",
+    "多通道回退",
+    "结果回传"
+  ],
+  "mitre": [
+    "T1102",
+    "T1027",
+    "T1059.007",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 35,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ],
+    "networkRoutes": [
+      {
+        "match": "paste.example.net/raw/ghost-task.json",
+        "response": {
+          "ok": true,
+          "status": 200,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "bodyText": "{\"id\":\"task-7\",\"task\":\"Y29uc29sZS5sb2coJ1tERUFERFJPUF0gcm91dGVkIHRhc2sgZXhlY3V0ZWQnKQ==\"}"
+        }
+      }
+    ]
+  }
+}

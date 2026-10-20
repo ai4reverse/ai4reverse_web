@@ -1,0 +1,40 @@
+{
+  "id": "48",
+  "slug": "dga-domain",
+  "name": "DGAFALL",
+  "grade": "military",
+  "severity": "high",
+  "sector": "command-and-control",
+  "category": "dga",
+  "platform": "browser-javascript",
+  "summary": "域名生成算法：以日期/种子生成候选 C2 域，逐个解析并回退；用于抗封锁与基础设施轮换。",
+  "capabilities": [
+    "DGA",
+    "候选域探测",
+    "抗封锁",
+    "状态持久化",
+    "定时轮换"
+  ],
+  "mitre": [
+    "T1568.002",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

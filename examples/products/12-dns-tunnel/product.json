@@ -1,0 +1,42 @@
+{
+  "id": "12",
+  "slug": "dns-tunnel",
+  "name": "NAMESIFT",
+  "grade": "military",
+  "severity": "critical",
+  "sector": "defense",
+  "category": "dns-tunneling",
+  "platform": "browser-javascript",
+  "summary": "DNS 隧道外传：把采集数据切片编码进子域名，通过 DNS/图片请求逐段渗出；包含分块、序号与 ACK 逻辑。",
+  "capabilities": [
+    "DNS 隐蔽信道",
+    "分块编码",
+    "重试/ACK",
+    "低带宽外传",
+    "失败降级"
+  ],
+  "mitre": [
+    "T1048.003",
+    "T1071.004",
+    "T1041"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "domains",
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

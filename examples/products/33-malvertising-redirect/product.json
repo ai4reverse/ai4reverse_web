@@ -1,0 +1,43 @@
+{
+  "id": "33",
+  "slug": "malvertising-redirect",
+  "name": "ADREDIR",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "malvertising",
+  "category": "malvertising",
+  "platform": "browser-javascript",
+  "summary": "恶意广告重定向：广告素材内嵌脚本，检测点击/曝光后跳转到漏洞利用页，并用多层中转隐藏来源。",
+  "capabilities": [
+    "曝光/点击检测",
+    "多级重定向",
+    "来源隐藏",
+    "失败回退",
+    "统计回传"
+  ],
+  "mitre": [
+    "T1204.002",
+    "T1071.001",
+    "T1656"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 35,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "dom",
+      "timer"
+    ]
+  }
+}

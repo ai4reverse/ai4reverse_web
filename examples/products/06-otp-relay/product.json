@@ -1,0 +1,44 @@
+{
+  "id": "06",
+  "slug": "otp-relay",
+  "name": "OTPRELAY",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "financial-services",
+  "category": "otp-relay",
+  "platform": "browser-javascript",
+  "summary": "实时 OTP 中继产品：拦截短信/令牌验证码，通过 WebSocket 实时转发给操作员，支持 HTTP 回退与重连。",
+  "capabilities": [
+    "WebSocket 实时中继",
+    "OTP 捕获",
+    "自动重连与降级",
+    "DOM 注入",
+    "本地会话缓存"
+  ],
+  "mitre": [
+    "T1111",
+    "T1056.003",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 55,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

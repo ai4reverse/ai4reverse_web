@@ -1,0 +1,45 @@
+{
+  "id": "25",
+  "slug": "backup-encryptor",
+  "name": "VAULTLOCK",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "ransomware",
+  "category": "data-encryptor",
+  "platform": "browser-javascript",
+  "summary": "数据加密组件：读取本地备份数据，使用 AES-GCM 加密并用远控公钥封装密钥，上传密文与密钥信封。",
+  "capabilities": [
+    "AES-GCM 批量加密",
+    "密钥封装",
+    "密文上传",
+    "明文清理",
+    "状态持久化"
+  ],
+  "mitre": [
+    "T1486",
+    "T1560.001",
+    "T1041",
+    "T1059.007"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "cryptography",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

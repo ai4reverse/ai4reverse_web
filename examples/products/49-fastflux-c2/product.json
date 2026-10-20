@@ -1,0 +1,43 @@
+{
+  "id": "49",
+  "slug": "fastflux-c2",
+  "name": "FASTFLUX",
+  "grade": "military",
+  "severity": "high",
+  "sector": "command-and-control",
+  "category": "fast-flux",
+  "platform": "browser-javascript",
+  "summary": "Fast-flux C2 轮换：维护多 IP/域名端点池，按请求失败率轮换并回退，降低基础设施被封禁的影响。",
+  "capabilities": [
+    "端点池",
+    "健康度轮换",
+    "失败回退",
+    "状态持久化",
+    "统计"
+  ],
+  "mitre": [
+    "T1568.002",
+    "T1071.001",
+    "T1583.005"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls",
+      "ips"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

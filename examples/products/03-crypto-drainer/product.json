@@ -1,0 +1,45 @@
+{
+  "id": "03",
+  "slug": "crypto-drainer",
+  "name": "VAULTDRAIN",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "web3",
+  "category": "wallet-drainer",
+  "platform": "browser-javascript",
+  "summary": "Web3 钱包盗取产品：检测注入式钱包 Provider，诱导连接钱包并请求签名/授权，收集地址与链信息，通过多域名回传。",
+  "capabilities": [
+    "钱包 Provider 探测",
+    "账户/链信息采集",
+    "授权与签名诱导",
+    "剪贴板地址替换",
+    "多域名 C2 回退"
+  ],
+  "mitre": [
+    "T1657",
+    "T1185",
+    "T1115",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 50,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "clipboard-access",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

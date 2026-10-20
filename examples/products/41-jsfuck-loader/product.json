@@ -1,0 +1,42 @@
+{
+  "id": "41",
+  "slug": "jsfuck-loader",
+  "name": "BRACKETFUCK",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "malware-protection",
+  "category": "jsfuck",
+  "platform": "browser-javascript",
+  "summary": "JSFuck 编码加载器：用 []()!+ 等字符构造字符串与代码，运行时还原并 eval，规避关键字检测。",
+  "capabilities": [
+    "JSFuck 编码",
+    "运行时字符串还原",
+    "eval 阶段",
+    "C2 回传"
+  ],
+  "mitre": [
+    "T1027",
+    "T1140",
+    "T1059.007"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

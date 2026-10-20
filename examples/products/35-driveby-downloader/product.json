@@ -1,0 +1,43 @@
+{
+  "id": "35",
+  "slug": "driveby-downloader",
+  "name": "DRIVEBY",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "malware-delivery",
+  "category": "drive-by-download",
+  "platform": "browser-javascript",
+  "summary": "驱动下载器：伪造更新提示，自动创建下载链接/Blob 并触发保存，回传下载结果与主机信息。",
+  "capabilities": [
+    "伪造更新 UI",
+    "自动下载",
+    "Blob/Anchor 触发",
+    "状态回传",
+    "回退跳转"
+  ],
+  "mitre": [
+    "T1189",
+    "T1105",
+    "T1204.002"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "dom",
+      "storage"
+    ]
+  }
+}

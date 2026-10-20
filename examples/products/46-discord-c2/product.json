@@ -1,0 +1,44 @@
+{
+  "id": "46",
+  "slug": "discord-c2",
+  "name": "DISCORDHOOK",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "remote-access",
+  "category": "discord-c2",
+  "platform": "browser-javascript",
+  "summary": "Discord Webhook C2：把主机信息与命令结果封装为 embed 消息投递到 webhook，并轮询死信箱获取命令。",
+  "capabilities": [
+    "Webhook 回传",
+    "Embed 封装",
+    "命令 eval",
+    "死信箱轮询",
+    "本地缓存"
+  ],
+  "mitre": [
+    "T1102.002",
+    "T1059.007",
+    "T1041"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls",
+      "discordWebhooks"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

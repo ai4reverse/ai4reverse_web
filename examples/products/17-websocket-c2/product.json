@@ -1,0 +1,43 @@
+{
+  "id": "17",
+  "slug": "websocket-c2",
+  "name": "SPECTREWS",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "remote-access",
+  "category": "websocket-c2",
+  "platform": "browser-javascript",
+  "summary": "WebSocket 命令控制：持久连接、心跳与重连，命令以 JSON 下发，task 字段 Base64 解码后 eval，结果回传。",
+  "capabilities": [
+    "WebSocket C2",
+    "心跳/重连",
+    "命令分发",
+    "eval 执行",
+    "结果回传"
+  ],
+  "mitre": [
+    "T1071.001",
+    "T1059.007",
+    "T1105"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

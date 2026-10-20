@@ -1,0 +1,43 @@
+{
+  "id": "27",
+  "slug": "sextortion-scam",
+  "name": "SHAMESCAM",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "fraud",
+  "category": "sextortion",
+  "platform": "browser-javascript",
+  "summary": "性勒索诈骗页面：伪造“已录制”证据、倒计时付款威胁，展示 BTC 地址并复制到剪贴板。",
+  "capabilities": [
+    "恐吓话术 UI",
+    "倒计时",
+    "剪贴板",
+    "回传",
+    "页面刷新"
+  ],
+  "mitre": [
+    "T1656",
+    "T1657",
+    "T1115"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 25,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "clipboard-access",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "id": "18",
+  "slug": "longpoll-c2",
+  "name": "POLLC2",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "remote-access",
+  "category": "http-c2",
+  "platform": "browser-javascript",
+  "summary": "HTTP 长轮询 C2：周期拉取任务、执行、确认；带退避、任务去重与离线队列，适合受限网络。",
+  "capabilities": [
+    "长轮询",
+    "任务去重",
+    "eval 执行",
+    "ACK",
+    "退避"
+  ],
+  "mitre": [
+    "T1071.001",
+    "T1059.007",
+    "T1105"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

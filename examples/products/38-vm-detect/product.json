@@ -1,0 +1,41 @@
+{
+  "id": "38",
+  "slug": "vm-detect",
+  "name": "VMORACLE",
+  "grade": "military",
+  "severity": "high",
+  "sector": "evasion",
+  "category": "vm-detection",
+  "platform": "browser-javascript",
+  "summary": "虚拟机/无头环境识别：交叉校验 UA、插件、WebGL、时区、Intl、栈格式与原生函数品牌，输出环境可信度并回传。",
+  "capabilities": [
+    "环境指纹",
+    "交叉校验",
+    "原生品牌检测",
+    "栈检测",
+    "可信度评分"
+  ],
+  "mitre": [
+    "T1497.001",
+    "T1497.003",
+    "T1082"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

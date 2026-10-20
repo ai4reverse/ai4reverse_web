@@ -1,0 +1,41 @@
+{
+  "id": "10",
+  "slug": "investment-scam",
+  "name": "PONZIPAGE",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "financial-fraud",
+  "category": "investment-scam",
+  "platform": "browser-javascript",
+  "summary": "虚假投资平台前端：伪造收益曲线与提现门槛，诱导连接钱包/充值，替换存款地址并回传受害者信息。",
+  "capabilities": [
+    "伪造仪表盘",
+    "地址替换",
+    "剪贴板诱导",
+    "表单采集",
+    "C2 回传"
+  ],
+  "mitre": [
+    "T1656",
+    "T1657",
+    "T1115"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [],
+    "requireTechniques": [
+      "clipboard-access",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

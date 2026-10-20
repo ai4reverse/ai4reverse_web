@@ -1,0 +1,44 @@
+{
+  "id": "16",
+  "slug": "sigint-profiler",
+  "name": "SIGPROF",
+  "grade": "military",
+  "severity": "medium",
+  "sector": "intelligence",
+  "category": "sigint-profiling",
+  "platform": "browser-javascript",
+  "summary": "SIGINT 目标画像：采集设备、语言、时区、屏幕、字体、网络与交互节奏，生成稳定指纹并回传用于目标排序。",
+  "capabilities": [
+    "多维指纹",
+    "交互节奏测量",
+    "目标 ID 生成",
+    "低频回传",
+    "本地画像缓存"
+  ],
+  "mitre": [
+    "T1082",
+    "T1033",
+    "T1614",
+    "T1071.001"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

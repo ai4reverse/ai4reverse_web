@@ -1,0 +1,43 @@
+{
+  "id": "31",
+  "slug": "cookie-stuffer",
+  "name": "COOKIESTUFF",
+  "grade": "commercial",
+  "severity": "medium",
+  "sector": "affiliate-fraud",
+  "category": "cookie-stuffing",
+  "platform": "browser-javascript",
+  "summary": "联盟 Cookie 填充：隐藏 iframe/像素加载联盟链接，写入跟踪 Cookie，回传统计并定期刷新以延长归因。",
+  "capabilities": [
+    "隐藏 iframe",
+    "Cookie 填充",
+    "归因延长",
+    "统计回传",
+    "可见性规避"
+  ],
+  "mitre": [
+    "T1657",
+    "T1185",
+    "T1539"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

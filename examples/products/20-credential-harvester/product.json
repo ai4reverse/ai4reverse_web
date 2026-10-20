@@ -1,0 +1,44 @@
+{
+  "id": "20",
+  "slug": "credential-harvester",
+  "name": "CREDHARVEST",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "enterprise",
+  "category": "credential-theft",
+  "platform": "browser-javascript",
+  "summary": "凭据/令牌收集器：遍历 localStorage/sessionStorage/cookie 与常见令牌键，读取剪贴板，编码后回传；对高价值键优先排序。",
+  "capabilities": [
+    "存储遍历",
+    "Cookie 读取",
+    "令牌模式识别",
+    "剪贴板采集",
+    "优先级外传"
+  ],
+  "mitre": [
+    "T1555.003",
+    "T1539",
+    "T1115",
+    "T1041"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 28,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage",
+      "clipboard-access"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

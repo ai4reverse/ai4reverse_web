@@ -1,0 +1,44 @@
+{
+  "id": "22",
+  "slug": "wiper-dropper",
+  "name": "ASHWIPE",
+  "grade": "military",
+  "severity": "critical",
+  "sector": "cyber-operations",
+  "category": "wiper",
+  "platform": "browser-javascript",
+  "summary": "擦除型载荷：清空本地存储、覆盖页面内容、阻断恢复入口，并通过远程载荷执行破坏逻辑。",
+  "capabilities": [
+    "数据擦除",
+    "DOM 破坏",
+    "卸载阻断",
+    "远程模块执行",
+    "状态回传"
+  ],
+  "mitre": [
+    "T1485",
+    "T1561",
+    "T1059.007"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "id": "47",
+  "slug": "slack-c2",
+  "name": "SLACKHOOK",
+  "grade": "commercial",
+  "severity": "critical",
+  "sector": "remote-access",
+  "category": "slack-c2",
+  "platform": "browser-javascript",
+  "summary": "Slack Webhook C2：利用 incoming webhook 以业务告警为掩护回传数据，并从私有频道拉取任务。",
+  "capabilities": [
+    "Slack Webhook",
+    "告警伪装",
+    "任务拉取",
+    "eval",
+    "缓存"
+  ],
+  "mitre": [
+    "T1102.002",
+    "T1059.007",
+    "T1041"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

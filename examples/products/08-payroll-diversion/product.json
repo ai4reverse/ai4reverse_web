@@ -1,0 +1,39 @@
+{
+  "id": "08",
+  "slug": "payroll-diversion",
+  "name": "PAYROLLX",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "enterprise",
+  "category": "payroll-fraud",
+  "platform": "browser-javascript",
+  "summary": "薪资/ACH 劫持页面产品：篡改收款路由与账号字段，收集员工与金额数据，回传并保持页面显示一致。",
+  "capabilities": [
+    "DOM 表格篡改",
+    "数据采集",
+    "持久化伪装",
+    "加密回传"
+  ],
+  "mitre": [
+    "T1656",
+    "T1185"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 28,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [],
+    "requireTechniques": [
+      "dom-injection",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

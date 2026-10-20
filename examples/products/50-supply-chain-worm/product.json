@@ -1,0 +1,45 @@
+{
+  "id": "50",
+  "slug": "supply-chain-worm",
+  "name": "NPMWORM",
+  "grade": "military",
+  "severity": "critical",
+  "sector": "supply-chain",
+  "category": "supply-chain-worm",
+  "platform": "browser-javascript",
+  "summary": "供应链蠕虫模拟：在安装脚本环境读取环境变量/令牌，回传后尝试以同作者身份发布，形成横向扩散。",
+  "capabilities": [
+    "环境变量采集",
+    "凭据窃取",
+    "包元数据篡改",
+    "eval 扩散模块",
+    "C2 回传"
+  ],
+  "mitre": [
+    "T1195.002",
+    "T1552.001",
+    "T1059.007",
+    "T1041"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

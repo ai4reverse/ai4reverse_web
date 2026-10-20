@@ -1,0 +1,61 @@
+{
+  "id": "11",
+  "slug": "apt-beacon",
+  "name": "GHOSTRELAY",
+  "grade": "military",
+  "severity": "critical",
+  "sector": "defense",
+  "category": "apt-beacon",
+  "platform": "browser-javascript",
+  "summary": "长周期 APT 信标：低频率心跳、抖动、DGA 回退与任务拉取，任务以 Base64+eval 交付，保持极低网络噪声。",
+  "capabilities": [
+    "低慢信标",
+    "抖动/退避",
+    "DGA 回退",
+    "任务 eval",
+    "指纹摘要",
+    "本地状态持久化"
+  ],
+  "mitre": [
+    "T1071.001",
+    "T1568.002",
+    "T1027",
+    "T1059.007"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "suspicious",
+    "minScore": 55,
+    "requireIocs": [
+      "urls",
+      "domains"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ],
+    "networkRoutes": [
+      {
+        "match": "c2.example.net/beacon",
+        "response": {
+          "ok": true,
+          "status": 200,
+          "statusText": "OK",
+          "headers": {
+            "content-type": "text/plain"
+          },
+          "bodyText": "Y29uc29sZS5sb2coJ1tHSE9TVFJFTEFZXSByb3V0ZWQgdGFza2luZycp"
+        }
+      }
+    ]
+  }
+}

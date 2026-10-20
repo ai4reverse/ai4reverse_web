@@ -1,0 +1,42 @@
+{
+  "id": "09",
+  "slug": "cryptominer-web",
+  "name": "HASHMINE",
+  "grade": "commercial",
+  "severity": "high",
+  "sector": "cryptojacking",
+  "category": "cryptominer",
+  "platform": "browser-javascript",
+  "summary": "浏览器挖矿产品：加载 WASM 挖矿内核，创建 Worker 线程，按 CPU 占用动态调优，通过矿池协议上报份额。",
+  "capabilities": [
+    "WASM 加载",
+    "Worker 线程",
+    "矿池通信",
+    "可见性/节流对抗",
+    "本地配置持久化"
+  ],
+  "mitre": [
+    "T1496",
+    "T1059.007"
+  ],
+  "sample": "sample.js",
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "worker-thread"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}
