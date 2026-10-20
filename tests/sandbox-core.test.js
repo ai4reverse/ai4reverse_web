@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
 import { createProfile, consistencyReport } from '../tools/sandbox/profile.js'
 import { normalizeLimits } from '../tools/sandbox/limits.js'
+import { createHostBridge } from '../tools/sandbox/bridge.js'
+import { createHarness } from './helpers/harness.js'
 
 const CORE_ENV = ['globals', 'console', 'timers', 'encoding', 'time', 'random', 'anti-fingerprint']
 
@@ -504,4 +506,333 @@ test('a three-sandbox pool runs the farm samples without a leak', async () => {
     [],
     `engine abort printed to stderr: ${printed.join('')}`,
   )
+})
+
+// ---- host bridge contract -------------------------------------------------
+//
+// The bridge is the only sanctioned handle surface for environment modules, so
+// its argument readers, conversions and teardown are tested directly instead of
+// only through the modules that happen to call them.
+
+/** Install a host function on the guest global under a probe name. */
+function installProbe(harness, name, value) {
+  harness.bridge.install(harness.bridge.global, name, value, {
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  })
+}
+
+test('bridge.fn keeps guest-visible name, arity and primitive returns', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const returns = ['text', 42, true, null, undefined, 7n, { a: 1 }, [1, 2]]
+    installProbe(harness, 'probeReturns', harness.bridge.fn('probeReturns', 1, ({ args }) => {
+      const index = harness.bridge.int(args, 0, 0)
+      return returns[index]
+    }))
+    installProbe(harness, 'probeArity', harness.bridge.fn('probeArity', 20, () => 1))
+    // Every arity has its own shaped trampoline; the guest must always see the
+    // requested length (and 8 is the documented clamp).
+    for (let arity = 0; arity <= 8; arity += 1) {
+      installProbe(harness, `probeA${arity}`, harness.bridge.fn(`probeA${arity}`, arity, () => arity))
+    }
+
+    const result = harness.run(`(function(){
+      var out = [];
+      for (var i = 0; i < 8; i += 1) { var value = probeReturns(i); out.push(typeof value === 'bigint' ? String(value) : value); }
+      out.push(probeReturns.length, probeReturns.name, probeArity.length);
+      for (var j = 0; j <= 8; j += 1) out.push(globalThis['probeA' + j].length, globalThis['probeA' + j]());
+      return JSON.stringify(out);
+    })()`)
+    assert.equal(result.ok, true, JSON.stringify(result.error))
+    assert.deepEqual(JSON.parse(result.value), [
+      'text',
+      42,
+      true,
+      null,
+      null,
+      '7',
+      { a: 1 },
+      [1, 2],
+      1,
+      'probeReturns',
+      8,
+      0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8,
+    ])
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge.fn converts a thrown host error into a sanitised guest error', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const thrown = harness.bridge.fn('probeThrows', 0, () => {
+      throw new RangeError('host detail at /Users/somewhere/tools/sandbox/env/x.js:12')
+    })
+    const boxed = harness.bridge.fn('probeThrowsValue', 0, () => {
+      // A non-Error throw must still reach the guest as an Error.
+      // eslint-disable-next-line no-throw-literal
+      throw 'plain string'
+    })
+    installProbe(harness, 'probeThrows', thrown)
+    installProbe(harness, 'probeThrowsValue', boxed)
+    const result = harness.run(`(function(){
+      var out = [];
+      try { probeThrows(); } catch (error) { out.push(error.name, error.message, /tools/.test(error.message)); }
+      try { probeThrowsValue(); } catch (error) { out.push(error.name, error.message); }
+      return out;
+    })()`)
+    assert.equal(result.ok, true, JSON.stringify(result.error))
+    assert.deepEqual(result.value, ['RangeError', 'host detail at :12', false, 'Error', 'plain string'])
+    assert.equal(harness.bridge.stats.errors, 2)
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge argument readers fall back on non-handles and wrong types', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge, ctx } = harness
+    // Plain JS values are not handles: every reader returns its fallback.
+    assert.equal(bridge.str(['x'], 0, 'fallback'), 'fallback')
+    assert.equal(bridge.num([7], 0, -1), -1)
+    assert.equal(bridge.int(['7'], 0, 3), 3)
+    assert.equal(bridge.bool(['yes'], 0, true), true)
+    assert.equal(bridge.value([], 0), undefined)
+    assert.deepEqual(bridge.list(undefined, 10), [])
+    assert.equal(bridge.fromGuest('raw'), 'raw', 'non-handles pass through')
+
+    const numbers = ctx.evalCode('[1, 2, 3]')
+    const symbols = ctx.evalCode('Symbol("probe")')
+    assert.equal(bridge.str([numbers.value], 0, 'fallback'), 'fallback', 'a number is not a string')
+    assert.equal(bridge.num([symbols.value], 0, 7), 7, 'a symbol is not a number')
+    assert.equal(bridge.bool([symbols.value], 0, true), true)
+    assert.equal(bridge.value([symbols.value], 0).toString(), 'Symbol(probe)', 'a symbol is described, never dereferenced')
+    assert.deepEqual(bridge.list(numbers.value, 2), [1, 2], 'list honours the limit')
+    assert.deepEqual(bridge.list(symbols.value), [], 'a non-indexable handle yields an empty list')
+    const stale = ctx.evalCode('[1, 2]').value
+    stale.dispose()
+    assert.deepEqual(bridge.list(stale), [], 'a released handle yields an empty list instead of throwing')
+    assert.equal(bridge.int([ctx.newNumber(Number.NaN)], 0, 4), 4, 'a non-finite number falls back')
+    assert.deepEqual(bridge.list(numbers.value), [1, 2, 3])
+    numbers.value.dispose()
+    symbols.value.dispose()
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge.fromGuest describes promises, functions and depth instead of dereferencing', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge, ctx } = harness
+    const fulfilled = ctx.evalCode('Promise.resolve(7)')
+    const rejected = ctx.evalCode('Promise.reject(new Error("nope"))')
+    const fn = ctx.evalCode('function probe() {}; probe')
+    assert.deepEqual(bridge.fromGuest(fulfilled.value), { __type: 'promise', state: 'fulfilled' })
+    assert.deepEqual(bridge.fromGuest(rejected.value), { __type: 'promise', state: 'rejected' })
+    assert.deepEqual(bridge.fromGuest(fn.value), { __type: 'function' })
+    assert.equal(bridge.fromGuest(fulfilled.value, 5), '[depth]')
+    for (const handle of [fulfilled.value, rejected.value, fn.value]) handle.dispose()
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge.toGuest converts every supported shape and refuses host functions', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge, ctx } = harness
+    const handle = ctx.evalCode('({ keep: 1 })').value
+    assert.equal(bridge.toGuest(handle), handle, 'a handle is passed through unchanged')
+    handle.dispose()
+
+    installProbe(harness, 'probeObject', bridge.toGuest({
+      text: 'a',
+      number: 1,
+      bool: false,
+      big: 2n,
+      bytes: new Uint8Array([1, 2, 3]),
+      list: [1, { nested: 'x' }],
+      skipped: undefined,
+    }))
+    const result = harness.run(`(function(){
+      return JSON.stringify([
+        probeObject.text,
+        probeObject.number,
+        probeObject.bool,
+        String(probeObject.big),
+        Array.from(new Uint8Array(probeObject.bytes)),
+        probeObject.list[1].nested,
+        'skipped' in probeObject,
+        typeof probeObject,
+      ]);
+    })()`)
+    assert.equal(result.ok, true, JSON.stringify(result.error))
+    assert.deepEqual(JSON.parse(result.value), ['a', 1, false, '2', [1, 2, 3], 'x', false, 'object'])
+    assert.throws(() => bridge.toGuest(() => {}), /refuses to convert a host function/)
+    assert.equal(bridge.toGuest(Symbol('x')), ctx.undefined, 'unsupported types become undefined')
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge property helpers set, read and build guest values', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge } = harness
+    installProbe(harness, 'probeTarget', bridge.obj({ a: 1, b: undefined, nested: { n: 2 } }))
+    installProbe(harness, 'probeList', bridge.arr([1, 'two', true]))
+    const target = harness.ctx.evalCode('probeTarget')
+
+    bridge.set(target.value, 'added', 3)
+    assert.equal(bridge.get(target.value, 'added'), 3)
+    const snapshot = harness.run(`(function(){
+      return [probeTarget.a, 'b' in probeTarget, probeTarget.nested.n, probeTarget.added, probeList.length, probeList[1]];
+    })()`)
+    assert.equal(snapshot.ok, true, JSON.stringify(snapshot.error))
+    assert.deepEqual(snapshot.value, [1, false, 2, 3, 3, 'two'])
+
+    target.value.dispose()
+    assert.equal(bridge.get(harness.ctx.global, 'probeTarget').a, 1)
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge.install and bridge.accessor surface descriptor failures', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge, ctx } = harness
+    const frozen = ctx.evalCode('Object.freeze({ a: 1 })')
+    assert.throws(() => bridge.install(frozen.value, 'b', 2), /install\(b\) failed: object is not extensible/)
+    assert.throws(
+      () => bridge.accessor(frozen.value, 'c', { get: () => ctx.undefined }),
+      /accessor\(c\) failed: object is not extensible/,
+    )
+    frozen.value.dispose()
+
+    const target = ctx.evalCode('globalThis.__probeSlot = {}')
+    let stored = 0
+    bridge.accessor(target.value, 'slot', {
+      get: () => ctx.newNumber(stored),
+      set: ({ args }) => {
+        stored = bridge.num(args, 0, 0)
+        return ctx.undefined
+      },
+    })
+    const observed = harness.run('__probeSlot.slot = 5; __probeSlot.slot')
+    assert.equal(observed.ok, true, JSON.stringify(observed.error))
+    assert.equal(observed.value, 5)
+    assert.equal(stored, 5, 'the host setter received the guest value')
+    const descriptor = harness.run(`(function(){
+      var found = Object.getOwnPropertyDescriptor(__probeSlot, 'slot');
+      return [typeof found.get, found.get.name, typeof found.set, found.set.name, found.enumerable, found.configurable];
+    })()`)
+    assert.equal(descriptor.ok, true, JSON.stringify(descriptor.error))
+    assert.deepEqual(descriptor.value, ['function', 'get', 'function', 'set', true, true])
+    target.value.dispose()
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge.evalInGuest reports values and errors as plain objects', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const { bridge } = harness
+    assert.deepEqual(bridge.evalInGuest('1 + 1', 'probe.js'), { ok: true, value: 2 })
+    const failed = bridge.evalInGuest('missingIdentifiersAllTheWay()')
+    assert.equal(failed.ok, false)
+    assert.match(String(failed.error?.message ?? ''), /missingIdentifiersAllTheWay/)
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge.deferred resolves, rejects and is released at teardown', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const resolved = harness.bridge.deferred()
+    resolved.resolve('payload')
+    harness.jobs()
+    // The bridge-level invariant: resolving does not throw and the promise is
+    // reported as settled by fromGuest, without consuming it.
+    assert.deepEqual(harness.bridge.fromGuest(resolved.handle), { __type: 'promise', state: 'fulfilled' })
+
+    const rejected = harness.bridge.deferred()
+    rejected.reject('why')
+    harness.jobs()
+    assert.deepEqual(harness.bridge.fromGuest(rejected.handle), { __type: 'promise', state: 'rejected' })
+
+    const disposed = harness.bridge.deferred()
+    disposed.dispose()
+    // A second teardown pass must not throw even though the promise is gone.
+    harness.bridge.disposeAll()
+    disposed.dispose.bind(disposed)
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge teardown isolates throwing disposers behind the logger', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const warnings = []
+    const bridge = createHostBridge({
+      ctx: harness.ctx,
+      runtime: harness.runtime,
+      logger: { warn: (payload, message) => warnings.push({ payload, message }) },
+    })
+    const sample = harness.ctx.evalCode('1')
+    assert.equal(bridge.adopt(sample.value, 'plain'), sample.value, 'a bridge without stealth returns the handle')
+    sample.value.dispose()
+    const order = []
+    bridge.onDispose(() => order.push('first'))
+    bridge.onDispose(() => {
+      throw new Error('disposer boom')
+    })
+    bridge.onDispose(() => order.push('third'))
+    bridge.disposeAll()
+
+    assert.deepEqual(order, ['third', 'first'])
+    assert.equal(warnings.length, 1)
+    assert.equal(warnings[0].payload.err, 'disposer boom')
+    assert.equal(warnings[0].message, 'bridge disposer failed')
+    assert.equal(bridge.stats.calls, 0)
+
+    // A bridge without a trace recorder swallows emit() and still reports IOCs
+    // through the same no-op path.
+    assert.doesNotThrow(() => bridge.emit('api', 'before', { api: 'probe' }))
+    assert.doesNotThrow(() => bridge.reportIOC('domain', 'c2.example.test'))
+
+    // A trace sink that throws must never reach the guest.
+    const hostile = createHostBridge({
+      ctx: harness.ctx,
+      runtime: harness.runtime,
+      trace: { emit() { throw new Error('trace exploded') } },
+    })
+    assert.doesNotThrow(() => hostile.emit('api', 'before', { api: 'probe' }))
+    assert.doesNotThrow(() => hostile.reportIOC('domain', 'c2.example.test'))
+    hostile.disposeAll()
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('bridge.nativeConstructor rejects invalid generated source', async () => {
+  const harness = await createHarness({ modules: ['globals'] })
+  try {
+    const bridge = createHostBridge({ ctx: harness.ctx, runtime: harness.runtime })
+    assert.throws(
+      () => bridge.nativeConstructor({ name: 'Not-A-Name', arity: 0, body: '' }),
+      /nativeConstructor Not-A-Name failed to compile/,
+    )
+    bridge.disposeAll()
+  } finally {
+    harness.dispose()
+  }
 })
