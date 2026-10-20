@@ -16,6 +16,14 @@ pins the exported surface, `tests/types.test.js` pins the declarations).
   through `tools/util/disposable.js` helpers or `bridge.onDispose`, otherwise
   `runtime.dispose()` aborts the WASM module and the sandbox reports
   `disposal.ok === false` (see `docs/SECURITY-MODEL.md`).
+- **A handle that must outlive the call that created it is owned explicitly.**
+  A `dup()` stored in module state belongs to that state (`canvas.js` keeps one
+  `retain()` teardown set and frees early with `release()`), and a handle handed
+  to a deferred guest callback must not come from a call-scoped `HandleBag`:
+  queue plain descriptors and build the guest value at delivery time
+  (`observers.js`). The call bag is disposed when the bridge call returns, so a
+  stored duplicate from it is a use-after-free, and a duplicate with no owner is
+  an engine abort at `runtime.dispose()`.
 - **Structured events.** All observations are emitted as plain objects with the trace
   schema below and forwarded through the sandbox trace recorder.
 - **No magic constants** duplicated across modules; import from the owner module.
@@ -261,6 +269,32 @@ only (no `meta`, no `install`) and is absent from `ENV_MODULE_IDS`; it is the
 shared helper layer for `url`, `blob`, `navigator` and `misc`.
 `tools/sandbox/env/index.js` is the loader. 30 files in the directory = 28
 modules + loader + kit.
+
+## Stealth contract (`tools/invocation/stealth.js`)
+
+`createStealth(ctx, options = {})` with `{ nonce, trace, logger, maskToString = true }`
+returns `{ install(), dispose(), isIntrinsicStackError(handle) }` plus helpers.
+`install()` must run before any guest code and before an env module looks at
+`Function.prototype.toString`; it captures the engine's `InternalError` binding
+**first**, because `env/globals.js` deletes it for every non-Firefox profile.
+
+`isIntrinsicStackError(handle)` is the guest-side half of stack-breach
+classification (`tools/invocation/invoke.js` `isEngineStackError`):
+
+- it answers from the **live handle**, never from a dump, so no guest-controlled
+  `name`/`message` takes part;
+- it walks the prototype chain against the captured `InternalError.prototype`
+  (not `instanceof`), so mutating `Symbol.hasInstance` or the prototype itself
+  cannot steer it;
+- it returns `false` while the constructor is still reachable from the guest
+  global (`globalThis.InternalError === target`), because `new InternalError(…)`
+  is then prototype-identical to a real engine throw;
+- it neither consumes nor disposes the caller's handle.
+
+The host-side half is `isHostStackExhaustion(thrown)` in
+`tools/sandbox/runtime.js` (a host-thrown `RangeError` out of the WASM
+trampoline). Both feed the `stackExhaustion` marker, and only that marker drives
+abandonment.
 
 ## Restoration pass contract (`tools/restore/passes/*.js`)
 
