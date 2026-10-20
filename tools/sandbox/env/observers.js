@@ -12,6 +12,8 @@
  * pretending the sandbox renders pixels.
  */
 
+import { isHandle } from '../bridge.js'
+
 export const meta = { id: 'observers', order: 108, requires: ['dom'] }
 
 export function install(bridge) {
@@ -27,15 +29,40 @@ export function install(bridge) {
     const init = bridge.fn('init', 2, ({ args }) => {
       const self = args[0]
       const callback = args[1]
+      // `args` are borrowed trampoline handles: they die when this call returns,
+      // while the observer keeps using the instance (as the callback's second
+      // argument) and the observed target (as the entry's `target`) afterwards.
+      // Both are owned duplicates, released at teardown.
+      const selfHandle = isHandle(self) ? self.dup() : null
       let callbackHandle = callback && ctx.typeof(callback) === 'function' ? callback.dup() : null
+      /** @type {Array<{target: object|null}>} records awaiting delivery */
       let pending = []
-      bridge.onDispose(() => callbackHandle?.dispose())
+
+      const releasePending = () => {
+        for (const record of pending) record.target?.dispose?.()
+        pending = []
+      }
+
+      // Entry objects are built when they are delivered, not when `observe()`
+      // is called: a handle created inside a bridge call is owned by that call's
+      // bag, so a stored entry would reach the callback already freed.
+      const buildEntries = () => {
+        const records = pending
+        pending = []
+        return records.map((record) => entryFactory(bridge, record.target, null))
+      }
+
+      bridge.onDispose(() => {
+        callbackHandle?.dispose()
+        callbackHandle = null
+        selfHandle?.dispose()
+        releasePending()
+      })
 
       const fire = () => {
         if (!callbackHandle || pending.length === 0) return
-        const entries = bridge.arr(pending)
-        pending = []
-        const result = ctx.callFunction(callbackHandle, ctx.undefined, [entries, self])
+        const entries = bridge.arr(buildEntries())
+        const result = ctx.callFunction(callbackHandle, ctx.undefined, [entries, selfHandle ?? ctx.undefined])
         if (result.error) {
           const dumped = bridge.fromGuest(result.error)
           result.error.dispose()
@@ -47,28 +74,26 @@ export function install(bridge) {
 
       bridge.install(self, 'observe', bridge.fn('observe', 2, ({ args: observeArgs }) => {
         const target = observeArgs[0]
-        const options = bridge.value(observeArgs, 1) ?? {}
         bridge.emit('api', 'before', { api: `${name}.observe`, target: describeTarget(bridge, target) })
-        pending.push(entryFactory(bridge, target, options))
+        pending.push({ target: isHandle(target) ? target.dup() : null })
         schedule(fire)
         return ctx.undefined
       }), { enumerable: true, configurable: true, writable: true })
 
       bridge.install(self, 'unobserve', bridge.fn('unobserve', 1, ({ args: unobserveArgs }) => {
         bridge.emit('api', 'before', { api: `${name}.unobserve`, target: describeTarget(bridge, unobserveArgs[0]) })
-        pending = []
+        releasePending()
         return ctx.undefined
       }), { enumerable: true, configurable: true, writable: true })
 
       bridge.install(self, 'disconnect', bridge.fn('disconnect', 0, () => {
-        pending = []
+        releasePending()
         return ctx.undefined
       }), { enumerable: true, configurable: true, writable: true })
 
       bridge.install(self, 'takeRecords', bridge.fn('takeRecords', 0, () => {
-        const records = bridge.arr(pending)
-        pending = []
-        return records
+        if (pending.length === 0) return bridge.arr([])
+        return bridge.arr(buildEntries())
       }), { enumerable: true, configurable: true, writable: true })
 
       return ctx.undefined
