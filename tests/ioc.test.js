@@ -147,3 +147,15 @@ test('extractFromEvents reports network, eval and ioc event URLs as dynamic', ()
   assert.deepEqual(empty.urls, [])
   assert.deepEqual(empty.meta, { truncated: false })
 })
+
+test('extractIOCs does not starve wallets when domains flood the candidate budget', () => {
+  const btc = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'
+  const hosts = Array.from({ length: 2100 }, (_, i) => `"host${i}.com"`).join(' ')
+  const flooded = extractIOCs(`${hosts} "${btc}"`)
+  assert.ok(flooded.wallets.some((wallet) => wallet.value === btc), 'wallet survives domain flood')
+  assert.equal(flooded.meta.truncated, true)
+
+  const alone = extractIOCs(`"${btc}"`)
+  assert.equal(alone.wallets.length, 1)
+  assert.equal(alone.wallets[0].value, btc)
+})

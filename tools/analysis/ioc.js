@@ -23,11 +23,23 @@ import { isIP } from 'node:net'
 /** Default hard limits. Callers may lower them, but the report cites these. */
 export const IOC_LIMITS = Object.freeze({
   maxCandidates: 2000,
+  /**
+   * Per-category match budget. A domain flood must not starve wallets, hashes,
+   * Telegram tokens, or base64 (ACCEPTANCE H7).
+   */
+  maxPerCategory: 800,
   maxLength: 5 * 1024 * 1024,
 })
 
 /** Hosts that are overwhelmingly framework boilerplate rather than C2. */
 export const BENIGN_HOST_SUFFIXES = Object.freeze(['w3.org', 'schema.org'])
+
+/**
+ * Set while {@link extractFromEvents} scans one trace event so `add()` can stamp
+ * `eventSeq` onto newly discovered indicators (report provenance refs).
+ * @type {number|null}
+ */
+let scanEventSeq = null
 
 const SUSPICIOUS_TLDS = new Set([
   'bar',
@@ -329,6 +341,7 @@ export function extractFromEvents(events, options = {}) {
  */
 function createState(options) {
   const maxCandidates = positiveInteger(options.maxCandidates, IOC_LIMITS.maxCandidates)
+  const maxPerCategory = positiveInteger(options.maxPerCategory, IOC_LIMITS.maxPerCategory)
   const maxLength = positiveInteger(options.maxLength, IOC_LIMITS.maxLength)
   const extraBenign = Array.isArray(options.benignHosts)
     ? options.benignHosts.filter((host) => typeof host === 'string' && host.length > 0)
@@ -336,8 +349,13 @@ function createState(options) {
   return {
     candidates: 0,
     truncated: false,
+    /** @type {Record<string, number>} */
+    byCategory: Object.create(null),
+    /** Active scanner category for {@link takeCandidate}. */
+    scanCategory: 'other',
     settings: {
       maxCandidates,
+      maxPerCategory,
       maxLength,
       decodeBase64: options.decodeBase64 !== false,
       benignHosts: [...BENIGN_HOST_SUFFIXES, ...extraBenign].map((host) => host.toLowerCase()),
@@ -383,24 +401,33 @@ function createCollectors() {
  */
 function add(map, value, extra = {}) {
   if (typeof value !== 'string' || value.length === 0) return
+  const stamped =
+    scanEventSeq != null && extra.eventSeq === undefined ? { ...extra, eventSeq: scanEventSeq } : extra
   const existing = map.get(value)
   if (existing) {
     existing.count += 1
-    for (const [key, item] of Object.entries(extra)) {
+    for (const [key, item] of Object.entries(stamped)) {
       if (existing[key] === undefined && item !== undefined) existing[key] = item
     }
     return
   }
-  map.set(value, { value, count: 1, offset: -1, ...extra })
+  map.set(value, { value, count: 1, offset: -1, ...stamped })
 }
 
 /** @param {object} state */
 function takeCandidate(state) {
+  const category = state.scanCategory || 'other'
+  const perCategory = state.byCategory[category] ?? 0
+  if (perCategory >= state.settings.maxPerCategory) {
+    state.truncated = true
+    return false
+  }
   if (state.candidates >= state.settings.maxCandidates) {
     state.truncated = true
     return false
   }
   state.candidates += 1
+  state.byCategory[category] = perCategory + 1
   return true
 }
 
@@ -434,23 +461,28 @@ function scanText(result, rawText, state, context) {
   const offsetOf = (index) =>
     context.offsetBase == null ? (map ? (map[index] ?? index) : index) : context.offsetBase
 
-  scanUrls(result, text, state, offsetOf, context.source)
-  scanDomains(result, text, state, offsetOf)
-  scanIps(result, text, state, offsetOf)
-  scanEmails(result, text, state, offsetOf)
-  scanHashes(result, text, state, offsetOf)
-  scanWallets(result, text, state, offsetOf)
-  scanTelegram(result, text, state, offsetOf)
-  scanDiscordWebhooks(result, text, state, offsetOf)
-  scanCrypto(result, text, state, offsetOf)
-  scanShellCommands(result, text, state, offsetOf)
-  scanRegistryKeys(result, text, state, offsetOf)
-  scanFilePaths(result, text, state, offsetOf)
-  scanMutexes(result, text, state, offsetOf)
-  scanFromCharCode(result, text, state, offsetOf, context)
+  // High-value categories before domain/URL floods (ACCEPTANCE H7).
+  const run = (category, fn) => {
+    state.scanCategory = category
+    fn()
+  }
+  run('wallets', () => scanWallets(result, text, state, offsetOf))
+  run('hashes', () => scanHashes(result, text, state, offsetOf))
+  run('telegram', () => scanTelegram(result, text, state, offsetOf))
+  run('discordWebhooks', () => scanDiscordWebhooks(result, text, state, offsetOf))
+  run('emails', () => scanEmails(result, text, state, offsetOf))
+  run('ips', () => scanIps(result, text, state, offsetOf))
+  run('crypto', () => scanCrypto(result, text, state, offsetOf))
+  run('urls', () => scanUrls(result, text, state, offsetOf, context.source))
+  run('domains', () => scanDomains(result, text, state, offsetOf))
+  run('shellCommands', () => scanShellCommands(result, text, state, offsetOf))
+  run('registryKeys', () => scanRegistryKeys(result, text, state, offsetOf))
+  run('filePaths', () => scanFilePaths(result, text, state, offsetOf))
+  run('mutexes', () => scanMutexes(result, text, state, offsetOf))
+  run('other', () => scanFromCharCode(result, text, state, offsetOf, context))
 
   if (context.depth > 0) return
-  scanBase64(result, text, state, offsetOf, context)
+  run('base64', () => scanBase64(result, text, state, offsetOf, context))
 }
 
 /**
