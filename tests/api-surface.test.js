@@ -86,6 +86,133 @@ test('restoreCode stays the public convenience alias of restore', () => {
   assert.equal(typeof restoreWithPass, 'function')
 })
 
+const PUBLIC_RUN_OPTIONS = {
+  logLevel: 'silent',
+  restore: false,
+  instrumentation: { enabled: false },
+}
+
+for (const method of ['run', 'analyze']) {
+  for (const outcome of [
+    { label: 'successful execution', source: '21 * 2', ok: true },
+    { label: 'a guest exception', source: 'throw new Error("public API guest failure")', ok: false },
+  ]) {
+    test(`root ${method} disposes its own sandbox after ${outcome.label}`, async (t) => {
+      const dispose = t.mock.method(api.TracelessSandbox.prototype, 'dispose')
+
+      const output = await api[method](outcome.source, PUBLIC_RUN_OPTIONS)
+      const run = method === 'analyze' ? output.run : output
+
+      assert.equal(run.ok, outcome.ok)
+      if (outcome.ok) assert.equal(run.result.value, 42)
+      else assert.equal(run.error.message, 'public API guest failure')
+      assert.deepEqual(run.disposal, { ok: true, errors: [] })
+      assert.equal(dispose.mock.callCount(), 1)
+      assert.equal(dispose.mock.calls[0].this.disposed, true)
+      if (method === 'analyze') {
+        assert.equal(output.report.dynamic.ok, outcome.ok)
+        assert.equal(output.report.dynamic.error, outcome.ok ? null : run.error.message)
+        assert.ok(output.markdown.length > 0)
+      }
+    })
+  }
+
+  test(`root ${method} reports sandbox acquisition failure without disposing an unacquired resource`, async (t) => {
+    const sentinel = new errors.SandboxError('public API acquisition failure', { code: 'SANDBOX_INIT' })
+    const create = t.mock.method(api.TracelessSandbox, 'create', async () => { throw sentinel })
+    const dispose = t.mock.method(api.TracelessSandbox.prototype, 'dispose')
+
+    if (method === 'run') {
+      await assert.rejects(() => api.run('42', PUBLIC_RUN_OPTIONS), (error) => error === sentinel)
+    } else {
+      const output = await api.analyze('42', PUBLIC_RUN_OPTIONS)
+      assert.equal(output.run, null)
+      assert.equal(output.report.dynamic.ok, false)
+      assert.equal(output.report.dynamic.error, sentinel.message)
+    }
+    assert.equal(create.mock.callCount(), 1)
+    assert.equal(dispose.mock.callCount(), 0)
+  })
+
+  test(`root ${method} cleans up its owned sandbox when run rejects`, async (t) => {
+    const sentinel = new errors.SandboxError('public API host failure', { code: 'SANDBOX_RUN' })
+    t.mock.method(api.TracelessSandbox.prototype, 'run', async () => { throw sentinel })
+    const dispose = t.mock.method(api.TracelessSandbox.prototype, 'dispose')
+
+    if (method === 'run') {
+      await assert.rejects(() => api.run('42', PUBLIC_RUN_OPTIONS), (error) => error === sentinel)
+    } else {
+      const output = await api.analyze('42', PUBLIC_RUN_OPTIONS)
+      assert.equal(output.run, null)
+      assert.equal(output.report.dynamic.ok, false)
+      assert.equal(output.report.dynamic.error, sentinel.message)
+    }
+    assert.equal(dispose.mock.callCount(), 1)
+    assert.equal(dispose.mock.calls[0].this.disposed, true)
+  })
+
+  test(`root ${method} preserves a caller-owned sandbox after success and guest failure`, async (t) => {
+    const sandbox = await api.TracelessSandbox.create(PUBLIC_RUN_OPTIONS)
+    const dispose = t.mock.method(sandbox, 'dispose')
+    try {
+      const options = { ...PUBLIC_RUN_OPTIONS, sandbox }
+      const success = await api[method]('6 * 7', options)
+      const failure = await api[method]('throw new Error("caller guest failure")', options)
+      const runs = method === 'analyze' ? [success.run, failure.run] : [success, failure]
+
+      assert.equal(runs[0].result.value, 42)
+      assert.equal(runs[1].ok, false)
+      assert.equal(runs[1].error.message, 'caller guest failure')
+      assert.equal(dispose.mock.callCount(), 0)
+      assert.equal(sandbox.disposed, false)
+      const recovered = await sandbox.run('7')
+      assert.equal(recovered.result.value, 7)
+      assert.deepEqual(recovered.disposal, { ok: true, errors: [] })
+    } finally {
+      sandbox.dispose()
+    }
+  })
+
+  test(`root ${method} does not dispose a caller-owned sandbox when run rejects`, async (t) => {
+    const sentinel = new errors.SandboxError('caller-owned run rejected')
+    const sandbox = {
+      run: t.mock.fn(async () => { throw sentinel }),
+      dispose: t.mock.fn(),
+    }
+    const options = { ...PUBLIC_RUN_OPTIONS, sandbox }
+
+    if (method === 'run') {
+      await assert.rejects(() => api.run('42', options), (error) => error === sentinel)
+    } else {
+      const output = await api.analyze('42', options)
+      assert.equal(output.run, null)
+      assert.equal(output.report.dynamic.ok, false)
+      assert.equal(output.report.dynamic.error, sentinel.message)
+    }
+    assert.equal(sandbox.run.mock.callCount(), 1)
+    assert.equal(sandbox.run.mock.calls[0].arguments[0], '42')
+    assert.equal(sandbox.dispose.mock.callCount(), 0)
+  })
+}
+
+test('root analyze rejects absent source before creating a sandbox', async (t) => {
+  const create = t.mock.method(api.TracelessSandbox, 'create')
+  for (const source of [undefined, null, '']) {
+    await assert.rejects(() => api.analyze(source), /requires a non-empty source string/)
+  }
+  assert.equal(create.mock.callCount(), 0)
+})
+
+test('root analyze static-only mode never runs or disposes a supplied sandbox', async (t) => {
+  const sandbox = { run: t.mock.fn(), dispose: t.mock.fn() }
+  const output = await api.analyze('21 * 2', { ...PUBLIC_RUN_OPTIONS, dynamic: false, sandbox })
+  assert.equal(output.run, null)
+  assert.equal(output.report.static.parse.ok, true)
+  assert.equal(output.report.tracing.enabled, false)
+  assert.equal(sandbox.run.mock.callCount(), 0)
+  assert.equal(sandbox.dispose.mock.callCount(), 0)
+})
+
 test('scopeLogger is exported from the entry point and binds its scope', () => {
   assert.equal(typeof api.scopeLogger, 'function')
   const destination = createMemoryDestination()
