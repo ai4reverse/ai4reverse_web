@@ -1,0 +1,22 @@
+{
+  "id": "08",
+  "slug": "license-verifier",
+  "type": "sdk",
+  "title": "License Verifier SDK",
+  "grade": "commercial",
+  "category": "licensing",
+  "summary": "ES256 JWS 许可证 SDK：签发、验签、过期/生效时间、受众与产品绑定、时钟偏移，纯 WebCrypto 实现。",
+  "capabilities": [
+    "ES256 签发/验签",
+    "JWK 公私钥",
+    "exp/iat/nbf 校验",
+    "audience/product 绑定",
+    "时钟偏移",
+    "JWS 解码"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

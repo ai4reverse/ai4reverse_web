@@ -1,0 +1,22 @@
+{
+  "id": "07",
+  "slug": "obfuscator",
+  "type": "sdk",
+  "title": "JavaScript Obfuscator SDK",
+  "grade": "commercial",
+  "category": "code-protection",
+  "summary": "基于 Babel 的语义保持混淆 SDK：字符串转 fromCharCode、局部标识符重命名、死代码注入，并提供可读化 deobfuscate。",
+  "capabilities": [
+    "字符串编码",
+    "局部标识符重命名",
+    "死代码注入",
+    "Babel AST 变换",
+    "deobfuscate 还原",
+    "shadowing/with 安全检查"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

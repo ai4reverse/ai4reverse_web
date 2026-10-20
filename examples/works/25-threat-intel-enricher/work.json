@@ -1,0 +1,23 @@
+{
+  "id": "25",
+  "slug": "threat-intel-enricher",
+  "type": "app",
+  "title": "Threat-Intel Enricher",
+  "grade": "commercial",
+  "category": "threat-intelligence",
+  "summary": "离线 IOC 富化器：从分析报告提取域名/URL，匹配本地情报源，输出家族、置信度、信誉与标签。",
+  "capabilities": [
+    "IOC 提取",
+    "本地情报匹配",
+    "父域回退",
+    "信誉分级",
+    "JSON/表格输出"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

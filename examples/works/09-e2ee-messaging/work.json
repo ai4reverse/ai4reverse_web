@@ -1,0 +1,21 @@
+{
+  "id": "09",
+  "slug": "e2ee-messaging",
+  "type": "sdk",
+  "title": "E2EE Messaging SDK",
+  "grade": "commercial",
+  "category": "secure-messaging",
+  "summary": "端到端加密 SDK：ECDH P-256 + HKDF 派生会话密钥，AES-256-GCM 加密并绑定双方 transcript 指纹。",
+  "capabilities": [
+    "ECDH 身份/会话",
+    "HKDF 密钥派生",
+    "AES-GCM 消息加密",
+    "transcript/AAD 绑定",
+    "指纹与序列化"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "05",
+  "slug": "anti-tamper",
+  "type": "sdk",
+  "title": "Anti-Tamper SDK",
+  "grade": "commercial",
+  "category": "integrity",
+  "summary": "运行时完整性基线 SDK：捕获属性描述符、原型链与原生函数源码，检测方法替换、描述符改写、原型污染与 toString 篡改。",
+  "capabilities": [
+    "描述符/原型快照",
+    "差异检测",
+    "断言与连续 guard",
+    "原生函数源码比对",
+    "可重基线"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

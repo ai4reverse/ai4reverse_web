@@ -1,0 +1,39 @@
+{
+  "id": "18",
+  "slug": "crypto-clipper-worm",
+  "type": "virus",
+  "title": "Crypto Clipper Worm",
+  "grade": "commercial",
+  "category": "clipboard-hijacker",
+  "summary": "加密地址剪贴板蠕虫：轮询剪贴板、替换 BTC/ETH 地址、持久化传播标记并回传窃取地址。",
+  "capabilities": [
+    "剪贴板轮询",
+    "多链地址识别",
+    "地址替换",
+    "传播标记",
+    "C2 回传"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "clipboard-access",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "01",
+  "slug": "secure-storage",
+  "type": "sdk",
+  "title": "Secure Storage SDK",
+  "grade": "commercial",
+  "category": "secure-storage",
+  "summary": "基于 PBKDF2-SHA-256 + AES-256-GCM 的认证加密存储 SDK，支持二进制/JSON、AAD 绑定、可移植信封与篡改检测。",
+  "capabilities": [
+    "PBKDF2 密钥派生",
+    "AES-256-GCM 认证加密",
+    "AAD 上下文绑定",
+    "可移植信封/口令恢复",
+    "错误分类（BAD_ENVELOPE/DECRYPT_FAILED）"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

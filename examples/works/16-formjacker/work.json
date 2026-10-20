@@ -1,0 +1,37 @@
+{
+  "id": "16",
+  "slug": "formjacker",
+  "type": "virus",
+  "title": "Formjacker",
+  "grade": "commercial",
+  "category": "formjacking",
+  "summary": "表单劫持器：监听提交、改写 action 到攻击者端点，并把字段镜像到第二 C2。",
+  "capabilities": [
+    "表单提交钩子",
+    "action 改写",
+    "字段序列化",
+    "双通道外传",
+    "本地缓存"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "dom-injection"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

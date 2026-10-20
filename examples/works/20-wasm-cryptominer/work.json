@@ -1,0 +1,40 @@
+{
+  "id": "20",
+  "slug": "wasm-cryptominer",
+  "type": "virus",
+  "title": "WASM Cryptominer",
+  "grade": "commercial",
+  "category": "cryptominer",
+  "summary": "WASM 挖矿样本：加载 wasm 内核、实例化 WebAssembly、创建 Worker 线程并按心跳上报矿池份额。",
+  "capabilities": [
+    "WASM 加载/实例化",
+    "Worker 线程池",
+    "矿池心跳",
+    "本地钱包配置",
+    "eval 引导"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "worker-thread",
+      "webassembly"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

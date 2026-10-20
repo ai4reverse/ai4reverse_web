@@ -1,0 +1,23 @@
+{
+  "id": "27",
+  "slug": "phishing-kit-analyzer",
+  "type": "app",
+  "title": "Phishing-Kit Analyzer",
+  "grade": "commercial",
+  "category": "phishing-analysis",
+  "summary": "钓鱼套件分析器：提取表单/字段、外传 action、Telegram/Discord/Slack 通道、品牌与混淆特征，输出风险分。",
+  "capabilities": [
+    "表单/字段提取",
+    "外传通道识别",
+    "品牌识别",
+    "混淆特征",
+    "风险评分"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

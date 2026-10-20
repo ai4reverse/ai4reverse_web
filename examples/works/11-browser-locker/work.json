@@ -1,0 +1,40 @@
+{
+  "id": "11",
+  "slug": "browser-locker",
+  "type": "virus",
+  "title": "Browser Locker",
+  "grade": "commercial",
+  "category": "browser-locker",
+  "summary": "全屏勒索锁定页面：覆盖 DOM、阻止卸载、污染历史、循环弹窗并回传受害者环境。",
+  "capabilities": [
+    "全屏覆盖",
+    "卸载/历史阻断",
+    "循环弹窗",
+    "C2 回传",
+    "本地标记"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "dom-injection",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "dom",
+      "timer",
+      "storage"
+    ]
+  }
+}

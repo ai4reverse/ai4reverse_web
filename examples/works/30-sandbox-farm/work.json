@@ -1,0 +1,23 @@
+{
+  "id": "30",
+  "slug": "sandbox-farm",
+  "type": "app",
+  "title": "Sandbox Farm",
+  "grade": "commercial",
+  "category": "orchestration",
+  "summary": "并行沙箱农场：以有界并发运行多样本，聚合完成/超时/失败与句柄释放，验证运行间隔离。",
+  "capabilities": [
+    "有界并发",
+    "多样本调度",
+    "超时/失败分类",
+    "隔离验证",
+    "聚合统计"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

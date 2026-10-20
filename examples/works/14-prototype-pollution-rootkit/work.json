@@ -1,0 +1,34 @@
+{
+  "id": "14",
+  "slug": "prototype-pollution-rootkit",
+  "type": "virus",
+  "title": "Prototype Pollution Rootkit",
+  "grade": "commercial",
+  "category": "prototype-pollution",
+  "summary": "原型污染 rootkit：篡改 Object/Array 原型以劫持序列化与数组操作，并回传植入状态。",
+  "capabilities": [
+    "Object.prototype 污染",
+    "Array.prototype 劫持",
+    "序列化拦截",
+    "C2 回传",
+    "本地标记"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 28,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [],
+    "requireTechniques": [
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ],
+    "allowIntegrityDrift": true
+  }
+}

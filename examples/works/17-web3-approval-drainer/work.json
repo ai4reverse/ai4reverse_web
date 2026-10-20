@@ -1,0 +1,39 @@
+{
+  "id": "17",
+  "slug": "web3-approval-drainer",
+  "type": "virus",
+  "title": "Web3 Approval Drainer",
+  "grade": "commercial",
+  "category": "wallet-drainer",
+  "summary": "ERC-20 permit 钓鱼：连接注入式钱包、请求 permit 签名、回传账户与签名材料，并替换剪贴板地址。",
+  "capabilities": [
+    "钱包探测",
+    "账户请求",
+    "permit/typed-data 签名诱导",
+    "双通道回传",
+    "剪贴板地址替换"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "malicious",
+    "minScore": 60,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication",
+      "clipboard-access"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

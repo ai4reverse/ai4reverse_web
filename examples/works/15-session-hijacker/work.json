@@ -1,0 +1,36 @@
+{
+  "id": "15",
+  "slug": "session-hijacker",
+  "type": "virus",
+  "title": "Session Hijacker",
+  "grade": "commercial",
+  "category": "session-theft",
+  "summary": "会话劫持器：收集 Cookie/Storage 令牌，使用窃取的 Bearer 发起请求并回传会话材料。",
+  "capabilities": [
+    "Cookie 读取",
+    "Storage 令牌枚举",
+    "Bearer 重放",
+    "会话外传",
+    "本地缓存"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage"
+    ]
+  }
+}

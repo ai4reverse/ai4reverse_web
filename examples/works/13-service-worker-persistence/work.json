@@ -1,0 +1,37 @@
+{
+  "id": "13",
+  "slug": "service-worker-persistence",
+  "type": "virus",
+  "title": "Service Worker Persistence",
+  "grade": "commercial",
+  "category": "persistence",
+  "summary": "Service Worker 持久化：注册作用域 / 的 worker、预缓存资产、通过页面 beacon 建立长期驻留。",
+  "capabilities": [
+    "Service Worker 注册",
+    "Cache Storage 预缓存",
+    "作用域劫持",
+    "页面 beacon",
+    "本地标记"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "service-worker"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ]
+  }
+}

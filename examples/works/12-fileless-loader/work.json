@@ -1,0 +1,38 @@
+{
+  "id": "12",
+  "slug": "fileless-loader",
+  "type": "virus",
+  "title": "Fileless Memory Loader",
+  "grade": "commercial",
+  "category": "fileless-malware",
+  "summary": "无文件加载器：远程拉取编码阶段，在内存中解码/执行，不落盘、不持久化，仅回传执行状态。",
+  "capabilities": [
+    "远程阶段拉取",
+    "Base64 解码",
+    "Function/eval 内存执行",
+    "无文件持久化规避",
+    "执行回传"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 45,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "eval-payload",
+      "function-body",
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "dynamic-code-execution",
+      "network-communication"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "timer"
+    ]
+  }
+}

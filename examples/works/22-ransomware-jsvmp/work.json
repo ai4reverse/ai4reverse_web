@@ -1,0 +1,41 @@
+{
+  "id": "22",
+  "slug": "ransomware-jsvmp",
+  "type": "virus",
+  "title": "JSVMP Ransomware Stage",
+  "grade": "commercial",
+  "category": "ransomware",
+  "summary": "JSVMP 保护的勒索阶段：虚拟字节码驱动执行，WebCrypto 加密本地数据、生成勒索信并回传密钥材料。",
+  "capabilities": [
+    "JSVMP 解释器",
+    "AES-GCM 加密",
+    "勒索信 UI",
+    "密钥外传",
+    "反静态分析"
+  ],
+  "entry": "sample.js",
+  "verify": {
+    "command": "node tools/cli.js analyze examples/works/22-ransomware-jsvmp/sample.js --json",
+    "expect": "tracing.jsvmp.detected"
+  },
+  "expect": {
+    "level": "suspicious",
+    "minScore": 40,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "cryptography"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "dom"
+    ],
+    "requireVm": true
+  }
+}

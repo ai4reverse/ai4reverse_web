@@ -1,0 +1,21 @@
+{
+  "id": "02",
+  "slug": "webauthn-passkey",
+  "type": "sdk",
+  "title": "WebAuthn Passkey SDK",
+  "grade": "commercial",
+  "category": "authentication",
+  "summary": "Passkey 注册/认证全流程 SDK：选项构造、clientData 绑定校验、authenticatorData 解析、凭据序列化与签名验证钩子。",
+  "capabilities": [
+    "注册/认证选项构造",
+    "base64url 处理",
+    "challenge/origin/rpId 绑定校验",
+    "authenticatorData/COSE 解析",
+    "凭据序列化与签名验证钩子"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

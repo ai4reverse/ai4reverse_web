@@ -1,0 +1,23 @@
+{
+  "id": "23",
+  "slug": "soc-triage-console",
+  "type": "app",
+  "title": "SOC Triage Console",
+  "grade": "commercial",
+  "category": "soc-triage",
+  "summary": "面向 SOC L1/L2 的样本分诊台：一次分析输出判定、置信度、IOC、kill chain、artifact 与处置建议，并生成 Markdown/JSON 报告。",
+  "capabilities": [
+    "批量/单样本分诊",
+    "Markdown/JSON 报告",
+    "IOC/kill-chain 摘要",
+    "处置建议",
+    "自检"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

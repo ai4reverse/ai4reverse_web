@@ -1,0 +1,23 @@
+{
+  "id": "26",
+  "slug": "ci-security-gate",
+  "type": "app",
+  "title": "CI Security Gate",
+  "grade": "commercial",
+  "category": "ci-security",
+  "summary": "CI 安全门禁：递归扫描 JS 文件，按阈值/判定等级阻断构建，输出可机读结果，适合合并请求流水线。",
+  "capabilities": [
+    "递归 JS 扫描",
+    "阈值/等级门禁",
+    "退出码契约",
+    "JSON 输出",
+    "自检"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

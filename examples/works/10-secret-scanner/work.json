@@ -1,0 +1,22 @@
+{
+  "id": "10",
+  "slug": "secret-scanner",
+  "type": "sdk",
+  "title": "Secret Scanner SDK",
+  "grade": "commercial",
+  "category": "secrets-detection",
+  "summary": "密钥/凭据扫描 SDK：规则 + Shannon 熵、脱敏预览、行列定位、allowlist、可扩展规则与批量摘要。",
+  "capabilities": [
+    "内置凭据规则",
+    "高熵检测",
+    "脱敏与定位",
+    "allowlist",
+    "自定义规则",
+    "摘要统计"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}

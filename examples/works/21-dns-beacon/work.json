@@ -1,0 +1,37 @@
+{
+  "id": "21",
+  "slug": "dns-beacon",
+  "type": "virus",
+  "title": "DNS Beacon",
+  "grade": "commercial",
+  "category": "dns-covert-channel",
+  "summary": "DNS 隐蔽信标：把主机信息切块编码进子域，通过图片/fetch 触发解析并带重试退避。",
+  "capabilities": [
+    "子域编码",
+    "分块/编号",
+    "DNS 触发",
+    "重试退避",
+    "本地状态"
+  ],
+  "entry": "sample.js",
+  "verify": {},
+  "expect": {
+    "level": "suspicious",
+    "minScore": 30,
+    "requireIocs": [
+      "urls"
+    ],
+    "artifactsAny": [
+      "decoded-string"
+    ],
+    "requireTechniques": [
+      "network-communication",
+      "web-storage"
+    ],
+    "requireTraceKinds": [
+      "net",
+      "storage",
+      "timer"
+    ]
+  }
+}

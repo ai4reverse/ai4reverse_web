@@ -1,0 +1,23 @@
+{
+  "id": "29",
+  "slug": "ir-playbook",
+  "type": "app",
+  "title": "Incident-Response Playbook",
+  "grade": "commercial",
+  "category": "incident-response",
+  "summary": "事件响应剧本生成器：依据判定、kill chain、IOC 与异常生成分阶段、带优先级/负责人/时限的处置清单。",
+  "capabilities": [
+    "分阶段剧本",
+    "优先级/负责人/时限",
+    "IOC 驱动步骤",
+    "Markdown/JSON 输出",
+    "自检"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

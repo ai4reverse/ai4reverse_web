@@ -1,0 +1,23 @@
+{
+  "id": "28",
+  "slug": "detection-rule-generator",
+  "type": "app",
+  "title": "Detection Rule Generator",
+  "grade": "commercial",
+  "category": "detection-engineering",
+  "summary": "检测规则生成器：从分析报告生成 YARA、Sigma 风格规则与 JSON IOC 包，缩短从样本到检测的路径。",
+  "capabilities": [
+    "YARA 生成",
+    "Sigma 生成",
+    "IOC JSON 包",
+    "规则元数据",
+    "自检"
+  ],
+  "entry": "app.mjs",
+  "verify": {
+    "args": [
+      "--self-test"
+    ],
+    "expect": "SELFTEST OK"
+  }
+}

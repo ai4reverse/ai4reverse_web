@@ -1,0 +1,21 @@
+{
+  "id": "03",
+  "slug": "device-fingerprint",
+  "type": "sdk",
+  "title": "Device Fingerprint SDK",
+  "grade": "commercial",
+  "category": "device-identity",
+  "summary": "稳定、可解释的设备指纹 SDK：可注入探针、加权相似度、稳定 ID（忽略视口等易变项）、质量评分与租户命名空间。",
+  "capabilities": [
+    "可注入探针",
+    "稳定 ID 生成",
+    "加权相似度/同设备判定",
+    "质量评分",
+    "租户 salt 隔离"
+  ],
+  "entry": "src/index.js",
+  "verify": {
+    "command": "node verify.mjs",
+    "expect": "checks: N/N"
+  }
+}
