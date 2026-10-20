@@ -1,6 +1,3 @@
-import { isHandle } from '../bridge.js'
-import { createSeededRandom } from '../../util/random.js'
-
 /**
  * Shared kit for the environment modules that build guest-constructed classes.
  *
@@ -22,6 +19,9 @@ import { createSeededRandom } from '../../util/random.js'
  * This file is support code, not an environment module: it has no `meta` and
  * must never be listed in `ENV_MODULE_IDS`.
  */
+
+import { isHandle } from '../bridge.js'
+import { createSeededRandom } from '../../util/random.js'
 
 /** One kit per bridge; a bridge lives exactly one run. */
 const KITS = new WeakMap()

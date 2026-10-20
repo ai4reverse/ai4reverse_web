@@ -1,14 +1,3 @@
-import {
-  adoptGuestSurface,
-  createGuestModule,
-  createSurfaceBindings,
-  ensureNetwork,
-  EVENT_TARGET_SOURCE,
-  networkResultForGuest,
-} from './network.js'
-import { createSeededRandom } from '../../util/random.js'
-import { createKit } from './platform-kit.js'
-
 /**
  * `EventSource` (server-sent events).
  *
@@ -24,6 +13,17 @@ import { createKit } from './platform-kit.js'
  *  - `retry:` from the server changes the reconnect delay,
  *  - all timing is virtual and seeded, so a run stays reproducible and free.
  */
+
+import {
+  adoptGuestSurface,
+  createGuestModule,
+  createSurfaceBindings,
+  ensureNetwork,
+  EVENT_TARGET_SOURCE,
+  networkResultForGuest,
+} from './network.js'
+import { createSeededRandom } from '../../util/random.js'
+import { createKit } from './platform-kit.js'
 
 export const meta = { id: 'eventsource', order: 85, requires: ['globals', 'network'] }
 

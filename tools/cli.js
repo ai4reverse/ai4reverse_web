@@ -1,13 +1,4 @@
 #!/usr/bin/env node
-import { readFile, writeFile } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
-import { parseArgs } from 'node:util'
-import { createLogger } from './logging/logger.js'
-import { analyzeSample } from './analysis/orchestrator.js'
-import { restore, listPasses } from './restore/index.js'
-import { TracelessSandbox } from './sandbox/sandbox.js'
-
 /**
  * CLI entry point. `stdout` carries results only; all diagnostics go through
  * pino on stderr, so the tool is pipeline-safe:
@@ -16,6 +7,15 @@ import { TracelessSandbox } from './sandbox/sandbox.js'
  *   ai4reverse restore sample.js --out restored.js
  *   ai4reverse run sample.js --events | head
  */
+
+import { readFile, writeFile } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+import { parseArgs } from 'node:util'
+import { createLogger } from './logging/logger.js'
+import { analyzeSample } from './analysis/orchestrator.js'
+import { restore, listPasses } from './restore/index.js'
+import { TracelessSandbox } from './sandbox/sandbox.js'
 
 const USAGE = `ai4reverse — traceless malicious JavaScript analysis
 

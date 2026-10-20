@@ -1,12 +1,12 @@
-import { generate as babelGenerate } from '@babel/generator'
-import * as t from '@babel/types'
-
 /**
  * Single generate() wrapper used by every pass and by the CLI. Keeping one
  * implementation is what makes "统一的解析、转换、生成" (unified parse /
  * transform / generate) real rather than aspirational: output formatting,
  * escape handling and comment policy are all decided here.
  */
+
+import { generate as babelGenerate } from '@babel/generator'
+import * as t from '@babel/types'
 
 export const DEFAULT_GENERATE_OPTIONS = Object.freeze({
   comments: true,

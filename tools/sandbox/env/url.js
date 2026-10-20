@@ -1,6 +1,3 @@
-import { isHandle } from '../bridge.js'
-import { createKit } from './platform-kit.js'
-
 /**
  * `URL`, `URLSearchParams` and the legacy window aliases that belong to them.
  *
@@ -13,6 +10,8 @@ import { createKit } from './platform-kit.js'
  * The window-level `external` object and the Blink-only `webkitURL` alias are
  * installed here because they are URL peers that a profile claims by existing.
  */
+import { isHandle } from '../bridge.js'
+import { createKit } from './platform-kit.js'
 
 export const meta = { id: 'url', order: 88, requires: ['globals'] }
 

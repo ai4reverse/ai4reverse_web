@@ -1,6 +1,3 @@
-import { isHandle } from '../bridge.js'
-import { createKit } from './platform-kit.js'
-
 /**
  * The remaining modern platform objects that no other module owns:
  * `AbortController`/`AbortSignal`, `Notification`, `Worker`/`SharedWorker`,
@@ -18,6 +15,8 @@ import { createKit } from './platform-kit.js'
  * Each instance is instead associated with a numeric id in a private guest
  * `WeakMap`, and the state lives on the host keyed by that id.
  */
+import { isHandle } from '../bridge.js'
+import { createKit } from './platform-kit.js'
 
 export const meta = { id: 'misc', order: 100, requires: ['globals', 'navigator'] }
 

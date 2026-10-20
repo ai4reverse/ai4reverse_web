@@ -1,5 +1,3 @@
-import { SandboxError } from '../../util/errors.js'
-
 /**
  * Environment module registry.
  *
@@ -16,6 +14,7 @@ import { SandboxError } from '../../util/errors.js'
  * runs after `storage`; `url` and `blob` are separate surfaces rather than
  * sections of `misc`.
  */
+import { SandboxError } from '../../util/errors.js'
 
 export const ENV_MODULE_IDS = Object.freeze([
   'globals',

@@ -1,13 +1,3 @@
-import {
-  adoptGuestSurface,
-  createGuestModule,
-  createSurfaceBindings,
-  ensureNetwork,
-  EVENT_TARGET_SOURCE,
-  networkResultForGuest,
-} from './network.js'
-import { createSeededRandom } from '../../util/random.js'
-
 /**
  * `WebSocket`.
  *
@@ -18,6 +8,16 @@ import { createSeededRandom } from '../../util/random.js'
  * `close(1006)` exactly like a refused connection. All timings come from the
  * seeded virtual clock, so a run is reproducible and costs no host time.
  */
+
+import {
+  adoptGuestSurface,
+  createGuestModule,
+  createSurfaceBindings,
+  ensureNetwork,
+  EVENT_TARGET_SOURCE,
+  networkResultForGuest,
+} from './network.js'
+import { createSeededRandom } from '../../util/random.js'
 
 export const meta = { id: 'websocket', order: 86, requires: ['globals'] }
 

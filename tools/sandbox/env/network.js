@@ -1,5 +1,3 @@
-import { createSeededRandom } from '../../util/random.js'
-
 /**
  * Virtual network.
  *
@@ -16,7 +14,7 @@ import { createSeededRandom } from '../../util/random.js'
  * `network.request(spec)`; an analysis orchestrator programs the same service
  * through `registerHandler`, `setPolicy` and `setRoutes`.
  */
-
+import { createSeededRandom } from '../../util/random.js'
 export const meta = { id: 'network', order: 82, requires: ['globals'] }
 
 /** Behaviour applied when neither a handler nor a route matches. */

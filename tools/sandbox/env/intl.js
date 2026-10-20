@@ -1,5 +1,3 @@
-import { isHandle } from '../bridge.js'
-
 /**
  * `Intl` and the locale-aware built-in methods.
  *
@@ -35,6 +33,8 @@ import { isHandle } from '../bridge.js'
  * beyond the scalar fields, and the `v8`-only helpers. A sample that only
  * formats, compares, pluralises or localises cannot observe the difference.
  */
+
+import { isHandle } from '../bridge.js'
 
 export const meta = { id: 'intl', order: 110, requires: ['globals'] }
 

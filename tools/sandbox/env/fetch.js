@@ -1,14 +1,3 @@
-import { HandleBag } from '../../util/disposable.js'
-import {
-  adoptGuestSurface,
-  BODY_HELPERS_SOURCE,
-  createGuestModule,
-  createSurfaceBindings,
-  ensureNetwork,
-  networkResultForGuest,
-  resolveNetworkUrl,
-} from './network.js'
-
 /**
  * `fetch`, `Headers`, `Request` and `Response`.
  *
@@ -21,6 +10,16 @@ import {
  * The three interface classes live in guest code (per-instance private slots,
  * WebIDL-shaped accessors) and are registered as native so brand checks pass.
  */
+import { HandleBag } from '../../util/disposable.js'
+import {
+  adoptGuestSurface,
+  BODY_HELPERS_SOURCE,
+  createGuestModule,
+  createSurfaceBindings,
+  ensureNetwork,
+  networkResultForGuest,
+  resolveNetworkUrl,
+} from './network.js'
 
 export const meta = { id: 'fetch', order: 84, requires: ['globals'] }
 

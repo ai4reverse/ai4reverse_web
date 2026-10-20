@@ -1,5 +1,3 @@
-import { createSeededRandom } from '../../util/random.js'
-
 /**
  * Deterministic `Math.random`.
  *
@@ -12,6 +10,7 @@ import { createSeededRandom } from '../../util/random.js'
  * `[native code]` source, indistinguishable from the engine's implementation.
  */
 
+import { createSeededRandom } from '../../util/random.js'
 export const meta = { id: 'random', order: 28, requires: ['globals'] }
 
 export function install(bridge) {

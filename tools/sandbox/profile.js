@@ -1,6 +1,3 @@
-import { createSeededRandom, seededPick } from '../util/random.js'
-import { SandboxError } from '../util/errors.js'
-
 /**
  * Coherent, seeded browser profile.
  *
@@ -11,6 +8,8 @@ import { SandboxError } from '../util/errors.js'
  * value; environment modules must read from it and never invent their own
  * values. `consistencyReport()` proves the invariants hold.
  */
+import { createSeededRandom, seededPick } from '../util/random.js'
+import { SandboxError } from '../util/errors.js'
 
 export const LOCALES = Object.freeze({
   'zh-CN': {

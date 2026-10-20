@@ -1,6 +1,3 @@
-import { parse as babelParse } from '@babel/parser'
-import { ParseError } from '../util/errors.js'
-
 /**
  * Parsing entry point for the restoration pipeline.
  *
@@ -9,6 +6,8 @@ import { ParseError } from '../util/errors.js'
  * samples are classic scripts), then module, then a module/script fallback.
  * The chosen source type is reported so a later generate() call can round-trip.
  */
+import { parse as babelParse } from '@babel/parser'
+import { ParseError } from '../util/errors.js'
 
 export const BASE_PLUGINS = Object.freeze([
   'asyncGenerators',

@@ -1,5 +1,3 @@
-import { createKit } from './platform-kit.js'
-
 /**
  * `navigator` surface: identity, plugins/mimeTypes and the capability
  * augmentations malware probes (permissions, connection, battery, media
@@ -16,7 +14,7 @@ import { createKit } from './platform-kit.js'
  * module's `install`, after `storage` (whose `StorageManager` becomes
  * `navigator.storage`) — hence order 58 and `requires: ['storage']`.
  */
-
+import { createKit } from './platform-kit.js'
 export const meta = { id: 'navigator', order: 58, requires: ['globals', 'storage'] }
 
 export function install(bridge) {

@@ -1,6 +1,3 @@
-import { isHandle } from '../bridge.js'
-import { createKit } from './platform-kit.js'
-
 /**
  * `Blob`, `File` and `FormData`.
  *
@@ -13,6 +10,9 @@ import { createKit } from './platform-kit.js'
  * `URL.createObjectURL` lives in `url.js`, but both modules share one kit, so a
  * Blob is recognised by its state id no matter which module created it.
  */
+
+import { isHandle } from '../bridge.js'
+import { createKit } from './platform-kit.js'
 
 export const meta = { id: 'blob', order: 92, requires: ['globals'] }
 

@@ -1,5 +1,3 @@
-import { hashObject } from '../util/hash.js'
-
 /**
  * Intrinsic integrity snapshots.
  *
@@ -14,6 +12,7 @@ import { hashObject } from '../util/hash.js'
  * pristine". Snapshotting lets the report prove that.
  */
 
+import { hashObject } from '../util/hash.js'
 const INTRINSIC_NAMES = [
   'Object',
   'Function',

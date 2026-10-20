@@ -1,7 +1,3 @@
-import { createSeededRandom } from '../util/random.js'
-import { DEFAULT_LIMITS } from '../engine/limits.js'
-import { isHostStackExhaustion } from '../engine/runtime.js'
-
 /**
  * Virtual clock for the sandbox.
  *
@@ -14,6 +10,10 @@ import { isHostStackExhaustion } from '../engine/runtime.js'
  * quantum so instrumentation overhead never manifests as suspiciously fast or
  * suspiciously slow wall-clock deltas.
  */
+
+import { createSeededRandom } from '../util/random.js'
+import { DEFAULT_LIMITS } from '../engine/limits.js'
+import { isHostStackExhaustion } from '../engine/runtime.js'
 
 /** @param {object} [options] */
 const TIME_ORIGIN_OFFSET_MIN_MS = 100

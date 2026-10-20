@@ -1,19 +1,3 @@
-import { loadQuickJS, createRuntime, isHostStackExhaustion, guardHostStackExhaustion } from '../engine/runtime.js'
-import { normalizeLimits, DEFAULT_LIMITS } from '../engine/limits.js'
-import { createProfile, consistencyReport } from './profile.js'
-import { createVirtualClock } from './clock.js'
-import { createHostBridge } from './bridge.js'
-import { createStealth } from '../invocation/stealth.js'
-import { createTraceRecorder } from '../instrumentation/trace.js'
-import { createInstrumentation, analyzeSource } from '../instrumentation/index.js'
-import { createHookBus, createDefaultHooks, registerHooks } from '../hook/index.js'
-import { installEnvironment } from './env/index.js'
-import { captureIntegrity, diffIntegrity } from './integrity.js'
-import { createInvoker } from '../invocation/invoke.js'
-import { createLogger } from '../logging/logger.js'
-import { SandboxError } from '../util/errors.js'
-import { shortHash } from '../util/hash.js'
-
 /**
  * Guest execution is serialized process-wide.
  *
@@ -38,6 +22,22 @@ import { shortHash } from '../util/hash.js'
  * fresh runtime and context, so per-run isolation and determinism are
  * unchanged: a run now behaves exactly like the sequential equivalent.
  */
+
+import { loadQuickJS, createRuntime, isHostStackExhaustion, guardHostStackExhaustion } from '../engine/runtime.js'
+import { normalizeLimits, DEFAULT_LIMITS } from '../engine/limits.js'
+import { createProfile, consistencyReport } from './profile.js'
+import { createVirtualClock } from './clock.js'
+import { createHostBridge } from './bridge.js'
+import { createStealth } from '../invocation/stealth.js'
+import { createTraceRecorder } from '../instrumentation/trace.js'
+import { createInstrumentation, analyzeSource } from '../instrumentation/index.js'
+import { createHookBus, createDefaultHooks, registerHooks } from '../hook/index.js'
+import { installEnvironment } from './env/index.js'
+import { captureIntegrity, diffIntegrity } from './integrity.js'
+import { createInvoker } from '../invocation/invoke.js'
+import { createLogger } from '../logging/logger.js'
+import { SandboxError } from '../util/errors.js'
+import { shortHash } from '../util/hash.js'
 
 /** Tail of the guest-run queue. Always a promise that settles, never rejects. */
 let runQueueTail = Promise.resolve()

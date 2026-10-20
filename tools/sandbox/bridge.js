@@ -1,5 +1,3 @@
-import { HandleBag } from '../util/disposable.js'
-
 /**
  * Host bridge: the only sanctioned way for environment modules to touch
  * quickjs-emscripten handles.
@@ -23,6 +21,7 @@ import { HandleBag } from '../util/disposable.js'
  *  3. Ergonomics for environment modules: primitives in, primitives out.
  */
 
+import { HandleBag } from '../util/disposable.js'
 /** Marker used for conversion failures that must not escape to the guest. */
 const CONVERSION_FAILED = Symbol('conversion-failed')
 

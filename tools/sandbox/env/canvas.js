@@ -1,8 +1,3 @@
-import { createHash } from 'node:crypto'
-import { createSeededRandom, hashSeed } from '../../util/random.js'
-import { isHandle } from '../bridge.js'
-import { elementPrototypifier } from './dom.js'
-
 /**
  * Canvas 2D, WebGL/WebGL2, Web Audio and font-metrics surfaces.
  *
@@ -30,6 +25,10 @@ import { elementPrototypifier } from './dom.js'
  *  - installs `document.fonts` immediately when `bridge.global.document` exists,
  *    otherwise queues the work through `bridge.deferUntilDocument(task)`.
  */
+import { createHash } from 'node:crypto'
+import { createSeededRandom, hashSeed } from '../../util/random.js'
+import { isHandle } from '../bridge.js'
+import { elementPrototypifier } from './dom.js'
 
 export const meta = { id: 'canvas', order: 105, requires: ['globals'] }
 

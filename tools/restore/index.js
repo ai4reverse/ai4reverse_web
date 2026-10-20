@@ -1,9 +1,3 @@
-import { parse } from './parse.js'
-import { generate } from './generate.js'
-import { runPass } from './pass-context.js'
-import { selectPasses, listPasses, isDeferredPass, PASSES } from './passes/index.js'
-import { hashObject, sha256 } from '../util/hash.js'
-
 /**
  * Unified code restoration pipeline: one parse, one transform pass chain, one
  * generate. All passes mutate the same Babel AST, so output formatting and
@@ -14,6 +8,13 @@ import { hashObject, sha256 } from '../util/hash.js'
  * change is attributable to a pass id, which is what makes the restored code
  * usable as forensic evidence.
  */
+
+import { parse } from './parse.js'
+import { generate } from './generate.js'
+import { runPass } from './pass-context.js'
+import { selectPasses, listPasses, isDeferredPass, PASSES } from './passes/index.js'
+import { hashObject, sha256 } from '../util/hash.js'
+
 export function restore(code, options = {}) {
   const {
     filename,

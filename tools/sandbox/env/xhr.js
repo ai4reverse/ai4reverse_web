@@ -1,14 +1,3 @@
-import { HandleBag } from '../../util/disposable.js'
-import {
-  adoptGuestSurface,
-  BODY_HELPERS_SOURCE,
-  createGuestModule,
-  createSurfaceBindings,
-  EVENT_TARGET_SOURCE,
-  ensureNetwork,
-  networkResultForGuest,
-} from './network.js'
-
 /**
  * `XMLHttpRequest`.
  *
@@ -21,6 +10,17 @@ import {
  * timers, tracing and byte decoding. Time comes from `bridge.clock`, so a test
  * advances the clock and observes the exact browser event sequence.
  */
+
+import { HandleBag } from '../../util/disposable.js'
+import {
+  adoptGuestSurface,
+  BODY_HELPERS_SOURCE,
+  createGuestModule,
+  createSurfaceBindings,
+  EVENT_TARGET_SOURCE,
+  ensureNetwork,
+  networkResultForGuest,
+} from './network.js'
 
 export const meta = { id: 'xhr', order: 80, requires: ['globals'] }
 

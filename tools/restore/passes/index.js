@@ -1,3 +1,10 @@
+/**
+ * Restoration pass registry.
+ *
+ * Every pass is independently testable, conservative, and reports what it
+ * changed. Order is `meta.order`; the pipeline may run several rounds because
+ * one pass often enables another (e.g. `strings` unlocks `string-array`).
+ */
 import * as strings from './strings.js'
 import * as constantFold from './constant-fold.js'
 import * as memberFold from './member-fold.js'
@@ -10,13 +17,6 @@ import * as antiAnalysis from './anti-analysis.js'
 import * as evalUnwrap from './eval-unwrap.js'
 import * as rename from './rename.js'
 
-/**
- * Restoration pass registry.
- *
- * Every pass is independently testable, conservative, and reports what it
- * changed. Order is `meta.order`; the pipeline may run several rounds because
- * one pass often enables another (e.g. `strings` unlocks `string-array`).
- */
 const MODULES = [
   strings,
   constantFold,
