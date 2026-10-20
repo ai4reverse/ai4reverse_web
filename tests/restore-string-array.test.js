@@ -235,3 +235,142 @@ log(_0xrd(0), _0xr2[3]);
   assert.ok(!code.includes('_0xrd'), 'the decoder is inlined')
   assert.ok(!code.includes('_0xr2'), 'the array is deleted')
 })
+
+// ---- rotation and decoder variants ---------------------------------------
+//
+// Real obfuscators spell the rotation and the decoder differently. Every case
+// below is a *realistic* variant; the assertion is always that the restored
+// program still logs exactly what the original logged, whether or not this
+// particular shape is one the pass can rewrite.
+
+const ROTATION_SNIPPETS = {
+  'unshift/pop rotation': `
+var _0xab = ['alpha', 'beta', 'gamma', 'delta'];
+(function (_0xa, _0xn) {
+  var _0xr = function (_0xk) {
+    while (--_0xk) { _0xa['unshift'](_0xa['pop']()); }
+  };
+  _0xr(++_0xn);
+})(_0xab, 1);
+log(_0xab[0], _0xab[3]);
+`,
+  'reverse rotation': `
+var _0xac = ['alpha', 'beta', 'gamma', 'delta'];
+(function (_0xa) { _0xa['reverse'](); })(_0xac);
+log(_0xac[0], _0xac[3]);
+`,
+  'splice rotation': `
+var _0xad = ['alpha', 'beta', 'gamma', 'delta'];
+(function (_0xa, _0xn) {
+  var _0xr = function (_0xk) {
+    while (--_0xk) { _0xa['push'](_0xa['shift']()); }
+  };
+  _0xr(_0xn);
+})(_0xad, 3);
+log(_0xad[0], _0xad[2]);
+`,
+  'rotation through a function declaration': `
+var _0xae = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
+function _0xrot(_0xa, _0xn) {
+  var _0xr = function (_0xk) { while (--_0xk) { _0xa['push'](_0xa['shift']()); } };
+  _0xr(++_0xn);
+}
+_0xrot(_0xae, 2);
+log(_0xae[0], _0xae[1], _0xae[4]);
+`,
+  'two rotations in sequence': `
+var _0xaf = ['a', 'b', 'c', 'd', 'e'];
+function _0xrot(_0xa, _0xn) {
+  var _0xr = function (_0xk) { while (--_0xk) { _0xa['push'](_0xa['shift']()); } };
+  _0xr(++_0xn);
+}
+_0xrot(_0xaf, 1);
+log(_0xaf[0]);
+`,
+  'duplicate entries survive rotation': `
+var _0xag = ['dup', 'dup', 'other', 'more'];
+(function (_0xa) {
+  var _0xr = function (_0xk) { while (--_0xk) { _0xa['push'](_0xa['shift']()); } };
+  _0xr(3);
+})(_0xag);
+log(_0xag[0], _0xag[1], _0xag[3]);
+`,
+}
+
+const DECODER_SNIPPETS = {
+  'charCodeAt with xor': `
+var _0xba = ['\\x68\\x69', 'qrs', 'tuv', 'wxy'];
+var _0xdec = function (_0xi) {
+  return _0xba[_0xi - 0x0] || String.fromCharCode(_0xi.charCodeAt(0) ^ 0).toLowerCase();
+};
+log(_0xdec(0));
+`,
+  'arithmetic index with multiplication and shifts': `
+var _0xbb = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta'];
+function _0xdec(_0xi) {
+  return _0xbb[(_0xi / 1 + 0) * 1 | 0];
+}
+log(_0xdec(4), _0xdec(8));
+`,
+  'index through bitwise operators': `
+var _0xbc = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
+function _0xdec(_0xi) {
+  return _0xbc[(_0xi & 7) ^ 1] + _0xbc[(_0xi << 1) >> 1] + _0xbc[_0xi % 5];
+}
+log(_0xdec(1));
+`,
+  'hex and parenthesised indices': `
+var _0xbd = ['alphabet', 'betamax', 'gammaray', 'deltawave'];
+function _0xdec(_0xi) {
+  return _0xbx(0x0);
+  function _0xbx(_0xj) { return _0xbd[(1 - 1)] + _0xbd[(2 * 2 - 1)]; }
+}
+log(_0xdec(0));
+`,
+  'decoder declared with const and an arrow': `
+var _0xbe = ['alphabet', 'betamax', 'gammaray', 'deltawave'];
+const _0xdec = (_0xi) => _0xbe[_0xi] + _0xbe[_0xi + 1];
+log(_0xdec(0), _0xdec(2));
+`,
+}
+
+test('string-array: rotation and decoder variants keep their behaviour', () => {
+  for (const [label, source] of Object.entries({ ...ROTATION_SNIPPETS, ...DECODER_SNIPPETS })) {
+    const result = assertSemanticsPreserved(source)
+    assert.ok(Array.isArray(result.notes), label)
+    const again = transform(result.code)
+    assert.equal(again.changed, false, `${label} is not idempotent:\n${again.code}`)
+  }
+})
+
+test('string-array: rotations inside a branch or behind a variable count are left alone', () => {
+  const sources = [
+    `var _0xca = ['alpha', 'beta', 'gamma', 'delta'];
+     if (globalThis.missing) {
+       (function (_0xa) { var _0xn = 2; while (--_0xn) { _0xa['push'](_0xa['shift']()); } })(_0xca);
+     }
+     log(_0xca[0]);`,
+    `var _0xcb = ['alpha', 'beta', 'gamma', 'delta'];
+     var _0xn = 2;
+     (function (_0xa, _0xk) { while (--_0xk) { _0xa['push'](_0xa['shift']()); } })(_0xcb, _0xn);
+     log(_0xcb[0]);`,
+    `var _0xcc = ['alpha', 'beta'];
+     (function (_0xa) { _0xa['push'](_0xa['shift']()); })(_0xcc);
+     log(_0xcc[0]);`,
+  ]
+  for (const source of sources) {
+    const result = assertSemanticsPreserved(source)
+    assert.equal(result.changed, false, result.code)
+  }
+})
+
+test('string-array: a decoder that reads two arrays is never inlined', () => {
+  const source = `
+var _0xcd = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xce = ['one', 'two', 'three', 'four'];
+function _0xdec(_0xi) { return _0xcd[_0xi] + _0xce[_0xi]; }
+log(_0xdec(0), _0xdec(3));
+`
+  const result = assertSemanticsPreserved(source)
+  assert.equal(result.changed, false, result.code)
+})

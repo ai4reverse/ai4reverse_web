@@ -7,10 +7,12 @@ import { runPass } from '../tools/restore/pass-context.js'
 import * as stringsPass from '../tools/restore/passes/strings.js'
 import * as constantFoldPass from '../tools/restore/passes/constant-fold.js'
 import * as memberFoldPass from '../tools/restore/passes/member-fold.js'
+import * as jsfuckPass from '../tools/restore/passes/jsfuck.js'
 
 const strings = { ...stringsPass.meta, run: stringsPass.run }
 const constantFold = { ...constantFoldPass.meta, run: constantFoldPass.run }
 const memberFold = { ...memberFoldPass.meta, run: memberFoldPass.run }
+const jsfuck = { ...jsfuckPass.meta, run: jsfuckPass.run }
 
 /**
  * Evaluate a JS expression source string the way the guest engine would.
@@ -235,4 +237,228 @@ test('folds compose across the pass order', () => {
   const source = generateExpression(ast.program.body[0].expression.right)
   assert.equal(source, "'Hi!' + 3")
   assert.deepEqual(evaluate(source), 'Hi!3')
+})
+
+/**
+ * Expression corpus for the fold passes.
+ *
+ * Every entry is side-effect free, so the invariant below is exact: whatever a
+ * pass rewrites must still evaluate to the same value. The corpus deliberately
+ * mixes the shapes the passes support (arithmetic, comparisons, members, string
+ * decoders, literals) with the shapes they must refuse (calls, templates with
+ * expressions, spread, shadowed globals, oversized payloads) so a guard cannot
+ * silently start folding something unsafe.
+ */
+const FOLD_CORPUS = [
+  // arithmetic and coercion
+  '1 + 2', "'a' + 'b'", "'a' + 1", '1 + "a"', '[] + []', '[] + {}', '{} + []',
+  '1 - 2', '2 * 3', '7 / 2', '7 % 2', '2 ** 10', '-1 + 1', '+true', '+null',
+  '+undefined', '+""', '+[]', '1 * undefined', '-Infinity', '0 / 0',
+  // bitwise, shift, unary
+  '~0', '~-1', '1 << 4', '255 >> 4', '-8 >>> 28', '!0', '!{}', '!!"x"', 'void 0',
+  // comparisons and equality
+  '1 < 2', '2 <= 2', '3 > 1', '3 >= 4', '1 == "1"', '1 === "1"', 'null == undefined',
+  'null === undefined', 'NaN === NaN',
+  // logical, nullish and conditional
+  '1 && 2', '0 || 5', 'null ?? 3', 'undefined ?? "fallback"', '1 ? "yes" : "no"',
+  '0 ? "yes" : "no"', 'false && call()',
+  // typeof / instanceof-shaped (never folded when dynamic)
+  'typeof 1', 'typeof "s"', 'typeof undefined', 'typeof null',
+  // strings and member access
+  "'abc'.length", "'abc'[1]", "'abc'[0]", "[1, 2, 3].length", '[1, 2, 3][1]',
+  '[][0]', "'abc'['length']", "'abc'[3]", '"ABC".toLowerCase()', '"abc".toUpperCase()',
+  '"a,b,c".split(",").length', '" a ".trim().length', '"abc".indexOf("b")',
+  '"abc".charCodeAt(0)', '"abc".slice(1)', '"abc".replace("a", "z")',
+  // escapes and decoder-shaped literals
+  '"\\x41\\x42"', '"\\u0041\\u0042"', '"\\n\\t"', "'\\u00e9'",
+  "atob('SGVsbG8=')", "atob('')", "String.fromCharCode(72, 105)",
+  "String.fromCharCode(0x48, 0x69)",
+  // Math over literals
+  'Math.max(1, 2)', 'Math.min(1, 2)', 'Math.abs(-3)', 'Math.floor(1.9)',
+  'Math.round(1.5)', 'Math.sqrt(9)', 'Math.pow(2, 8)',
+  // grouping and sequences
+  '(1 + 2) * 3', '(1, 2, 3)', '((((1))))',
+  // things no pass may fold
+  'dynamic()', 'dynamic + 1', 'dynamic.length', 'String.fromCharCode(dynamic)',
+  'atob(dynamicBase64)', '(`tpl ${dynamic}`)', '[1, ...[2]]', '({ a: 1 })',
+  '`plain template`', '"a" + "b" + dynamic', 'NaN', 'Infinity', 'undefined',
+  '123456789012345678901234567890n',
+]
+
+/** Deterministic stand-ins for the corpus's `dynamic`/`call` placeholders. */
+function evaluateCorpus(source) {
+  // eslint-disable-next-line no-new-func
+  return new Function('dynamic', 'call', 'dynamicBase64', 'return (' + source + ')')(
+    () => 7,
+    (...args) => args.length,
+    'SGk=',
+  )
+}
+
+test('fold passes never change the value of an expression they rewrite', () => {
+  for (const pass of [constantFold, memberFold, jsfuck, strings]) {
+    for (const expression of FOLD_CORPUS) {
+      const { original, folded, result } = fold(pass, expression)
+      assert.equal(result.error, undefined, `${pass.id} threw on ${expression}: ${result.error?.message ?? ''}`)
+      const expected = evaluateCorpus(original)
+      const actual = evaluateCorpus(folded)
+      if (typeof expected === 'number' && Number.isNaN(expected)) {
+        assert.ok(Number.isNaN(actual), `${pass.id}: ${expression} -> ${folded} should stay NaN`)
+      } else {
+        assert.deepEqual(actual, expected, `${pass.id}: ${expression} -> ${folded}`)
+      }
+      // A pass that reports a change must have produced different text.
+      if (result.changed) assert.notEqual(folded, original, `${pass.id}: ${expression} reported an identical rewrite`)
+    }
+  }
+})
+
+test('jsfuck folds every supported literal shape and refuses the rest', () => {
+  assertFolded(jsfuck, '![] + []', 'false', "'false'")
+  assertFolded(jsfuck, '[] + []', '', "''")
+  assertFolded(jsfuck, '[] + {}', '[object Object]', "'[object Object]'")
+  assertFolded(jsfuck, '+null', 0, '0')
+  assertFolded(jsfuck, '+true', 1, '1')
+  assertFolded(jsfuck, '~null', -1, '-1')
+  assertFolded(jsfuck, '1 * undefined', NaN)
+  assertFolded(jsfuck, '2 ** 3', 8, '8')
+  assertFolded(jsfuck, '7 % 4', 3, '3')
+  assertFolded(jsfuck, '10 / 4', 2.5, '2.5')
+  assertFolded(jsfuck, '"abc"[1]', 'b', "'b'")
+  assertFolded(jsfuck, '"abc".length', 3, '3')
+  assertFolded(jsfuck, '[1, 2, 3][1]', 2, '2')
+  assertFolded(jsfuck, '`plain`', 'plain', "'plain'")
+  assertFolded(jsfuck, '(1, 2)', 2, '2')
+
+  // Refusals: every shape outside the evaluator's subset is left intact.
+  for (const expression of [
+    '"abc"[true]',
+    '`${1}`',
+    '[1, ...[2]]',
+    '[, 1]',
+    '(() => 1)',
+    'dynamic[0]',
+    '"abc"[dynamic]',
+  ]) {
+    assertUnchanged(jsfuck, `captured = ${expression};`)
+  }
+})
+
+test('fold passes skip a directive-prologue position and say why', () => {
+  // A fold in the first statement of a function would turn that statement into a
+  // directive, so `'\x41'` style escapes and member reads must stay put there.
+  const cases = [
+    { pass: memberFold, code: `function f(){ 'abc'[0]; return 'body' }`, note: /directive/i },
+    { pass: strings, code: "function f(){ ('\\x41'); return 'body' }", note: /directive|strictness/i },
+    { pass: strings, code: `function f(){ 'a' + 'b'; return 'body' }`, note: /directive/i },
+  ]
+  for (const testCase of cases) {
+    const { ast } = parse(testCase.code)
+    const before = generate(ast).code
+    const result = runPass(testCase.pass, ast)
+    assert.equal(result.changed, false, `${testCase.pass.id}: ${JSON.stringify(result.notes)}`)
+    assert.equal(generate(ast).code, before)
+    assert.ok(
+      result.notes.some((note) => testCase.note.test(note)),
+      `${testCase.pass.id}: ${JSON.stringify(result.notes)}`,
+    )
+  }
+
+  // jsfuck refuses the position silently (the note would repeat per statement).
+  const jsfuckCase = parse(`function f(){ 'a' + 'b'; return 'body' }`)
+  const jsfuckResult = runPass(jsfuck, jsfuckCase.ast)
+  assert.equal(jsfuckResult.changed, false)
+  assert.match(generate(jsfuckCase.ast).code, /'a' \+ 'b'/)
+})
+
+test('constant-fold refuses to fold inside a with scope', () => {
+  const code = `var scope = { dynamic: 1 }; var out; with (scope) { out = 1 + 2 } captured = out;`
+  const { ast } = parse(code)
+  const result = runPass(constantFold, ast)
+  assert.equal(result.error, undefined)
+  assert.ok(
+    result.notes.some((note) => /with statement/i.test(note)),
+    JSON.stringify(result.notes),
+  )
+  assert.equal(result.changed, false, generate(ast).code)
+})
+
+/** Run the `strings` pass on one expression and return the folded source. */
+function decodeExpression(expression) {
+  const { folded, result } = fold(strings, expression)
+  return { folded, result }
+}
+
+test('strings: decodes every literal-built decoder idiom', () => {
+  const decodable = [
+    ['String.fromCharCode(104, 105)', "'hi'"],
+    ["String['fromCharCode'](104, 105)", "'hi'"],
+    ['String.fromCharCode.apply(null, [104, 105])', "'hi'"],
+    ['String.fromCharCode.apply(undefined, [104, 105])', "'hi'"],
+    ["[104, 105].map(function (c) { return String.fromCharCode(c) }).join('')", "'hi'"],
+    ['[104, 105].map((c) => String.fromCharCode(c)).join()', "'hi'"],
+    ["atob('aGk=')", "'hi'"],
+    ["window.atob('aGk=')", "'hi'"],
+    ["self.atob('aGk=')", "'hi'"],
+    ["globalThis.atob('aGk=')", "'hi'"],
+    ["decodeURIComponent('%41%42')", "'AB'"],
+    ["unescape('%41%42')", "'AB'"],
+    ["window.decodeURIComponent('%41')", "'A'"],
+  ]
+  for (const [expression, expected] of decodable) {
+    const { folded, result } = decodeExpression(expression)
+    assert.equal(result.changed, true, `expected a decode for ${expression}`)
+    assert.equal(folded, expected, `unexpected decode for ${expression}`)
+  }
+
+  // Refusals: a decoder the pass cannot prove is the built-in is left alone.
+  const refusals = [
+    'String.fromCharCode(dynamic)',
+    "String.fromCharCode.apply(null, dynamic)",
+    "String.fromCharCode.apply('not-null', [104])",
+    "String.fromCharCode.apply(null, 'not an array')",
+    "[104].map((a, b) => String.fromCharCode(a)).join('')",
+    "[104].map((c) => String.fromCharCode(c)).join('x')",
+    "[104].map((c) => String.fromCharCode(c)).join('', 1)",
+    '[dynamic].map((c) => String.fromCharCode(c)).join()',
+    "atob('aGk=', 'extra')",
+    'atob(dynamicBase64)',
+    "other.atob('aGk=')",
+    'member.fromCharCode(104)',
+  ]
+  for (const expression of refusals) {
+    const { result } = decodeExpression(expression)
+    assert.equal(result.changed, false, `unexpected decode for ${expression}: ${JSON.stringify(result.changes)}`)
+  }
+
+  // A shadowed decoder name is never decoded either.
+  const shadowSources = [
+    "function f(atob) { return atob('aGk=') }",
+    "function f(String) { return String.fromCharCode(104) }",
+    "function f(window) { return window.atob('aGk=') }",
+  ]
+  for (const source of shadowSources) {
+    const { ast } = parse(source)
+    const result = runPass(strings, ast)
+    assert.equal(result.changed, false, source)
+  }
+})
+
+test('strings: reports oversized literals and lone surrogates instead of rewriting them', () => {
+  const oversized = `captured = '\\\\x41${'a'.repeat(100_000)}';`
+  const { ast } = parse(oversized)
+  const result = runPass(strings, ast)
+  assert.equal(result.changed, false)
+  assert.ok(
+    result.notes.some((note) => /too large/.test(note)),
+    JSON.stringify(result.notes),
+  )
+
+  const surrogate = parse("captured = '\\uD800';")
+  const surrogateResult = runPass(strings, surrogate.ast)
+  assert.equal(surrogateResult.changed, false)
+  assert.ok(
+    surrogateResult.notes.some((note) => /lone surrogate/.test(note)),
+    JSON.stringify(surrogateResult.notes),
+  )
 })

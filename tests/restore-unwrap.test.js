@@ -8,6 +8,7 @@ import * as jsfuck from '../tools/restore/passes/jsfuck.js'
 import * as stringArray from '../tools/restore/passes/string-array.js'
 import * as proxyUnwrap from '../tools/restore/passes/proxy-unwrap.js'
 import * as deadCode from '../tools/restore/passes/dead-code.js'
+import * as evalUnwrap from '../tools/restore/passes/eval-unwrap.js'
 
 /**
  * Run one pass on a snippet.
@@ -287,4 +288,246 @@ log(_0xshadow('nan-param', 'undefined-param'));
   assert.match(code, /'false'/, 'shadow-free string folds still happen')
   assert.match(code, /\+'x'/, 'the shadowed NaN result is left as an expression')
   assert.deepEqual(runSnippet(code).logged, [[[NaN, 'undefined-param', 'false']]])
+})
+
+// ---- eval / Function unwrapping ------------------------------------------
+//
+// The pass rewrites only literal forms and is deliberately conservative: every
+// refusal below is a strictness or scope change that would alter behaviour, so
+// each negative case asserts both the note and the untouched source.
+
+test('eval-unwrap: splices literal eval statements and drops empty evals', () => {
+  const source = `eval('var a = 1; log(a)'); eval(''); log('after');`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, true)
+  assert.ok(!result.code.includes('eval('), 'the eval calls are gone')
+  assert.match(result.code, /var a = 1/)
+  assert.match(result.code, /log\(a\)/)
+  assert.deepEqual(runSnippet(result.code).logged, [[1], ['after']])
+  assert.ok(result.changes.some((change) => change.rule === 'eval' && change.pass === 'eval-unwrap'))
+})
+
+test('eval-unwrap: decodes template literal bodies without expressions', () => {
+  const source = `log('start'); eval(\`log('tpl')\`);`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, true)
+  assert.ok(!result.code.includes('eval('))
+  assert.deepEqual(runSnippet(result.code).logged, [['start'], ['tpl']])
+})
+
+test('eval-unwrap: leaves value-position eval and non-literal arguments alone', () => {
+  const source = `
+var payload = 'log(1)';
+var alias = eval;
+log(typeof alias, typeof eval(payload), foo(eval('log(2)')));
+function foo(value) { return typeof value; }
+`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, false)
+  assert.match(result.code, /eval\(payload\)/)
+  assert.match(result.code, /eval\('log\(2\)'\)/)
+  assert.match(result.code, /var alias = eval/)
+  // The value of the call is observable, so both evals still execute here.
+  assert.deepEqual(runSnippet(result.code).logged, [[1], [2], ['function', 'number', 'number']])
+})
+
+test('eval-unwrap: refuses shadowed eval bindings', () => {
+  const source = `function f(eval) { eval('log(1)'); } f(function (text) { log(text); });`
+  const result = transform(evalUnwrap, source)
+  assert.equal(result.changed, false)
+  assert.ok(result.notes.some((note) => note.includes('shadows eval')))
+  assert.match(result.code, /eval\('log\(1\)'\)/)
+})
+
+test('eval-unwrap: refuses eval bodies with a directive prologue', () => {
+  const source = `function f() { log('enter'); eval('"use strict"; var strictValue = 1'); return typeof strictValue; } log(f());`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, false)
+  assert.ok(result.notes.some((note) => note.includes('starts with a directive')))
+})
+
+test('eval-unwrap: refuses eval bodies that declare functions', () => {
+  const source = `function f() { log('enter'); eval('function inner() { return 1 }'); return typeof inner; } log(f());`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, false)
+  assert.ok(result.notes.some((note) => note.includes('declares a function')))
+})
+
+test('eval-unwrap: refuses eval bodies that do not parse', () => {
+  const source = `function f() { log('enter'); try { eval('return 1'); } catch (error) { return 'threw'; } return 'fell'; } log(f());`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, false)
+  assert.ok(result.notes.some((note) => note.includes('does not parse cleanly')))
+})
+
+test('eval-unwrap: records a repeated refusal note only once', () => {
+  const source = `function f(eval) { eval('log(1)'); eval('log(1)'); } f(function () {});`
+  const result = transform(evalUnwrap, source)
+  const shadowNotes = result.notes.filter((note) => note.includes('shadows eval'))
+  assert.equal(shadowNotes.length, 1, JSON.stringify(result.notes))
+})
+
+test('eval-unwrap: Function constructor becomes a function expression', () => {
+  const source = `var add = new Function('a', 'b', 'return a + b'); log(add(1, 2), add.length, Function('return 42')());`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, true)
+  assert.ok(!result.code.includes('new Function'))
+  assert.match(result.code, /function \(a, b\)/)
+  assert.deepEqual(runSnippet(result.code).logged, [[3, 2, 42]])
+  assert.ok(result.changes.some((change) => change.rule === 'function-constructor'))
+})
+
+test('eval-unwrap: a rewritten constructor keeps reading its global scope', () => {
+  const source = `var reader = Function('return typeof Math.max'); log(reader());`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, true)
+  assert.deepEqual(runSnippet(result.code).logged, [['function']])
+})
+
+test('eval-unwrap: Function constructor refusals keep the call intact', () => {
+  const cases = [
+    { source: `log('pre'); var nothing = new Function(); log(typeof nothing);`, note: null },
+    { source: `var param = 'a'; log('pre'); var f = new Function(param, 'return 1'); log(typeof f);`, note: null },
+    {
+      source: `function g(Function) { return new Function('return 1'); } log(typeof g);`,
+      note: 'shadows Function',
+    },
+    { source: `log('pre'); var f = new Function('a-b', 'return 1'); log(typeof f);`, note: 'parameters are not plain identifiers' },
+    { source: `'use strict'; log('pre'); var f = new Function('return typeof this'); log(f());`, note: 'in strict code' },
+    {
+      source: `log('pre'); var f = new Function('async function inner() { return await 1 }'); log(typeof f);`,
+      note: 'uses await/super/new.target',
+    },
+    {
+      source: `log('pre'); var f = new Function('class A { m() { return super.toString(); } }'); log(typeof f);`,
+      note: 'uses await/super/new.target',
+    },
+    {
+      source: `function outer() { var local = 1; return new Function('return local'); } log(typeof outer);`,
+      note: "reads local 'local'",
+    },
+    { source: `log('pre'); var f = new Function('return ('); log(typeof f);`, note: 'parse failed' },
+  ]
+  for (const { source, note } of cases) {
+    const result = transform(evalUnwrap, source)
+    assert.equal(result.changed, false, `unexpected rewrite for: ${source}\n${result.code}`)
+    assert.match(result.code, /Function\(/)
+    if (note) assert.ok(result.notes.some((entry) => entry.includes(note)), `${note} missing from ${JSON.stringify(result.notes)}`)
+  }
+})
+
+test('eval-unwrap: a body that only reads globals still folds inside a closure', () => {
+  const source = `
+function outer() {
+  var local = 41;
+  var read = new Function('return typeof Math.max');
+  return local - 1 + ':' + read();
+}
+log(outer());
+`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, true)
+  assert.ok(!result.code.includes('new Function'))
+  assert.deepEqual(runSnippet(result.code).logged, [['40:function']])
+})
+
+test('eval-unwrap: a body reading an enclosing local is refused', () => {
+  const source = `
+function outer() {
+  var local = 41;
+  var read = new Function('return typeof local');
+  return read();
+}
+log(outer());
+`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, false)
+  assert.ok(result.notes.some((note) => note.includes("reads local 'local'")))
+  assert.deepEqual(runSnippet(result.code).logged, [['undefined']])
+})
+
+test('eval-unwrap: decodes printable atob literals', () => {
+  const source = `log(atob('aGk='), atob(\`aGk=\`));`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, true)
+  assert.ok(!result.code.includes('atob('))
+  assert.deepEqual(runSnippet(result.code).logged, [['hi', 'hi']])
+  assert.equal(result.changes.filter((change) => change.rule === 'atob').length, 2)
+})
+
+test('eval-unwrap: folds atob through every global alias', () => {
+  const source = `log(window.atob('aGk='), self.atob('aGk='), globalThis.atob('aGk='));`
+  const result = transform(evalUnwrap, source)
+  assert.equal(result.changed, true)
+  assert.ok(!result.code.includes('atob('), result.code)
+  assert.match(result.code, /'hi', 'hi', 'hi'/)
+  assert.equal(result.changes.filter((change) => change.rule === 'atob').length, 3)
+})
+
+test('eval-unwrap: atob refusals are noted and left untouched', () => {
+  const cases = [
+    { source: `log('pre'); log(atob('aGk'));`, note: 'not plain base64' },
+    { source: `log('pre'); log(atob('aGk*'));`, note: 'not plain base64' },
+    { source: `log('pre'); log(atob('YO=='));`, note: 'not canonical base64' },
+    { source: `log('pre'); log(atob('AA=='));`, note: 'decodes to non-printable bytes' },
+    { source: `log('pre'); log(window['atob']('aGk='));`, note: null },
+    { source: `log('pre'); log(atob('aGk=', 'extra'));`, note: null },
+    { source: `log('pre'); function f(atob) { return atob('aGk='); } log(f(function (s) { return s; }));`, note: null },
+    {
+      source: `log('pre'); var scope = { atob: function (s) { return s; } }; var out; with (scope) { out = atob('aGk='); } log(out);`,
+      note: null,
+    },
+    {
+      source: `function f() { atob('aGk='); return 'prologue'; } log(f());`,
+      note: null,
+    },
+    { source: `log('pre'); log(other.atob('aGk='));`, note: null },
+  ]
+  for (const { source, note } of cases) {
+    const result = transform(evalUnwrap, source)
+    assert.equal(result.changed, false, `unexpected rewrite for: ${source}\n${result.code}`)
+    assert.match(result.code, /atob/)
+    if (note) assert.ok(result.notes.some((entry) => entry.includes(note)), `${note} missing from ${JSON.stringify(result.notes)}`)
+  }
+})
+
+test('eval-unwrap: folds printable String.fromCharCode call arguments', () => {
+  const source = `log(String.fromCharCode(104, 105), String.fromCharCode(10));`
+  const result = assertSemanticsPreserved(evalUnwrap, source)
+  assert.equal(result.changed, true)
+  assert.ok(!result.code.includes('fromCharCode'))
+  assert.deepEqual(runSnippet(result.code).logged, [['hi', '\n']])
+  assert.ok(result.changes.some((change) => change.rule === 'fromCharCode'))
+})
+
+test('eval-unwrap: fromCharCode refusals are noted and left untouched', () => {
+  const cases = [
+    { source: `log('pre'); log(String.fromCharCode(-1));`, note: 'non-printable units' },
+    { source: `log('pre'); log(String.fromCharCode(104, dynamic));`, note: null },
+    { source: `log('pre'); log(String.fromCharCode());`, note: null },
+    { source: `log('pre'); log(String['fromCharCode'](104));`, note: null },
+    { source: `log('pre'); log(helper.fromCharCode(104));`, note: null },
+    { source: `function f(String) { return String.fromCharCode(104); } log(f(function () { return 'x'; }));`, note: null },
+    {
+      source: `function f() { String.fromCharCode(117, 115, 101); return 'prologue'; } log(f());`,
+      note: null,
+    },
+  ]
+  for (const { source, note } of cases) {
+    const result = transform(evalUnwrap, source)
+    assert.equal(result.changed, false, `unexpected rewrite for: ${source}\n${result.code}`)
+    assert.match(result.code, /fromCharCode/)
+    if (note) assert.ok(result.notes.some((entry) => entry.includes(note)), `${note} missing from ${JSON.stringify(result.notes)}`)
+  }
+})
+
+test('eval-unwrap: is idempotent and declares the pipeline contract', () => {
+  assert.equal(evalUnwrap.meta.id, 'eval-unwrap')
+  assert.equal(evalUnwrap.meta.order, 80)
+  assert.equal(evalUnwrap.meta.idempotent, true)
+  const source = `eval('log("once")'); var f = new Function('a', 'return a * 2'); log(f(21), atob('aGk='), String.fromCharCode(33));`
+  const first = transform(evalUnwrap, source)
+  const second = transform(evalUnwrap, first.code)
+  assert.equal(first.changed, true)
+  assert.equal(second.changed, false, second.code)
 })
