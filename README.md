@@ -30,11 +30,16 @@ sample ──► static analysis ──► Babel restoration ──► traceless
 | Suite II: 30 further works + 100KB effective-code gate | `examples/suite/` (10 SDKs, 12 virus samples, 8 apps; contract runner measures effective code) | `node examples/suite/run-all.mjs` — 30/30, 562.8KB effective; `tests/examples-suite.test.js` — 6/6 |
 | MEGA: 18 pure-JS single-file works, 70.32MB effective code | `examples/mega/` (8 virus samples, 8 security SDKs, 2 apps; one JS file each, no imports/modules) | `node examples/mega/run-all.mjs` — 18/18, 70.32MB effective, ≥50MB gate; `tests/examples-mega.test.js` — 4/4 |
 
-**484 tests across 43 test files, 0 failures** (`pnpm test`), with 96.98 %
-line / 88.78 % function coverage (`--experimental-test-coverage`). The hardened
-SDK example contributes 13 end-to-end tests and a 37-check revalidation matrix;
-the product suite adds 50 complete commercial/military-grade packages with a
-contract-checking runner; the MEGA suite adds 18 single-file works whose
+**600 tests across 46 test files, 0 failures** (`pnpm test`), with coverage
+measured on two scopes (`--experimental-test-coverage`): **97.22 % lines /
+74.41 % branches / 90.43 % functions** over the whole tree, and **93.02 / 83.05 /
+91.48** over `tools/` only (`--test-coverage-exclude='examples/**'`). The review
+gate (88.08 / 75.26 / 80.33) applies to the second scope, because `examples/` is
+outside `tools/`; that scope clears the baseline on all three metrics. The suite
+also asserts that no engine `Aborted(` assertion line reaches stderr. The
+hardened SDK example contributes 13 end-to-end tests and a 37-check revalidation
+matrix; the product suite adds 50 complete commercial/military-grade packages
+with a contract-checking runner; the MEGA suite adds 18 single-file works whose
 effective code (comments and blank lines stripped) totals **70.32MB**, enforced
 by a ≥50MB gate.
 
@@ -42,7 +47,7 @@ by a ≥50MB gate.
 
 ```bash
 pnpm install                # Node >= 24.18 (needs @babel/* 8, pino, quickjs-emscripten)
-pnpm test                   # 484 tests
+pnpm test                   # 600 tests
 
 # Full analysis (static + dynamic + report)
 node tools/cli.js analyze examples/sample-loader.js
@@ -143,7 +148,12 @@ the probe, not the implementation, so regressions are caught as detection.
    case where the runtime cannot be released at all: it is abandoned, the WASM
    module is quarantined and the next run recompiles it
    (`docs/SECURITY-MODEL.md`). Guest runs are serialized one at a time per
-   process, so a timeout can never interrupt a run parked at an `await`.
+   process, so a timeout can never interrupt a run parked at an `await`. Handle
+   lifetime is a first-class invariant for platform surfaces too: observer
+   entries are built at delivery time and their target duplicates released after
+   use, and canvas handles that outlive the bridge call (`FontFaceSet` faces,
+   `toBlob` and `img.src` tasks) are retained and released, so a legitimate
+   sample cannot trip the engine's leak assertion.
 
 2. **Coherent seeded profile.** UA, `navigator.platform`, `navigator.userAgentData`,
    screen geometry/DPR, timezone + offset, locale, fonts, WebGL vendor/renderer,
@@ -258,7 +268,7 @@ final round, because it declares `meta.deferred`. The generated output is
 re-parsed before it is returned: `restore()` exposes `outputValid`,
 `outputError` and `notes`, and falls back to the input source rather than hand
 back code that does not parse. Passes are unit-tested by executing original vs
-transformed code in plain Node (`tests/restore-*.test.js`, 8 files / 119 tests).
+transformed code in plain Node (`tests/restore-*.test.js`, 8 files / 147 tests).
 
 ## JSVMP support
 
@@ -349,9 +359,17 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
 - A stack-limit breach (main script, timer or promise callback) leaves the
   runtime unreleasable. It is abandoned and the module recompiled; the record
   states it as `disposal { ok:false, leaked:true, stage:'runtime', skipped:true }`.
-- A guest that sets `error.name = 'InternalError'` and a stack-overflow message
-  is classified as a breach and costs one abandoned runtime. A guest that merely
-  throws `Error('stack overflow')` is not classified.
+- Stack-breach classification is **intrinsic, not name-based**: a forged
+  `{ name:'InternalError', message:'Maximum call stack size exceeded' }`, a
+  renamed `Error` and a prototype stand-in are all **not** classified, and a
+  plain `Error('stack overflow')` never was — each reports `limitsHit: []` with a
+  healthy `disposal { ok:true, errors:[] }`. The remaining residual is narrow: at
+  a **reduced `limits.stackBytes`** (where the interpreter's own stack check fires
+  instead of the WASM native stack) a guest that first triggers a *genuine*
+  overflow, catches it and reuses the caught error's prototype can forge the
+  second classification — costing one abandoned runtime for a run that already
+  had a real breach. At the default 1 MB limit the overflow is a host throw and
+  no guest-reachable prototype exists (`docs/SECURITY-MODEL.md`).
 
 **Environment (28 modules)**
 
@@ -388,7 +406,12 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
   are absent and reported as such.
 - Canvas, WebGL, audio and font surfaces return **deterministic profile values**,
   not pixels: there is no layout or rendering engine, and
-  `getBoundingClientRect` returns profile-derived geometry.
+  `getBoundingClientRect` returns profile-derived geometry. `new ImageData(w, h)`
+  does install a real own `Uint8ClampedArray` `data` view (transparent black,
+  Chrome's dimension rules, 64 MiB ceiling) and `getLineDash` is tracked through
+  `save()`/`restore()`, but the shared class factory cannot see
+  `arguments.length`, so `new ImageData(2)` reports the height rule instead of
+  Chrome's "2 arguments required" `TypeError`.
 - `EventSource` reconnects on the virtual clock for as long as the run's
   virtual-time budget allows (the mock body ends immediately), bounded by
   `maxVirtualMs`/`maxTimerCallbacks` rather than by `EventSource` itself.
@@ -398,8 +421,13 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
 
 **Documentation and coverage**
 
-- Branch coverage is 73.56 %, 1.7 points below the review baseline; lines
-  (96.98 %) and functions (88.78 %) are above it.
+- Whole-tree branch coverage is 74.41 %, below the review baseline's 75.26 %,
+  because the example sub-suites add tens of thousands of lines of sample code
+  that the tests execute rather than assert on. The review gate is applied to the
+  `tools/` scope, where this tree measures **93.02 % lines / 83.05 % branches /
+  91.48 % functions** against a baseline of 88.08 / 75.26 / 80.33 — all three
+  above it. Both commands and both scopes are recorded in
+  `docs/VERIFICATION.md`.
 
 ## Safety
 
