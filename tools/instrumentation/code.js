@@ -98,10 +98,8 @@ export function createCodeInstrumenter(options) {
       const kind = bridge.int(args, 0, -1)
       const id = bridge.int(args, 1, -1)
       const meta = plan.get(id)
-      // Never dump arbitrary guest objects here: that would run getters and
-      // change observable behaviour. Primitives are summarised; objects are
-      // reported by type only.
-      const value = args.length > 2 ? summarizeArgument(ctx, bridge, args[2], errorGate) : undefined
+      // Once the trace budget is exhausted, refuse further work before paying
+      // any FFI conversion: the truncation path must be free.
       if (emitted >= maxEvents) {
         if (!truncated) {
           truncated = true
@@ -109,6 +107,10 @@ export function createCodeInstrumenter(options) {
         }
         return args[2]
       }
+      // Never dump arbitrary guest objects here: that would run getters and
+      // change observable behaviour. Primitives are summarised; objects are
+      // reported by type only (see summarizeArgument).
+      const value = args.length > 2 ? summarizeArgument(ctx, bridge, args[2], errorGate) : undefined
       if (meta) {
         // A caught error is about to be observed by guest code: rewrite its
         // stack in place so `<eval>`/host paths never reach the sample.
@@ -122,6 +124,10 @@ export function createCodeInstrumenter(options) {
           }
         }
         emitted += 1
+        // One summary shared by both sinks: computing it twice paid double FFI
+        // on every traced step. The summary is a fresh plain object per call
+        // site, so sharing the reference across trace and hooks is safe.
+        const stepValue = value === undefined ? undefined : summarize(value)
         trace?.emit('code', 'step', {
           event: meta.event,
           id,
@@ -130,14 +136,14 @@ export function createCodeInstrumenter(options) {
           fn: meta.fn,
           opcode: meta.opcode,
           caseIndex: meta.caseIndex,
-          value: value === undefined ? undefined : summarize(value),
+          value: stepValue,
         })
         if (meta.event === 'catch' && exception) exception.reportCaught(value, meta)
         if (meta.event === 'throw' && exception) exception.reportThrown(value, meta)
         if (hooks) {
           hooks.emit(meta.event === 'catch' ? 'exception:catch' : 'code:step', {
             site: meta,
-            value: value === undefined ? undefined : summarize(value),
+            value: stepValue,
             origin: 'code-instrumentation',
           })
         }

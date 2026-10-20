@@ -402,6 +402,17 @@ export function createHookBus(options = {}) {
     },
 
     /** Introspection for reports. */
+    /**
+     * Whether any hook is registered for the phase. Lets hot paths skip
+     * building expensive payloads when nobody is listening.
+     * @param {string} phase
+     * @returns {boolean}
+     */
+    hasListeners(phase) {
+      const registrations = registry.get(normalizePhase(phase))
+      return registrations !== undefined && registrations.length > 0
+    },
+
     describe() {
       const out = []
       for (const [phase, list] of registry) {

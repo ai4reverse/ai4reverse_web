@@ -241,7 +241,11 @@ export function createApiInstrumenter(options) {
         rethrow(error)
       }
       trace?.emit('api', 'after', { api: label, result: truncate(bridge.value([result.value], 0)) })
-      hooks?.emit('api:after', { api: label, result: bridge.fromGuest(result.value), args: truncate(argsPlain) })
+      // The deep fromGuest dump is the expensive part of this payload; skip
+      // it entirely when no api:after hook is listening.
+      if (hooks?.hasListeners('api:after')) {
+        hooks?.emit('api:after', { api: label, result: bridge.fromGuest(result.value), args: truncate(argsPlain) })
+      }
       return result.value
     })
     // Wrap on the object that owns the property (WebIDL shape): instances keep
@@ -299,9 +303,13 @@ export function createApiInstrumenter(options) {
             stats.failed += 1
             rethrow(error)
           }
-          const summary = bridge.fromGuest(call.value)
-          trace?.emit('api', 'after', { api: `${label}:get`, result: truncate(summary) })
-          hooks?.emit('api:after', { api: `${label}:get`, result: summary })
+          // The deep fromGuest dump only pays off when someone consumes it:
+          // the trace records a truncated copy, hooks get the full summary.
+          if (trace || hooks?.hasListeners('api:after')) {
+            const summary = bridge.fromGuest(call.value)
+            trace?.emit('api', 'after', { api: `${label}:get`, result: truncate(summary) })
+            hooks?.emit('api:after', { api: `${label}:get`, result: summary })
+          }
           return call.value
         })
       : null
