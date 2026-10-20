@@ -25,29 +25,38 @@ sample ──► static analysis ──► Babel restoration ──► traceless
 | Logging (pino / pino-pretty) | `tools/logging/` | `tests/logging.test.js` |
 | Browser-grade environment, 28 modules (documented limits, no WASM execution) | `tools/sandbox/env/` | `tests/env-*.test.js`, `tests/env-surface.test.js`, `tests/env-fidelity.test.js` |
 | Hardened national JS-SDK (SM2/SM3/SM4 signing, device fingerprint, white-box crypto, JSVMP, zero-trust guard) | `examples/national-sdk/` | `tests/national-sdk.test.js`, `examples/national-sdk/verify.mjs` |
-| 50 commercial/military-grade product examples | `examples/products/` (50 packages + runner + index) | `node examples/products/run-all.mjs` — 50/50; `tests/examples-products.test.js` — 6/6 |
-| 30 complete commercial works (10 security SDKs, 12 virus samples, 8 applications) | `examples/works/` (each with manifest, dossier, entrypoint, verification) | `node examples/works/run-all.mjs` — 30/30; `tests/examples-works.test.js` — 6/6 |
-| Suite II: 30 further works + 100KB effective-code gate | `examples/suite/` (10 SDKs, 12 virus samples, 8 apps; contract runner measures effective code) | `node examples/suite/run-all.mjs` — 30/30, 562.8KB effective; `tests/examples-suite.test.js` — 6/6 |
-| MEGA: 18 pure-JS single-file works, 70.32MB effective code | `examples/mega/` (8 virus samples, 8 security SDKs, 2 apps; one JS file each, no imports/modules) | `node examples/mega/run-all.mjs` — 18/18, 70.32MB effective, ≥50MB gate; `tests/examples-mega.test.js` — 4/4 |
 
-**600 tests across 46 test files, 0 failures** (`pnpm test`), with coverage
-measured on two scopes (`--experimental-test-coverage`): **97.22 % lines /
-74.41 % branches / 90.43 % functions** over the whole tree, and **93.02 / 83.05 /
-91.48** over `tools/` only (`--test-coverage-exclude='examples/**'`). The review
-gate (88.08 / 75.26 / 80.33) applies to the second scope, because `examples/` is
-outside `tools/`; that scope clears the baseline on all three metrics. The suite
-also asserts that no engine `Aborted(` assertion line reaches stderr. The
-hardened SDK example contributes 13 end-to-end tests and a 37-check revalidation
-matrix; the product suite adds 50 complete commercial/military-grade packages
-with a contract-checking runner; the MEGA suite adds 18 single-file works whose
-effective code (comments and blank lines stripped) totals **70.32MB**, enforced
-by a ≥50MB gate.
+**612 tests across 42 test files, 0 failures** on commit `7c1df9c`, the
+`tools/` alignment commit these counts are pinned to:
+
+```bash
+node --test --test-concurrency=1 $(git ls-files 'tests/*.test.js')
+ℹ tests 612   ℹ pass 612   ℹ fail 0
+```
+
+Coverage is recorded on two scopes (`--experimental-test-coverage`): **90.32 %
+lines / 78.88 % branches / 86.92 % functions** over the whole committed tree,
+and **92.99 / 82.68 / 90.62** over `tools/` only
+(`--test-coverage-exclude='examples/**'`). The review baseline
+(88.08 / 75.26 / 80.33) was measured on the `tools/` scope; that scope clears it
+on all three metrics, and the whole-tree scope is above it as well. The suite
+also asserts that no engine `Aborted(` assertion line reaches stderr: one line of
+hostile recursion cannot disable the process, and the record says what happened.
+The hardened SDK example contributes 13 end-to-end tests and a 37-check
+revalidation matrix.
+
+Every number in this README is produced by a command named in
+`docs/VERIFICATION.md` and pinned to that commit, so it stays reproducible after
+later commits land. Example corpora that are not tracked at `7c1df9c`
+(`examples/products`, `examples/works`, `examples/suite`, `examples/mega`) are
+outside that measurement: they are not described here and are excluded from
+every count in this file.
 
 ## Quick start
 
 ```bash
 pnpm install                # Node >= 24.18 (needs @babel/* 8, pino, quickjs-emscripten)
-pnpm test                   # 600 tests
+pnpm test                   # 612 tests (commit 7c1df9c)
 
 # Full analysis (static + dynamic + report)
 node tools/cli.js analyze examples/sample-loader.js
@@ -61,13 +70,7 @@ node tools/cli.js restore examples/sample-loader.js
 # Raw dynamic run with the trace stream
 node tools/cli.js run examples/sample-loader.js --events
 
-# 50-product suite and 30 complete works (SDKs / viruses / apps)
-node examples/products/run-all.mjs
-node examples/works/run-all.mjs
-node examples/suite/run-all.mjs       # includes the ≥100KB effective-code gate
-node examples/mega/run-all.mjs        # 18 single-file works, ≥50MB effective-code gate
-
-# Every example, sample and demo
+# Every committed example, sample and demo
 bash examples/cli-usage.sh
 node examples/api-usage.mjs
 node examples/hooks-demo.mjs
@@ -80,30 +83,11 @@ node examples/national-sdk/demo.mjs
 node examples/national-sdk/verify.mjs
 ```
 
-`examples/README.md` maps each sample to its obfuscation technique and the
-behaviour the platform should report (verdict, IOCs, artifacts, restored code,
-JSVMP opcode trace). `examples/products/` adds 50 complete product packages
-(banking/web3/ransomware/APT/botnet/adtech/evasion/C2/supply-chain), each with a
-manifest contract, README dossier, runnable sample and a runner that validates
-the analysis output. `tests/examples.test.js` and
-`tests/examples-products.test.js` keep the documentation and contracts honest.
-`examples/works/` adds 30 complete works — 10 JS security SDKs, 12 virus
-samples and 8 applications — each with a machine-checkable `work.json`, a
-Chinese dossier, a runnable entrypoint and its own verification
-(`verify.mjs` / sandbox contract / `--self-test`).
-`examples/suite/` adds a further 30 works (10 security SDKs, 12 virus samples,
-8 applications) with a hard code-volume gate: the runner strips comments and
-blank lines, enforces **≥100KB effective code** (currently ~563KB) and fails on
-any contract or volume drift.
-`examples/mega/` is the volume and protection stress suite: **18 single-file,
-100% pure-JavaScript, zero-dependency works** (8 virus samples, 8 security SDKs,
-2 applications) with no imports, no modules and no second code file. Each work
-embeds black-hole multi-layer obfuscation, a fortress nested JSVMP, ≥3 dynamic
-implicit white-box suites, ≥3 mutated/custom ciphers, ≥3 custom encodings with
-mixed pipelines, and rendering-engine-level probes including `document.all`.
-The runner executes every work, checks its `MEGA METRICS`, and enforces
-**≥2.8MB effective code per work and ≥50MB across the suite** (currently
-**70.32MB effective / 70.47MB raw**).
+`examples/README.md` maps each committed sample to its obfuscation technique and
+the behaviour the platform should report (verdict, IOCs, artifacts, restored
+code, JSVMP opcode trace). `tests/examples.test.js` keeps that documentation and
+the sample contracts honest: every committed sample executes, and every `.mjs`
+demo plus `examples/cli-usage.sh` run offline.
 
 `examples/national-sdk/` is the opposite end of the spectrum: a **hardened SDK**
 for request signing and device-fingerprint collection. It combines Chinese
@@ -246,9 +230,20 @@ the probe, not the implementation, so regressions are caught as detection.
 | 130 | `anti-fingerprint` | `HTMLElement`/tag interfaces/`customElements`, symbol and key filtering |
 
 `platform-kit.js` and `index.js` are the shared helper layer and the loader;
-they are not modules. A subset install (`env: { only: [...] }`) either works or
-fails loudly with a `SandboxError` — a `requires` edge is never silently
-dropped.
+they are not modules. A subset install (`env: { only: [...] }`) is validated
+against `requires`, but strictness differs by entry point:
+`installEnvironment(bridge, { strict: true })` — the library default — throws a
+`SandboxError` on an unmet edge, while
+`TracelessSandbox.create({ env: { only } })` defaults to `strict: false` and
+installs every module whose requirements are satisfied, so a dropped surface
+shows up as `undefined` in the guest. Pass `env: { strict: true }` when a missing
+surface must fail the run. The run record reports
+`environment: { installed, missing, requested, complete }`.
+
+Notable surfaces: `DOMParser`/`XMLSerializer` brand as `[object DOMParser]` /
+`[object XMLSerializer]`, `EventSource` as `[object EventSource]`, and
+`CustomElementRegistry` is a real global (`customElements` is instance-shaped but
+not `instanceof` it).
 
 Network is **fully mocked**: policies `deny` (realistic `net::ERR_*` failure),
 `empty` (204) or `echo`; handler/routing hooks can return synthetic responses.
@@ -293,15 +288,22 @@ the CLI keeps stdout for results and stderr for diagnostics.
 ## CLI, packaging and public surface
 
 ```
-node tools/cli.js analyze <file> [--json|--out path] [--no-dynamic] [--no-restore]
-                                [--seed N] [--timeout ms] [--virtual-ms ms]
-                                [--level off|function|branch|statement]
-                                [--source-url url] [--entry fn] [--arg JSON|string]
-                                [--profile JSON] [--mocks JSON] [--log-level L] [--pretty]
-node tools/cli.js restore <file>  [--passes ids] [--exclude ids] [--rounds 1-5] [--out path]
-node tools/cli.js run <file>      [--json] [--events]
+node tools/cli.js analyze <file> [options]
+node tools/cli.js restore <file> [options] [--passes ids] [--exclude ids] [--rounds 1-5]
+node tools/cli.js run <file> [--json|--out path] [--events]
 node tools/cli.js passes [--json]
+node tools/cli.js version
+
+shared options:
+  --json | --out <path|-> | --seed N | --timeout ms | --virtual-ms ms
+  --level off|function|branch|statement | --no-dynamic | --no-restore
+  --run-restored | --source-url url | --entry fn | --arg JSON|string
+  --profile JSON | --mocks JSON | --log-level L | --pretty
 ```
+
+The option parser is shared by `analyze`, `restore` and `run`, so `restore` also
+accepts `--json`, `--seed`, `--out` and `--level`; `--passes`, `--exclude` and
+`--rounds` are restore-specific and `--events` is run-specific.
 
 Argument parsing is **strict**: an unknown option, a malformed `--seed`, a
 `--rounds` outside 1–5, a `--level` outside the four documented values, an
@@ -331,6 +333,25 @@ weights, sample hash, static facts/obfuscation indicators/techniques, IOCs
 exceptions/kill-chain), staged-payload artifacts, JSVMP trace summary, hook
 audit, integrity drift and recommended next steps.
 
+Evidence the report keeps:
+
+- **Attribution.** Trace events the platform emits while it builds the
+  environment (`document.installed`, `api.wrapped`, ...) are counted as
+  `dynamic.behavior.counts.platform` and never feed a behavioural reason, so a
+  sample cannot borrow suspicion from the sandbox's own setup. `dynamic.counts`
+  keeps the raw per-kind totals.
+- **Truncation.** `tracing.truncated` / `tracing.truncatedBy` (`code-budget`,
+  `event-limit`) stay true even when the `code:trace-truncated` marker fell out
+  of the retained window, and Markdown prints a `**Trace truncated:**` line.
+- **Restoration failure.** `static.restoration.error` records that the pipeline
+  threw (with the message), so a bail-out is no longer indistinguishable from
+  "nothing to restore"; Markdown prints `**Restoration error:**`.
+- **Hook failures.** `hooks.errors` keeps the newest 50 failing hooks (each
+  `{hook, phase, message}`) plus `hooks.errorsTruncated`.
+
+All four are Markdown-visible: `Platform events (not sample behaviour)`,
+`Trace truncated`, `Restoration error`, `Hook errors`.
+
 ## Known limitations (honest list)
 
 Every item below is measured on this tree; `docs/VERIFICATION.md` records the
@@ -346,9 +367,25 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
 - Wrapped APIs that throw synchronously re-throw with the same name/message, but
   the stack originates at the wrapper call site
   (`tools/instrumentation/api.js`).
-- Fixed per-run cost is ~28 % above the pre-alignment tree (≈33 ms for `1+1`
-  instead of ≈26 ms) because each run compiles the environment's guest sources.
-  The cost is per run, not per statement, and `restore` is unchanged.
+- Fixed per-run cost is ~30 % above the pre-alignment tree (`1b0f2c7`): a
+  create + run + dispose cycle of `1+1` measured 34.4 ms against 26.0 ms (median
+  of 9 runs each on one host; earlier measurements on this tree ranged 26-33 %).
+  The cost is per run, not per statement, because each run compiles the
+  environment's guest sources; `restore` is unchanged.
+- Stack breaches are expensive in host memory: each abandoned runtime keeps its
+  WASM module's heap until the quarantined module is collected. Measured here,
+  six consecutive breaches added **21.7 MB RSS** (~17 MB in the final-audit
+  measurement), and the process keeps working (`1+1` still returns `ok:true`).
+  That is the price of continuing in the same process instead of restarting it;
+  a long batch of hostile samples should use worker processes per batch.
+- Host heap is not covered by `limits.memoryBytes`. Values a host callback
+  creates are released when the call returns (per-call bag), long-lived handles
+  are bridge-owned and freed once at teardown, a handle returned by `bridge.fn`
+  is transferred by the trampoline instead of duplicated, and a deferred promise
+  releases its host handles when it settles (or at the next call). A 20 000-call
+  loop therefore stays on a plateau (`tests/sandbox-core.test.js`), but there is
+  no host-heap cap: a sample that makes orders of magnitude more host calls is
+  bounded by the timeout, not by `memoryBytes`.
 
 **Concurrency**
 
@@ -361,10 +398,24 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
   states it as `disposal { ok:false, leaked:true, stage:'runtime', skipped:true }`.
 - Stack-breach classification is **intrinsic, not name-based**: a forged
   `{ name:'InternalError', message:'Maximum call stack size exceeded' }`, a
-  renamed `Error` and a prototype stand-in are all **not** classified, and a
-  plain `Error('stack overflow')` never was — each reports `limitsHit: []` with a
-  healthy `disposal { ok:true, errors:[] }`. The remaining residual is narrow: at
-  a **reduced `limits.stackBytes`** (where the interpreter's own stack check fires
+  renamed `Error`, a plain `Error('stack overflow')` and a prototype stand-in are
+  all **not** classified — each reports `limitsHit: []` with a healthy
+  `disposal { ok:true, errors:[] }`. Two engine shapes exist and both classify
+  identically: a host `RangeError` thrown out of `evalCode`/`callFunction`/
+  `executePendingJobs`, and the same overflow converted at a host-callback
+  boundary into a guest `Error`. The second shape is certified by a host-side
+  counter the guest cannot write (`runtime.stackSignals()`), which is also why a
+  guest that *swallows* the converted overflow still returns `ok:true` with
+  `limitsHit: ['stack']`. Guest-side evidence is used only where no host throw
+  exists (a reduced `limits.stackBytes`), and it is prototype identity against
+  the engine's own `InternalError.prototype` — captured before the guest can see
+  it, and revoked for the run if an environment module has to expose an
+  unwrapped `InternalError` (`env/stack.js`, Firefox). A classified run always
+  reports `error.stack === ''` and the same
+  `disposal { ok:false, leaked:true, stage:'runtime', skipped:true }`, and 40
+  consecutive recursion runs in the full environment produce one identical
+  record (`tests/resilience.test.js`). The remaining residual is narrow: at a
+  **reduced `limits.stackBytes`** (where the interpreter's own stack check fires
   instead of the WASM native stack) a guest that first triggers a *genuine*
   overflow, catches it and reuses the caught error's prototype can forge the
   second classification — costing one abandoned runtime for a run that already
@@ -384,10 +435,12 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
   HTML5 insertion-mode algorithm (foster parenting, adoption agency, implied
   table sections), no namespaces, a CSS-subset selector engine, and parsed
   `canvas`/`img`/`audio`/`video` tags are plain shim elements.
-- Per-tag interfaces are **minimal**: 39 `HTML*Element` constructors exist and
-  `instanceof` works (structurally for the four tags the canvas module owns), but
-  each interface carries only the members the shim defines. Interface
-  constructors have an own `Symbol.hasInstance` a browser does not have.
+- Per-tag interfaces are **minimal**: 39 tag interfaces exist (40 `HTML*Element`
+  globals including `HTMLElement`) and `instanceof` works (structurally for the
+  four tags the canvas module owns), but each interface carries only the members
+  the shim defines. Interface constructors have an own `Symbol.hasInstance` a
+  browser does not have, and `customElements` is an instance-shaped object that is
+  not `instanceof CustomElementRegistry` even though the constructor is global.
 - `DocumentType` exists but is **never instantiated**: `new DocumentType()`
   throws `TypeError` and `document.implementation.createDocumentType()` returns
   an object that is not `instanceof DocumentType`. `Attr`, `Range` and
@@ -411,23 +464,28 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
   Chrome's dimension rules, 64 MiB ceiling) and `getLineDash` is tracked through
   `save()`/`restore()`, but the shared class factory cannot see
   `arguments.length`, so `new ImageData(2)` reports the height rule instead of
-  Chrome's "2 arguments required" `TypeError`.
+  Chrome's "2 arguments required" `TypeError`. `getImageData` refuses a source
+  larger than 4 MiB with a `RangeError` instead of allocating it.
 - `EventSource` reconnects on the virtual clock for as long as the run's
   virtual-time budget allows (the mock body ends immediately), bounded by
   `maxVirtualMs`/`maxTimerCallbacks` rather than by `EventSource` itself.
+- Hook failures are evidence with a budget: the bus keeps the newest 200
+  failures, capped at 64 KiB of message text (2 KiB per message) and sets
+  `errorsTruncated` when it drops anything; the report keeps the newest 50 and
+  says so in Markdown. A sample cannot grow the sandbox by making every hook
+  throw.
 - `restore()` returns generated text without a trailing newline, so a file
   produced by redirecting stdout re-reports `changed:true` with zero changed
   passes. `--out` files are exact and round-trip with `changed:false`.
 
 **Documentation and coverage**
 
-- Whole-tree branch coverage is 74.41 %, below the review baseline's 75.26 %,
-  because the example sub-suites add tens of thousands of lines of sample code
-  that the tests execute rather than assert on. The review gate is applied to the
-  `tools/` scope, where this tree measures **93.02 % lines / 83.05 % branches /
-  91.48 % functions** against a baseline of 88.08 / 75.26 / 80.33 — all three
-  above it. Both commands and both scopes are recorded in
-  `docs/VERIFICATION.md`.
+- Coverage is recorded on two scopes. On the `tools/` scope
+  (`--test-coverage-exclude='examples/**'`, the scope the review baseline
+  88.08 / 75.26 / 80.33 was measured on) this tree measures **92.99 % lines /
+  82.68 % branches / 90.62 % functions** — above the baseline on all three
+  metrics. The whole committed tree measures 90.32 / 78.88 / 86.92, also above
+  it. Both commands are recorded in `docs/VERIFICATION.md`.
 
 ## Safety
 
@@ -448,7 +506,7 @@ extracted payloads as live malware.
 - `docs/REPORT-SCHEMA.md` — report shape.
 - `docs/VERIFICATION.md` — every number in this README, with the command that
   produced it, plus the `D1`–`D12` disposition matrix.
-- `docs/DESIGN-REVIEW.md` — the six review passes and their dispositions.
+- `docs/DESIGN-REVIEW.md` — the seven review passes and their dispositions.
 - `docs/EVALUATION-TOOLS.md` — the `tools/` evaluation record and targets.
 - `docs/RESEARCH-ANTI-ANALYSIS.md` — researched detection techniques and the
   P0/P1/P2 requirements they impose.
