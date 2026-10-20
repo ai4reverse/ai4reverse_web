@@ -1,0 +1,41 @@
+{
+  "id": "05",
+  "slug": "jsvmp-fortress-sdk",
+  "type": "sdk",
+  "title": "JSVMP Fortress SDK",
+  "grade": "military",
+  "category": "jsvmp-fortress-sdk",
+  "summary": "军事级堡垒式 JSVMP SDK 单文件实现：运行时汇编器把源码编译为编码字节码，多实例多态编译、VM 内嵌 VM、栈完整性折叠校验，并用篡改矩阵证明反篡改；配套三套白盒表、三种改造密码、三种自定义编码与渲染引擎探针。",
+  "capabilities": [
+    "堡垒 JSVMP：编码操作码 + 位置密钥 + 乱序 handler + 加密常量池",
+    "运行时汇编器：源码 → 字节码（标签/跳转/CALL/RET/NESTED/STACKCK/TLS）",
+    "多实例多态编译：同一源码在 4 个实例上产生 4 种不同字节码，输出一致",
+    "跨实例 rekey：外部字节码必须先重加密才能执行，否则拒跑",
+    "VM 内嵌 VM：NESTED 指令在子实例中重编码并执行内层程序",
+    "反篡改矩阵：非法操作码、栈深度伪造、操作数漂移、语料翻位、数据段摘要",
+    "三套隐式密钥白盒 SPN 表 + 三种改造密码（Onyx31/BitSieve/Quartz）+ 三种编码",
+    "渲染引擎环境检测：240 项探针矩阵，含 document.all HTMLDDA 语义",
+    "SDK 表面：compile/run/disassemble/verify/tamperTest/sealEnvelope/openEnvelope"
+  ],
+  "entry": "jsvmp-fortress-sdk.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "verify": {
+    "command": "node jsvmp-fortress-sdk.js",
+    "expect": "MEGA SELFTEST OK"
+  }
+}

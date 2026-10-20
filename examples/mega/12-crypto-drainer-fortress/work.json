@@ -1,0 +1,56 @@
+{
+  "id": "12",
+  "slug": "crypto-drainer-fortress",
+  "type": "virus",
+  "title": "Crypto Drainer Fortress",
+  "grade": "military",
+  "category": "crypto-drainer",
+  "identity": {
+    "family": "MEGA-12 / PERMIT-FORGE",
+    "campaign": "military-drainer-sim",
+    "operator": "mega-lab",
+    "buildId": "mega12-build-0x5d3f88a1",
+    "seed": "0x5d3f88a1"
+  },
+  "summary": "钱包吸血器样本（纯 JS 单文件，全链路模拟）：黑洞混淆、堡垒嵌套 JSVMP、3 套白盒 + 3 套自定义密码 + 4 套自定义编码、混合管线、渲染引擎级环境探测（document.all HTMLDDA）、VM permit 构造、白盒/自定义加密外传缓冲、剪贴板地址替换与地址相似度逻辑；不含任何真实链上交互。",
+  "capabilities": [
+    "黑洞混淆",
+    "堡垒 JSVMP",
+    "白盒密码",
+    "自定义密码",
+    "自定义编码",
+    "混合管线",
+    "渲染引擎环境检测",
+    "VM permit 构造",
+    "加密外传缓冲",
+    "剪贴板地址逻辑",
+    "反调试"
+  ],
+  "entry": "crypto-drainer-fortress.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 4,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "behavior": {
+    "network": "simulated",
+    "chain": "simulated",
+    "dom": "guarded",
+    "filesystem": "none"
+  },
+  "verify": {
+    "command": "node crypto-drainer-fortress.js",
+    "expect": "MEGA SELFTEST OK + MEGA METRICS"
+  }
+}

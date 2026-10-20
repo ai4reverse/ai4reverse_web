@@ -1,0 +1,46 @@
+{
+  "id": "03",
+  "slug": "apt-beacon",
+  "type": "virus",
+  "title": "GHOSTRELAY APT Beacon",
+  "grade": "military",
+  "category": "apt-long-haul-beacon",
+  "summary": "长周期 APT 信标：抖动调度 + 死投解析器 + 任务封存，白盒混合加密与堡垒 JSVMP 保护 1MB 路由表，保持极低网络噪声并规避沙箱。",
+  "capabilities": [
+    "抖动调度（jitter）",
+    "死投（dead-drop）解析",
+    "任务封存",
+    "长窗口轮转",
+    "黑洞多层加密表",
+    "堡垒 JSVMP（嵌套 VM）",
+    "多态解码器",
+    "渲染引擎级探针",
+    "反调试（8 探针）",
+    "无头环境守卫"
+  ],
+  "entry": "apt-beacon.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 4,
+    "encodings": 4,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "mega": {
+    "effectiveBytesMin": 3400000,
+    "jsvmpOpsMin": 1000,
+    "envChecksMin": 50,
+    "segments": 10,
+    "whiteboxTables": 5800,
+    "selfTest": "node apt-beacon.js"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "id": "13",
+  "slug": "secure-messaging-sdk",
+  "type": "sdk",
+  "title": "MEGA Secure Messaging SDK",
+  "grade": "military",
+  "category": "secure-messaging",
+  "summary": "军规级端到端加密消息 SDK：混合握手（PSK + 白盒临时密钥）、三层白盒/自定义分组密码/自定义编码的混合信封、WB-MAC 防篡改、棘轮分代密钥，全流程离线自检。",
+  "entry": "secure-messaging-sdk.js",
+  "capabilities": [
+    "混合握手：PSK 派生 + 白盒临时密钥交换 + 三方 MAC 确认",
+    "信封混合管线：3 层白盒流 → 自定义分组密码 → 自定义编码（每实例顺序不同）",
+    "WB-MAC 标签与常量时间比较，篡改信封立即拒绝",
+    "棘轮分代（epoch）密钥，跨代消息拒绝、重放/伪造门控",
+    "会话指纹与 transcript 记录，便于带外校验",
+    "运行时渲染引擎环境指纹参与密钥派生"
+  ],
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "volume": {
+    "effectiveBytes": 3751121,
+    "rawBytes": 3758063,
+    "embeddedOpcodes": 252031,
+    "polymorphicVariants": 512
+  },
+  "selftest": {
+    "command": "node secure-messaging-sdk.js",
+    "expect": "MEGA SELFTEST OK"
+  }
+}

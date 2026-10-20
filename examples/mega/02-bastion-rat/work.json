@@ -1,0 +1,46 @@
+{
+  "id": "02",
+  "slug": "bastion-rat",
+  "type": "virus",
+  "title": "BASTION RAT",
+  "grade": "military",
+  "category": "remote-access-trojan",
+  "summary": "浏览器 RAT：命令总线按加权表调度键盘/屏幕/剪贴板/令牌窃取，会话密钥经白盒混合加密封存，C2 通道与持久化键全部来自黑洞表。",
+  "capabilities": [
+    "加权命令总线",
+    "会话密钥封存",
+    "C2 通道选择",
+    "持久化键",
+    "黑洞多层加密表",
+    "堡垒 JSVMP（嵌套 VM）",
+    "多态解码器",
+    "渲染引擎级探针",
+    "反调试",
+    "行为守卫（无头环境跳过 DOM 钩子）"
+  ],
+  "entry": "bastion-rat.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 4,
+    "encodings": 4,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "mega": {
+    "effectiveBytesMin": 3400000,
+    "jsvmpOpsMin": 1000,
+    "envChecksMin": 50,
+    "segments": 10,
+    "whiteboxTables": 6200,
+    "selfTest": "node bastion-rat.js"
+  }
+}

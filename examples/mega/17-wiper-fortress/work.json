@@ -1,0 +1,58 @@
+{
+  "id": "17",
+  "slug": "wiper-fortress",
+  "title": "Fortress Wiper Simulation",
+  "type": "virus",
+  "grade": "military",
+  "entry": "wiper-fortress.js",
+  "identity": {
+    "vendor": "Fortress Labs",
+    "codename": "SALT-REQUIEM",
+    "family": "wiper-sim",
+    "buildId": "WPR-17.3.8-mil",
+    "workId": "17",
+    "seed": "0x7b2c4a15",
+    "keyTag": "90086c0d"
+  },
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "metrics": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "jsvmpOps": 62000,
+    "envChecks": 68,
+    "polymorphicVariants": 12,
+    "mixedRounds": 3,
+    "documentAll": true,
+    "antiDebug": 6
+  },
+  "size": {
+    "effectiveBytes": 3743230,
+    "rawBytes": 3748043
+  },
+  "category": "wiper-fortress",
+  "summary": "军工级擦除器演练样本：内存存储/缓存/DOM 的受控销毁模拟，嵌套 JSVMP 保护例程，混合加密配置与渲染引擎环境门禁，全程无真实宿主破坏。",
+  "capabilities": [
+    "受控存储/缓存/DOM 销毁模拟",
+    "VM 保护的擦除例程",
+    "混合白盒配置解密",
+    "渲染引擎环境门禁",
+    "反调试与自完整性",
+    "合成攻击链遥测"
+  ]
+}

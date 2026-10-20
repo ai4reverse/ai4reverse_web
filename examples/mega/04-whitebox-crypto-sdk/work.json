@@ -1,0 +1,40 @@
+{
+  "id": "04",
+  "slug": "whitebox-crypto-sdk",
+  "type": "sdk",
+  "title": "Whitebox Crypto SDK",
+  "grade": "military",
+  "category": "whitebox-crypto-sdk",
+  "summary": "军事级白盒密码 SDK 单文件实现：三套隐式密钥 SPN 白盒表、三种改造密码、三种自定义编码、黑洞混淆、堡垒式嵌套 JSVMP 与渲染引擎级环境探针，导出可调用的白盒/加密/编码 API。",
+  "capabilities": [
+    "三套隐式密钥白盒 SPN 表（T-box/逆 T-box，轮数与密钥调度随实例派生）",
+    "三种非标准改造密码（13 轮 SPN 流、乘加置换、ARX 变量旋转）",
+    "三种自定义编码（自研 32 符号基、位平面交织、汉字 6bit 映射）",
+    "黑洞混淆：多层加密字符串表 + 12 种多态解码变体 + 校验和自检",
+    "堡垒 JSVMP：编码操作码、乱序处理器、常量池加密、栈完整性校验、VM 内嵌 VM",
+    "渲染引擎环境检测：document.all HTMLDDA、CSS/WebGL/canvas/字体/iframe/布局/音频等 240 项探针",
+    "混合管线：白盒→改造密码→编码 多轮按实例顺序编排",
+    "公开 SDK API：sealText/openText、whiteboxHex、cipherHex、encode/decode、vmEval"
+  ],
+  "entry": "whitebox-crypto-sdk.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "verify": {
+    "command": "node whitebox-crypto-sdk.js",
+    "expect": "MEGA SELFTEST OK"
+  }
+}

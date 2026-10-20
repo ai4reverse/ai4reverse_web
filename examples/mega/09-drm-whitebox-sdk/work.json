@@ -1,0 +1,45 @@
+{
+  "id": "09",
+  "slug": "drm-whitebox-sdk",
+  "type": "sdk",
+  "title": "DRM Whitebox SDK",
+  "grade": "commercial",
+  "category": "drm-whitebox",
+  "summary": "DRM/水印/设备绑定 SDK：扩频 LSB 水印、白盒密封内容密钥、渲染引擎级设备指纹与篡改拒绝。",
+  "capabilities": [
+    "扩频 LSB 水印嵌入/提取（位置置换 + 偏移密钥）",
+    "白盒→自定义密码→自定义编码密封内容密钥",
+    "渲染引擎级 32 字节设备指纹与绑定摘要",
+    "令牌逐块校验和编码、载体完整性摘要",
+    "错误设备/篡改令牌/篡改载体/未水印载体四类拒绝",
+    "嵌套 JSVMP 与反调试自校验"
+  ],
+  "entry": "drm-whitebox-sdk.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "metrics": {
+    "minWhitebox": 3,
+    "minCustomCiphers": 3,
+    "minEncodings": 3,
+    "minJsvmpOps": 1000,
+    "minEnvChecks": 50,
+    "minPolymorphicVariants": 10,
+    "minMixedRounds": 1,
+    "documentAll": true,
+    "minAntiDebug": 1
+  }
+}

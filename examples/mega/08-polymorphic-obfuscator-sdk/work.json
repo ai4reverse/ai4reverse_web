@@ -1,0 +1,45 @@
+{
+  "id": "08",
+  "slug": "polymorphic-obfuscator-sdk",
+  "type": "sdk",
+  "title": "Polymorphic Obfuscator SDK",
+  "grade": "commercial",
+  "category": "polymorphic-obfuscator",
+  "summary": "黑洞式多态混淆器：24 个静态变体 + 16 个运行期变体、加密字符串/操作码、控制流压平与自校验和。",
+  "capabilities": [
+    "24 个静态变体 + 16 个运行期生成变体，逐变体密封/解封回环",
+    "12 种多态解码器调度与变体指纹",
+    "控制流压平状态机与直线参考实现互证",
+    "加密字符串表与逐变体校验和",
+    "嵌套 JSVMP 字节码、VM-in-VM 阶乘程序、字节码结构扫描",
+    "白盒/自定义密码/自定义编码混合管线"
+  ],
+  "entry": "polymorphic-obfuscator-sdk.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "metrics": {
+    "minWhitebox": 3,
+    "minCustomCiphers": 3,
+    "minEncodings": 3,
+    "minJsvmpOps": 1000,
+    "minEnvChecks": 50,
+    "minPolymorphicVariants": 10,
+    "minMixedRounds": 1,
+    "documentAll": true,
+    "minAntiDebug": 1
+  }
+}

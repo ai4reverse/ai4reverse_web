@@ -1,0 +1,54 @@
+{
+  "id": "10",
+  "slug": "botnet-polymorphic",
+  "type": "virus",
+  "title": "Polymorphic Botnet Node",
+  "grade": "military",
+  "category": "botnet-command-and-control",
+  "identity": {
+    "family": "MEGA-10 / SHARD-RELAY",
+    "campaign": "military-botnet-sim",
+    "operator": "mega-lab",
+    "buildId": "mega10-build-0x1f2e3d4c",
+    "seed": "0x1f2e3d4c"
+  },
+  "summary": "多态僵尸网络节点样本（纯 JS 单文件，全程模拟）：黑洞混淆字符串表、堡垒式嵌套 JSVMP、3 套白盒、3 套自定义密码、4 套自定义编码、混合加密管线、渲染引擎级环境探测（含 document.all HTMLDDA）、VM 任务下发与 worker 式任务队列、多态 C2 协议。",
+  "capabilities": [
+    "黑洞混淆",
+    "堡垒 JSVMP",
+    "白盒密码",
+    "自定义密码",
+    "自定义编码",
+    "混合管线",
+    "渲染引擎环境检测",
+    "多态 C2 协议",
+    "VM 任务队列",
+    "反调试"
+  ],
+  "entry": "botnet-polymorphic.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 4,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "behavior": {
+    "network": "simulated",
+    "dom": "guarded",
+    "filesystem": "none"
+  },
+  "verify": {
+    "command": "node botnet-polymorphic.js",
+    "expect": "MEGA SELFTEST OK + MEGA METRICS"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "id": "07",
+  "slug": "rendering-attestation-sdk",
+  "type": "sdk",
+  "title": "Rendering Attestation SDK",
+  "grade": "military",
+  "category": "rendering-attestation",
+  "summary": "渲染引擎级环境证明 SDK：18 族 100+ 探针、HTMLDDA 语义、风险评分矩阵与白盒密封的证明令牌。",
+  "capabilities": [
+    "18 族渲染探针矩阵（HTMLDDA/CSS/WebGL/Canvas/字体/iframe/音频/媒体/权限/屏幕/媒体查询/Intl/DOM/Worker/存储/引擎/WASM/几何）",
+    "HTMLDDA 语义执行：typeof undefined、布尔假值、length、item/namedItem",
+    "数百行权重矩阵与 0–100 风险评分、四档结论",
+    "白盒→自定义密码→自定义编码混合管线密封证明令牌",
+    "嵌套 JSVMP 字节码结构扫描与 VM-in-VM 阶乘程序",
+    "反调试五联探针与源码指纹自校验"
+  ],
+  "entry": "rendering-attestation-sdk.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "metrics": {
+    "minWhitebox": 3,
+    "minCustomCiphers": 3,
+    "minEncodings": 3,
+    "minJsvmpOps": 1000,
+    "minEnvChecks": 50,
+    "minPolymorphicVariants": 10,
+    "minMixedRounds": 1,
+    "documentAll": true,
+    "minAntiDebug": 1
+  }
+}

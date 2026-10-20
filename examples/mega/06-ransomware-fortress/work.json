@@ -1,0 +1,40 @@
+{
+  "id": "06",
+  "slug": "ransomware-fortress",
+  "type": "virus",
+  "title": "Ransomware Fortress",
+  "grade": "military",
+  "category": "ransomware-fortress",
+  "summary": "军事级\"勒索堡垒\"单文件仿真：对内存演示存储执行混合加密（每文件随机密钥 + 主密钥信封 + 白盒 SPN + 改造密码 + 自定义编码），密钥表由 VM 保护的关键字调度生成，勒索说明与渲染引擎门禁联动；全程不触碰宿主机文件。",
+  "capabilities": [
+    "混合加密：每文件独立密钥，主密钥经混合管线封装成信封",
+    "VM 保护的关键字调度：PUSHC/PUSHI/MUL/TLS/ROL/XOR 在嵌套 VM 内算出每文件密钥",
+    "勒索说明渲染：受害编号、密钥指纹、环境摘要全部来自黑洞字符串表",
+    "渲染引擎门禁：document.all HTMLDDA/CSS/WebGL/canvas/字体/iframe/布局/音频 240 项探针",
+    "离线可逆仿真：restore 逐字节还原演示文件，密文校验和拒绝篡改",
+    "三种改造密码（Ashgrove/VaultSpin/SaltMine）+ 三套白盒 SPN + 三种编码",
+    "反调试与数据段摘要自校验，任何表改写都会暴露",
+    "零宿主副作用：execute() 内不含 fs/process/Buffer 引用，演示存储保持原样"
+  ],
+  "entry": "ransomware-fortress.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "verify": {
+    "command": "node ransomware-fortress.js",
+    "expect": "MEGA SELFTEST OK"
+  }
+}

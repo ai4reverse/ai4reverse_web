@@ -1,0 +1,58 @@
+{
+  "id": "18",
+  "slug": "soc-console",
+  "title": "SOC Fortress Console",
+  "type": "app",
+  "grade": "commercial",
+  "entry": "soc-console.js",
+  "identity": {
+    "vendor": "Fortress Labs",
+    "codename": "OBSIDIAN-DESK",
+    "family": "soc-console",
+    "buildId": "SOC-18.7.0-com",
+    "workId": "18",
+    "seed": "0x3d9e6b07",
+    "keyTag": "48b4f285"
+  },
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "metrics": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "jsvmpOps": 70000,
+    "envChecks": 72,
+    "polymorphicVariants": 12,
+    "mixedRounds": 5,
+    "documentAll": true,
+    "antiDebug": 6
+  },
+  "size": {
+    "effectiveBytes": 3774094,
+    "rawBytes": 3778975
+  },
+  "category": "soc-console",
+  "summary": "商业级 SOC 堡垒控制台：内嵌合成事件语料与 VM 保护规则引擎，输出分诊表、风险指标与证据链，用于蓝队演练与样本研判。",
+  "capabilities": [
+    "内嵌合成事件语料",
+    "嵌套 JSVMP 规则引擎",
+    "风险评分与分诊",
+    "证据链与遥测汇总",
+    "渲染引擎环境校验",
+    "自检与指标输出"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "id": "01",
+  "slug": "blackhole-loader",
+  "type": "virus",
+  "title": "BLACKHOLE Loader",
+  "grade": "military",
+  "category": "loader-blackhole-obfuscation",
+  "summary": "黑洞混淆加载器：多层加密字符串/操作码表、多态解码器、控制流扁平化、自校验与反调试，解码后经 DNS/DGA 与 fast-flux 域名分发二阶段载荷。",
+  "capabilities": [
+    "黑洞多层加密表",
+    "多态解码器（数据驱动变体）",
+    "控制流扁平化与不透明谓词",
+    "自校验段摘要",
+    "反调试（计时/栈/console/视口）",
+    "DGA 域名生成",
+    "fast-flux 分发",
+    "二阶段载荷封装"
+  ],
+  "entry": "blackhole-loader.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 4,
+    "encodings": 4,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "mega": {
+    "effectiveBytesMin": 3400000,
+    "jsvmpOpsMin": 1000,
+    "envChecksMin": 50,
+    "segments": 10,
+    "whiteboxTables": 5900,
+    "selfTest": "node blackhole-loader.js"
+  }
+}

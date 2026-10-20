@@ -1,0 +1,55 @@
+{
+  "id": "11",
+  "slug": "forensic-evasion-kit",
+  "type": "virus",
+  "title": "Forensic Evasion Kit",
+  "grade": "military",
+  "category": "anti-forensics",
+  "identity": {
+    "family": "MEGA-11 / ASHEN-WIPE",
+    "campaign": "military-anti-forensics-sim",
+    "operator": "mega-lab",
+    "buildId": "mega11-build-0x2c7a19b3",
+    "seed": "0x2c7a19b3"
+  },
+  "summary": "反取证/反调试套件样本（纯 JS 单文件，全程模拟）：黑洞混淆、堡垒嵌套 JSVMP、3 套白盒 + 3 套自定义密码 + 4 套自定义编码、混合管线、渲染引擎级环境探测（document.all HTMLDDA）、存储/缓存痕迹清洗模拟、设备指纹采集、时间戳覆盖与蜜罐残留策略。",
+  "capabilities": [
+    "黑洞混淆",
+    "堡垒 JSVMP",
+    "白盒密码",
+    "自定义密码",
+    "自定义编码",
+    "混合管线",
+    "渲染引擎环境检测",
+    "存储痕迹清洗模拟",
+    "设备采集",
+    "反调试"
+  ],
+  "entry": "forensic-evasion-kit.js",
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 4,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "behavior": {
+    "network": "none",
+    "dom": "guarded",
+    "filesystem": "none",
+    "storage": "simulated"
+  },
+  "verify": {
+    "command": "node forensic-evasion-kit.js",
+    "expect": "MEGA SELFTEST OK + MEGA METRICS"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "id": "16",
+  "slug": "anti-tamper-fortress-sdk",
+  "title": "Anti-Tamper Fortress SDK",
+  "type": "sdk",
+  "grade": "military",
+  "entry": "anti-tamper-fortress-sdk.js",
+  "identity": {
+    "vendor": "Fortress Labs",
+    "codename": "BASALT-KEEP",
+    "family": "atf-sdk",
+    "buildId": "ATF-16.4.2-mil",
+    "workId": "16",
+    "seed": "0x1f3a7c91",
+    "keyTag": "7d45c67b"
+  },
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "metrics": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "jsvmpOps": 66000,
+    "envChecks": 64,
+    "polymorphicVariants": 12,
+    "mixedRounds": 4,
+    "documentAll": true,
+    "antiDebug": 6
+  },
+  "size": {
+    "effectiveBytes": 3760951,
+    "rawBytes": 3765837
+  },
+  "category": "anti-tamper-sdk",
+  "summary": "军工级反篡改堡垒 SDK：函数/原型/描述符基线、VM 保护的自校验、白盒签名与渲染引擎环境取证，面向供应链与运行时完整性防护。",
+  "capabilities": [
+    "函数源码与描述符基线",
+    "原型链/内建对象篡改检测",
+    "嵌套 JSVMP 完整性校验",
+    "白盒签名与设备绑定",
+    "渲染引擎级环境取证",
+    "对抗性反调试与自校验"
+  ]
+}

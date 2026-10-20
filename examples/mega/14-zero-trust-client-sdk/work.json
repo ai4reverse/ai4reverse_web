@@ -1,0 +1,44 @@
+{
+  "id": "14",
+  "slug": "zero-trust-client-sdk",
+  "type": "sdk",
+  "title": "MEGA Zero-Trust Client SDK",
+  "grade": "military",
+  "category": "zero-trust",
+  "summary": "军规级零信任客户端 SDK：设备证明令牌、白盒 MAC 挑战应答（含重放窗口）、策略引擎（扁平化状态机 + VM 评分），并将渲染引擎级指纹（document.all/CSS/WebGL/Canvas/字体）纳入判定。",
+  "entry": "zero-trust-client-sdk.js",
+  "capabilities": [
+    "设备描述符：环境摘要 + 渲染引擎摘要 + 探测计数",
+    "证明令牌：canonical claims + 混合加密信封 + WB-MAC 验签",
+    "挑战应答：白盒 MAC 挑战-应答，计数器 + 已见集合防重放",
+    "策略引擎：控制流扁平化状态机 + VM 加权评分，输出 allow/step-up/deny",
+    "document.all HTMLDDA 语义纳入策略否决项",
+    "时钟漂移、证明时效、网络位置与补丁级别联合判定"
+  ],
+  "protection": {
+    "blackhole": true,
+    "fortressJsvmp": true,
+    "dynamic": true,
+    "polymorphic": true,
+    "adversarial": true
+  },
+  "crypto": {
+    "whitebox": 3,
+    "customCiphers": 3,
+    "encodings": 3,
+    "mixed": true
+  },
+  "environment": {
+    "renderingEngine": true
+  },
+  "volume": {
+    "effectiveBytes": 3809023,
+    "rawBytes": 3816353,
+    "embeddedOpcodes": 252831,
+    "polymorphicVariants": 512
+  },
+  "selftest": {
+    "command": "node zero-trust-client-sdk.js",
+    "expect": "MEGA SELFTEST OK"
+  }
+}
