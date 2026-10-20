@@ -13,6 +13,7 @@ same object.
 | `meta` | object | producer, run identity, seed, environment profile and limits |
 | `sample` | object | analysed sample identity |
 | `verdict` | object | weighted score, level, confidence and reasons |
+| `provenance` | array | per-reason evidence refs (event/ioc/artifact/stage/killChain) |
 | `static` | object | parse, restoration, AST summary, IOCs and techniques |
 | `dynamic` | object | sandbox result, trace events and observed behaviour |
 | `tracing` | object | trace volume and JSVMP detection |
@@ -48,7 +49,35 @@ same object.
 - `level`: `benign` (0-24), `suspicious` (25-59), `malicious` (60-100).
 - `confidence`: 0..1, grows with the number of independent signal families.
 - `families`: sorted strings such as `obfuscation`, `c2`, `network`.
-- `reasons`: `[{code, weight, detail}]`, one entry per matched heuristic.
+- `reasons`: `[{code, weight, detail, refs}]`, one entry per matched heuristic.
+  Every reason carries at least one provenance `ref`; without evidence the reason
+  is not scored.
+
+### `provenance`
+
+Top-level mirror of verdict evidence for analyst pivot (same refs as
+`verdict.reasons[].refs`):
+
+```jsonc
+[
+  {
+    "reasonCode": "DYNAMIC_NETWORK",
+    "weight": 7,
+    "refs": [
+      { "kind": "killChain", "id": "kc:command-and-control" },
+      { "kind": "event", "id": "42", "seq": 42 },
+      { "kind": "ioc", "id": "ioc:urls:0", "value": "https://c2.example/a", "source": "static" },
+      { "kind": "artifact", "id": "a1b2c3d4e5f6" },
+      { "kind": "stage", "id": "dynamic:network", "count": 3 }
+    ]
+  }
+]
+```
+
+`refs[].kind` is one of `event` | `ioc` | `artifact` | `stage` | `killChain`.
+Platform / forged install events never appear as `event` refs. Prefer
+behaviour-summary sequence numbers and kill-chain stage ids so `keepTrace`
+true/false yields the same score and provenance.
 
 The weights live in `VERDICT_WEIGHTS` in `tools/analysis/report.js`; every
 point is attributable to a reason.
@@ -201,6 +230,7 @@ Evidence lines that are printed only when they say something:
 | `**Trace truncated:** yes (code-step budget reached; retention limit reached) — N event(s) dropped` / `no` | `tracing.truncated`/`truncatedBy`/`dropped` | always |
 | `**Restoration error:** message` | `static.restoration.error` | the pipeline threw |
 | `**Hook errors:** N (older failures dropped)` | `hooks.errors`/`errorsTruncated` | at least one failure |
+| `**Evidence (REASON_CODE):** …` | `provenance` / `verdict.reasons[].refs` | each scored reason |
 
 ## Trimmed example
 
@@ -237,10 +267,13 @@ Evidence lines that are printed only when they say something:
     "confidence": 0.89,
     "families": ["c2", "obfuscation", "ransomware"],
     "reasons": [
-      { "code": "STATIC_EVAL_LIKE", "weight": 9, "detail": "2 eval-like call(s)" },
-      { "code": "IOC_WALLETS", "weight": 10, "detail": "1 wallet address(es)" }
+      { "code": "STATIC_EVAL_LIKE", "weight": 9, "detail": "2 eval-like call(s)", "refs": [{ "kind": "stage", "id": "static:ast:eval-like", "count": 2 }] },
+      { "code": "IOC_WALLETS", "weight": 10, "detail": "1 wallet address(es)", "refs": [{ "kind": "ioc", "id": "ioc:wallets:0" }] }
     ]
   },
+  "provenance": [
+    { "reasonCode": "STATIC_EVAL_LIKE", "weight": 9, "refs": [{ "kind": "stage", "id": "static:ast:eval-like", "count": 2 }] }
+  ],
   "static": {
     "parse": { "ok": true, "sourceType": "script", "errors": [] },
     "restoration": {
@@ -341,6 +374,9 @@ The schema is append-only. The following optional fields are emitted by
 | `static.restoration.error` | Message of the error that aborted the restoration pipeline (`null`/absent when it ran). |
 | `tracing.truncated`, `tracing.truncatedBy` | Explicit truncation flag plus its causes (`code-budget`, `event-limit`). |
 | `dynamic.behavior.counts.platform` | Trace events emitted by the platform, excluded from behaviour and verdict. |
+| `provenance`, `verdict.reasons[].refs` | Per-reason evidence refs (`event`/`ioc`/`artifact`/`stage`/`killChain`); no points without ≥1 ref. |
+| `static.iocs.<category>[].id`, optional `eventSeq` | Stable IOC id for provenance; dynamic extractions may carry the source event seq. |
+| `artifacts[].eventSeq`, `dynamic.behavior.killChain[].stageId` | Artifact↔event and kill-chain node ids for refs. |
 
 ### Run records returned alongside the report
 

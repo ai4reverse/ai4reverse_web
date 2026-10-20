@@ -151,6 +151,12 @@ const TRACE_TRUNCATION_LABELS = Object.freeze({
   'event-limit': 'retention limit reached',
 })
 
+/** Provenance ref kinds an analyst can pivot from a verdict reason. */
+const PROVENANCE_REF_KINDS = Object.freeze(['event', 'ioc', 'artifact', 'stage', 'killChain'])
+
+/** Cap refs per reason so the report stays bounded. */
+const MAX_REFS_PER_REASON = 12
+
 /**
  * Build the canonical report object.
  *
@@ -181,6 +187,8 @@ export function buildReport(analysis) {
   const tracing = normalizeTracing(input.tracing ?? dynamicInput.tracing)
   const hooks = normalizeHooks(input.hooks ?? dynamicInput.hooks)
 
+  const artifacts = asArray(input.artifacts).map(normalizeArtifact)
+
   const verdict = scoreVerdict({
     staticSection,
     dynamicSection,
@@ -188,7 +196,10 @@ export function buildReport(analysis) {
     tracing,
     hooks,
     integrity: input.integrity,
+    artifacts,
   })
+
+  const provenance = asArray(verdict.provenance)
 
   return {
     meta: {
@@ -202,12 +213,19 @@ export function buildReport(analysis) {
       limits: obj(inputMeta.limits ?? input.limits),
     },
     sample: normalizeSample(input.sample),
-    verdict,
+    verdict: {
+      score: verdict.score,
+      level: verdict.level,
+      confidence: verdict.confidence,
+      families: verdict.families,
+      reasons: verdict.reasons,
+    },
+    provenance,
     static: staticSection,
     dynamic: dynamicSection,
     tracing,
     hooks,
-    artifacts: asArray(input.artifacts).map(normalizeArtifact),
+    artifacts,
     recommendations: asArray(input.recommendations),
     integrity: {
       intact: obj(input.integrity).intact === true,
@@ -221,7 +239,8 @@ export function buildReport(analysis) {
  *
  * The score is the sum of every matched reason, clamped to 0..100:
  * 0-24 benign, 25-59 suspicious, >=60 malicious. Confidence grows with the
- * number of independent signal families that contributed.
+ * number of independent signal families that contributed. Every reason carries
+ * at least one provenance ref; without evidence the reason is not scored.
  *
  * @param {object} [input]
  * @param {object} [input.staticSection]
@@ -229,9 +248,10 @@ export function buildReport(analysis) {
  * @param {object} [input.iocs]
  * @param {object} [input.tracing]
  * @param {object} [input.hooks]
+ * @param {object[]} [input.artifacts]
  * @param {object} [input.integrity] sandbox integrity result; `drift` entries with
  *   concrete evidence kinds raise `DYNAMIC_ENV_TAMPER`
- * @returns {{score: number, level: 'benign'|'suspicious'|'malicious', confidence: number, families: string[], reasons: {code: string, weight: number, detail: string}[]}}
+ * @returns {{score: number, level: 'benign'|'suspicious'|'malicious', confidence: number, families: string[], reasons: object[], provenance: object[]}}
  */
 export function scoreVerdict(input) {
   const options = obj(input)
@@ -241,9 +261,10 @@ export function scoreVerdict(input) {
   const tracing = obj(options.tracing ?? dynamicSection.tracing)
   const hooks = obj(options.hooks ?? dynamicSection.hooks)
   const integrity = obj(options.integrity)
+  const artifacts = asArray(options.artifacts)
   const weights = VERDICT_WEIGHTS
 
-  /** @type {{code: string, weight: number, detail: string}[]} */
+  /** @type {{code: string, weight: number, detail: string, refs: object[]}[]} */
   const reasons = []
   const families = new Set()
 
@@ -252,11 +273,15 @@ export function scoreVerdict(input) {
    * @param {number} weight
    * @param {string} detail
    * @param {string} family
+   * @param {object[]} refs
    */
-  const add = (code, weight, detail, family) => {
+  const add = (code, weight, detail, family, refs) => {
     const bounded = Math.max(0, Math.round(weight))
     if (bounded === 0) return
-    reasons.push({ code, weight: bounded, detail })
+    const cleanRefs = normalizeRefs(refs)
+    // No evidence → no points (Wave 3 provenance contract).
+    if (cleanRefs.length === 0) return
+    reasons.push({ code, weight: bounded, detail, refs: cleanRefs })
     families.add(family)
   }
 
@@ -269,6 +294,7 @@ export function scoreVerdict(input) {
       Math.min(weights.staticEvalLikeMax, weights.staticEvalLikeBase + evalLike * weights.staticEvalLikeStep),
       `${evalLike} eval-like call(s)`,
       'obfuscation',
+      [stageRef('static:ast:eval-like', { count: evalLike })],
     )
   }
 
@@ -279,6 +305,7 @@ export function scoreVerdict(input) {
       Math.min(weights.staticObfuscationMax, Math.round(obfuscationScore / weights.staticObfuscationDivisor)),
       `obfuscation score ${obfuscationScore}/100`,
       'obfuscation',
+      [stageRef('static:ast:obfuscation', { score: obfuscationScore })],
     )
   }
 
@@ -289,22 +316,26 @@ export function scoreVerdict(input) {
       Math.min(weights.staticNetworkMax, weights.staticNetworkBase + networkCalls * weights.staticNetworkStep),
       `${networkCalls} network call(s) in source`,
       'network',
+      [stageRef('static:ast:network', { count: networkCalls })],
     )
   }
 
-  const changedPasses = asArray(obj(staticSection.restoration).passes).filter((pass) => obj(pass).changed === true).length
-  if (changedPasses > 0) {
+  const changedPasses = asArray(obj(staticSection.restoration).passes).filter((pass) => obj(pass).changed === true)
+  if (changedPasses.length > 0) {
     add(
       'STATIC_RESTORATION',
-      Math.min(weights.staticRestorationMax, changedPasses * weights.staticRestorationPerPass),
-      `${changedPasses} restoration pass(es) changed the code`,
+      Math.min(weights.staticRestorationMax, changedPasses.length * weights.staticRestorationPerPass),
+      `${changedPasses.length} restoration pass(es) changed the code`,
       'obfuscation',
+      changedPasses.map((pass, index) => stageRef(`static:restore:${str(obj(pass).id) || index}`)),
     )
   }
 
   const timers = toCount(ast.timers)
   if (timers > 0) {
-    add('STATIC_TIMERS', weights.staticTimers, `${timers} timer call(s)`, 'evasion')
+    add('STATIC_TIMERS', weights.staticTimers, `${timers} timer call(s)`, 'evasion', [
+      stageRef('static:ast:timers', { count: timers }),
+    ])
   }
 
   // --- Extracted indicators ------------------------------------------------
@@ -316,6 +347,7 @@ export function scoreVerdict(input) {
       Math.min(weights.iocUrlsMax, weights.iocUrlsBase + nonBenignUrls.length * weights.iocUrlsStep),
       `${nonBenignUrls.length} non-benign URL(s)`,
       'c2',
+      iocRefs(nonBenignUrls, 'urls'),
     )
   }
 
@@ -326,6 +358,7 @@ export function scoreVerdict(input) {
       Math.min(weights.iocSuspiciousTldMax, suspiciousDomains.length * weights.iocSuspiciousTldPerDomain),
       `${suspiciousDomains.length} domain(s) on suspicious TLDs`,
       'c2',
+      iocRefs(suspiciousDomains, 'domains'),
     )
   }
 
@@ -334,90 +367,166 @@ export function scoreVerdict(input) {
     return kind === 'url' || kind === 'script'
   })
   if (encodedPayloads.length > 0) {
-    add('IOC_ENCODED_PAYLOAD', weights.iocEncodedPayload, `${encodedPayloads.length} decoded base64 payload(s)`, 'obfuscation')
+    add(
+      'IOC_ENCODED_PAYLOAD',
+      weights.iocEncodedPayload,
+      `${encodedPayloads.length} decoded base64 payload(s)`,
+      'obfuscation',
+      iocRefs(encodedPayloads, 'base64'),
+    )
   }
 
-  const hashes = asArray(iocs.hashes).length
-  if (hashes > 0) {
-    add('IOC_HASHES', weights.iocHashes, `${hashes} hash indicator(s)`, 'payload')
+  const hashItems = asArray(iocs.hashes)
+  if (hashItems.length > 0) {
+    add('IOC_HASHES', weights.iocHashes, `${hashItems.length} hash indicator(s)`, 'payload', iocRefs(hashItems, 'hashes'))
   }
 
-  const wallets = asArray(iocs.wallets).length
-  if (wallets > 0) {
+  const walletItems = asArray(iocs.wallets)
+  if (walletItems.length > 0) {
     add(
       'IOC_WALLETS',
-      Math.min(weights.iocWalletsMax, weights.iocWalletsBase + wallets * weights.iocWalletsStep),
-      `${wallets} wallet address(es)`,
+      Math.min(weights.iocWalletsMax, weights.iocWalletsBase + walletItems.length * weights.iocWalletsStep),
+      `${walletItems.length} wallet address(es)`,
       'ransomware',
+      iocRefs(walletItems, 'wallets'),
     )
   }
 
-  const messengers = asArray(iocs.telegram).length + asArray(iocs.discordWebhooks).length
-  if (messengers > 0) {
+  const messengerItems = [...asArray(iocs.telegram), ...asArray(iocs.discordWebhooks)]
+  if (messengerItems.length > 0) {
     add(
       'IOC_MESSENGER',
-      Math.min(weights.iocMessengerMax, weights.iocMessengerBase + messengers * weights.iocMessengerStep),
-      `${messengers} messaging/webhook endpoint(s)`,
+      Math.min(weights.iocMessengerMax, weights.iocMessengerBase + messengerItems.length * weights.iocMessengerStep),
+      `${messengerItems.length} messaging/webhook endpoint(s)`,
       'c2',
+      [
+        ...iocRefs(asArray(iocs.telegram), 'telegram'),
+        ...iocRefs(asArray(iocs.discordWebhooks), 'discordWebhooks'),
+      ],
     )
   }
 
-  if (asArray(iocs.shellCommands).length > 0 || asArray(iocs.registryKeys).length > 0) {
-    add('IOC_EXECUTION', weights.iocExecution, 'shell command or registry persistence indicator', 'execution')
+  const execItems = [...asArray(iocs.shellCommands), ...asArray(iocs.registryKeys)]
+  if (execItems.length > 0) {
+    add('IOC_EXECUTION', weights.iocExecution, 'shell command or registry persistence indicator', 'execution', [
+      ...iocRefs(asArray(iocs.shellCommands), 'shellCommands'),
+      ...iocRefs(asArray(iocs.registryKeys), 'registryKeys'),
+    ])
   }
 
-  if (asArray(iocs.mutexes).length > 0) {
-    add('IOC_MUTEX', weights.iocMutex, `${asArray(iocs.mutexes).length} mutex name(s)`, 'evasion')
+  const mutexItems = asArray(iocs.mutexes)
+  if (mutexItems.length > 0) {
+    add('IOC_MUTEX', weights.iocMutex, `${mutexItems.length} mutex name(s)`, 'evasion', iocRefs(mutexItems, 'mutexes'))
   }
 
   // --- Dynamic behaviour ---------------------------------------------------
   const counts = obj(obj(dynamicSection.counts).byKind ?? dynamicSection.counts)
   const events = asArray(dynamicSection.events)
-  // Attribution: only guest-originated events describe the sample, so the
-  // platform's own installation events (`document.installed`, `api.wrapped`,
-  // …) can never raise a behavioural reason. When the caller supplies no event
-  // list at all (a hand-built fixture with counters only) the counters are the
-  // only evidence available and are used as-is.
+  const behavior = obj(dynamicSection.behavior)
+  const behaviorCounts = obj(behavior.counts)
+  const killChain = asArray(behavior.killChain)
+  // P0-6: never score from the retained event *slice* (keepTrace / maxRetained).
+  // Prefer full-trace `counts.byKind` for kind-accurate tallies (net/eval), and
+  // guest-filtered behaviour counters for kinds the platform also emits (dom).
   const guestEvents = events.filter((event) => !isPlatformEvent(obj(event)))
   const eventCount = (kind) => guestEvents.filter((event) => obj(event).kind === kind).length
-  const counted = (kind, counter) => (events.length > 0 ? eventCount(kind) : toCount(counter))
+  const hasTraceCounts = Object.keys(counts).length > 0
+  const counted = (kind, behaviorKey, { preferBehavior = false } = {}) => {
+    if (
+      (preferBehavior || kind === 'dom') &&
+      behaviorKey &&
+      Object.prototype.hasOwnProperty.call(behaviorCounts, behaviorKey)
+    ) {
+      return toCount(behaviorCounts[behaviorKey])
+    }
+    if (kind === 'dom') {
+      if (events.length > 0) return eventCount(kind)
+      return 0
+    }
+    if (hasTraceCounts) return toCount(counts[kind])
+    if (
+      behaviorKey &&
+      Object.prototype.hasOwnProperty.call(behaviorCounts, behaviorKey)
+    ) {
+      return toCount(behaviorCounts[behaviorKey])
+    }
+    if (events.length > 0) return eventCount(kind)
+    return 0
+  }
 
-  const networkEvents = counted('net', counts.net)
+  const networkEvents = counted('net', 'network')
   if (networkEvents > 0) {
     add(
       'DYNAMIC_NETWORK',
       Math.min(weights.dynamicNetworkMax, weights.dynamicNetworkBase + networkEvents * weights.dynamicNetworkStep),
       `${networkEvents} network event(s) at runtime`,
       'network',
+      dynamicRefs({
+        behavior,
+        artifacts,
+        killStage: 'command-and-control',
+        behaviorKey: 'network',
+        stageId: 'dynamic:network',
+        count: networkEvents,
+      }),
     )
   }
 
-  const storageEvents = counted('storage', counts.storage)
+  const storageEvents = counted('storage', 'storage', { preferBehavior: true })
   if (storageEvents > 0) {
-    add('DYNAMIC_STORAGE', weights.dynamicStorage, `${storageEvents} storage access(es)`, 'persistence')
+    add(
+      'DYNAMIC_STORAGE',
+      weights.dynamicStorage,
+      `${storageEvents} storage access(es)`,
+      'persistence',
+      dynamicRefs({
+        behavior,
+        artifacts,
+        killStage: 'persistence',
+        behaviorKey: 'storage',
+        stageId: 'dynamic:storage',
+        count: storageEvents,
+      }),
+    )
   }
 
-  const domEvents = counted('dom', counts.dom)
+  const domEvents = counted('dom', 'dom', { preferBehavior: true })
   if (domEvents > 0) {
     add(
       'DYNAMIC_DOM',
       Math.min(weights.dynamicDomMax, weights.dynamicDomBase + domEvents * weights.dynamicDomStep),
       `${domEvents} DOM mutation(s)`,
       'injection',
+      dynamicRefs({
+        behavior,
+        artifacts,
+        killStage: 'injection',
+        behaviorKey: 'dom',
+        stageId: 'dynamic:dom',
+        count: domEvents,
+      }),
     )
   }
 
-  const evalEvents = counted('eval', counts.eval)
+  const evalEvents = counted('eval', 'evals')
   if (evalEvents > 0) {
     add(
       'DYNAMIC_EVAL',
       Math.min(weights.dynamicEvalMax, weights.dynamicEvalBase + evalEvents * weights.dynamicEvalStep),
       `${evalEvents} dynamic eval event(s)`,
       'obfuscation',
+      dynamicRefs({
+        behavior,
+        artifacts,
+        killStage: 'execution',
+        behaviorKey: 'evalStages',
+        stageId: 'dynamic:eval',
+        count: evalEvents,
+        artifactKinds: ['eval-payload', 'function-body'],
+      }),
     )
   }
 
-  const behavior = obj(dynamicSection.behavior)
   const apiNames = asArray(behavior.apis).map((api) => str(obj(api).name))
   const dangerousApis = apiNames.filter((name) => DANGEROUS_APIS.has(name))
   if (dangerousApis.length > 0) {
@@ -426,6 +535,10 @@ export function scoreVerdict(input) {
       weights.dynamicApiMisuse,
       `sensitive APIs observed: ${dangerousApis.join(', ')}`,
       'injection',
+      [
+        stageRef('dynamic:api-misuse', { apis: dangerousApis.join(',') }),
+        ...killChainRefs(killChain, null),
+      ],
     )
   }
 
@@ -436,6 +549,7 @@ export function scoreVerdict(input) {
       weights.dynamicWorkerOffload,
       `computation offloaded via ${offloadApis.join(', ')}`,
       'evasion',
+      [stageRef('dynamic:worker-offload', { apis: offloadApis.join(',') })],
     )
   }
 
@@ -446,6 +560,10 @@ export function scoreVerdict(input) {
       weights.dynamicOfflinePersistence,
       `offline persistence via ${persistenceApis.join(', ')}`,
       'persistence',
+      [
+        stageRef('dynamic:offline-persistence', { apis: persistenceApis.join(',') }),
+        ...killChainRefs(killChain, 'persistence'),
+      ],
     )
   }
 
@@ -456,21 +574,28 @@ export function scoreVerdict(input) {
       weights.dynamicEnvTamper,
       `${tamperEntries.length} environment integrity drift entr(y/ies): ${tamperEntries.map((entry) => str(obj(entry).kind)).join(', ')}`,
       'evasion',
+      [stageRef('dynamic:env-tamper', { count: tamperEntries.length })],
     )
   }
 
   const messengerEndpoints = [...asArray(iocs.telegram), ...asArray(iocs.discordWebhooks)]
-    .map((endpoint) => str(obj(endpoint).value))
-    .filter(Boolean)
   if (messengerEndpoints.length > 0) {
     const networkUrls = asArray(behavior.network).map((entry) => str(obj(entry).url)).filter(Boolean)
-    const contacted = messengerEndpoints.filter((endpoint) => networkUrls.some((url) => url.toLowerCase().includes(endpoint.toLowerCase())))
+    const contacted = messengerEndpoints.filter((endpoint) => {
+      const value = str(obj(endpoint).value)
+      return value && networkUrls.some((url) => url.toLowerCase().includes(value.toLowerCase()))
+    })
     if (contacted.length > 0) {
       add(
         'DYNAMIC_MESSENGER_C2',
         weights.dynamicMessengerC2,
         `runtime contact with ${contacted.length} discovered messaging/webhook endpoint(s)`,
         'c2',
+        [
+          ...iocRefs(contacted, 'messenger'),
+          ...seqRefsFromBehavior(behavior.network),
+          ...killChainRefs(killChain, 'command-and-control'),
+        ],
       )
     }
   }
@@ -485,27 +610,46 @@ export function scoreVerdict(input) {
       weights.dynamicInputCapture,
       `${inputCaptures.length} keyboard event listener(s) registered`,
       'credential-access',
+      inputCaptures.map((event) => eventRef(obj(event).seq)).filter(Boolean),
     )
   }
 
   const limitsHit = asArray(dynamicSection.limitsHit).length
-  if (limitsHit > 0) {
-    add('DYNAMIC_LIMITS', weights.dynamicLimits, `execution limit(s) hit: ${limitsHit}`, 'evasion')
+  // Host-wall provisional runs must not move the verdict via limit scoring (P0-12).
+  if (limitsHit > 0 && dynamicSection.provisional !== true) {
+    add('DYNAMIC_LIMITS', weights.dynamicLimits, `execution limit(s) hit: ${limitsHit}`, 'evasion', [
+      stageRef('dynamic:limits', { count: limitsHit }),
+    ])
   }
 
   const uncaught = toCount(obj(dynamicSection.exceptions).uncaught)
   if (uncaught > 0) {
-    add('DYNAMIC_UNCAUGHT', weights.dynamicUncaught, `${uncaught} uncaught exception(s)`, 'evasion')
+    const exceptionSeqs = asArray(obj(behavior.exceptions).uncaught).map((entry) => eventRef(obj(entry).seq)).filter(Boolean)
+    add('DYNAMIC_UNCAUGHT', weights.dynamicUncaught, `${uncaught} uncaught exception(s)`, 'evasion', [
+      ...(exceptionSeqs.length > 0 ? exceptionSeqs : [stageRef('dynamic:uncaught', { count: uncaught })]),
+      ...killChainRefs(killChain, 'fault'),
+    ])
   }
 
   // --- Tracing and hooks ---------------------------------------------------
   if (obj(obj(tracing).jsvmp).detected === true) {
-    add('TRACING_JSVMP', weights.tracingJsvmp, 'JSVMP dispatcher detected', 'obfuscation')
+    add('TRACING_JSVMP', weights.tracingJsvmp, 'JSVMP dispatcher detected', 'obfuscation', [
+      stageRef('tracing:jsvmp'),
+    ])
   }
 
   const mocks = toCount(obj(hooks).mocks)
   if (mocks > 0) {
-    add('HOOKS_MOCKED', weights.hooksMocks, `${mocks} environment API(s) mocked`, 'anti-analysis')
+    const mockRefs = asArray(behavior.mocks)
+      .map((entry) => eventRef(obj(entry).seq))
+      .filter(Boolean)
+    add(
+      'HOOKS_MOCKED',
+      weights.hooksMocks,
+      `${mocks} environment API(s) mocked`,
+      'anti-analysis',
+      mockRefs.length > 0 ? mockRefs : [stageRef('hooks:mocked', { count: mocks })],
+    )
   }
 
   const score = Math.max(0, Math.min(100, reasons.reduce((total, reason) => total + reason.weight, 0)))
@@ -515,13 +659,153 @@ export function scoreVerdict(input) {
       ? 0.05
       : round2(Math.min(0.95, 0.15 + families.size * 0.12 + Math.min(reasons.length, 10) * 0.02))
 
+  const provenance = reasons.map((reason) => ({
+    reasonCode: reason.code,
+    weight: reason.weight,
+    refs: reason.refs,
+  }))
+
   return {
     score,
     level,
     confidence,
     families: [...families].sort(),
     reasons,
+    provenance,
   }
+}
+
+/**
+ * @param {unknown} refs
+ * @returns {object[]}
+ */
+function normalizeRefs(refs) {
+  const out = []
+  const seen = new Set()
+  for (const item of asArray(refs)) {
+    const ref = obj(item)
+    const kind = str(ref.kind)
+    const id = str(ref.id)
+    if (!PROVENANCE_REF_KINDS.includes(kind) || id.length === 0) continue
+    const key = `${kind}:${id}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    /** @type {Record<string, unknown>} */
+    const entry = { kind, id }
+    if (ref.value != null && str(ref.value)) entry.value = str(ref.value).slice(0, 120)
+    if (Number.isFinite(ref.count)) entry.count = ref.count
+    if (Number.isFinite(ref.seq)) entry.seq = ref.seq
+    if (Number.isFinite(ref.offset)) entry.offset = ref.offset
+    if (ref.source != null && str(ref.source)) entry.source = str(ref.source)
+    out.push(entry)
+    if (out.length >= MAX_REFS_PER_REASON) break
+  }
+  return out
+}
+
+/** @param {string} id @param {object} [extra] */
+function stageRef(id, extra = {}) {
+  return { kind: 'stage', id, ...extra }
+}
+
+/** @param {unknown} seq */
+function eventRef(seq) {
+  if (!Number.isFinite(seq) && typeof seq !== 'string') return null
+  const id = String(seq)
+  if (id.length === 0) return null
+  return { kind: 'event', id, seq: Number.isFinite(seq) ? seq : undefined }
+}
+
+/**
+ * @param {unknown[]} items
+ * @param {string} category
+ */
+function iocRefs(items, category) {
+  return asArray(items).map((item, index) => {
+    const record = typeof item === 'string' ? { value: item } : obj(item)
+    const id = str(record.id) || `ioc:${category}:${index}`
+    /** @type {Record<string, unknown>} */
+    const ref = { kind: 'ioc', id }
+    if (record.value != null) ref.value = str(record.value).slice(0, 120)
+    if (Number.isFinite(record.offset)) ref.offset = record.offset
+    if (record.source != null) ref.source = str(record.source)
+    if (Number.isFinite(record.eventSeq)) {
+      ref.seq = record.eventSeq
+    }
+    return ref
+  })
+}
+
+/**
+ * @param {unknown[]} killChain
+ * @param {string|null} stage
+ */
+function killChainRefs(killChain, stage) {
+  return asArray(killChain)
+    .filter((entry) => stage == null || str(obj(entry).stage) === stage)
+    .map((entry) => {
+      const item = obj(entry)
+      const id = str(item.stageId) || (item.stage ? `kc:${item.stage}` : '')
+      return id ? { kind: 'killChain', id } : null
+    })
+    .filter(Boolean)
+}
+
+/** @param {unknown} list */
+function seqRefsFromBehavior(list) {
+  const refs = []
+  for (const entry of asArray(list)) {
+    const item = obj(entry)
+    const seq = item.firstSeq ?? item.seq
+    const ref = eventRef(seq)
+    if (ref) refs.push(ref)
+    if (str(item.stageId)) refs.push({ kind: 'stage', id: str(item.stageId) })
+  }
+  return refs
+}
+
+/**
+ * Build keepTrace-stable dynamic refs from behaviour summaries first, then
+ * guest events / artifacts. Platform events never appear.
+ * @param {object} options
+ */
+function dynamicRefs(options) {
+  const {
+    behavior,
+    artifacts,
+    killStage,
+    behaviorKey,
+    stageId,
+    count,
+    artifactKinds = [],
+  } = options
+  const refs = []
+  refs.push(...killChainRefs(asArray(behavior.killChain), killStage))
+  // Behaviour summaries are computed from the full trace before retention, so
+  // their seqs stay stable across keepTrace true/false. Do not ref the retained
+  // event slice here — it would empty under keepTrace:false.
+  if (behaviorKey) refs.push(...seqRefsFromBehavior(behavior[behaviorKey]))
+  for (const artifact of asArray(artifacts)) {
+    const item = obj(artifact)
+    if (artifactKinds.length > 0 && !artifactKinds.includes(str(item.kind))) continue
+    if (artifactKinds.length === 0) {
+      // Prefer artifacts whose source points at a matching behaviour class.
+      const source = str(item.source)
+      const kind = str(item.kind)
+      const matches =
+        (killStage === 'command-and-control' && (kind === 'network-body' || kind === 'websocket-message' || source.startsWith('network:'))) ||
+        (killStage === 'execution' && (kind === 'eval-payload' || kind === 'function-body' || kind === 'decoded-string')) ||
+        (killStage === 'persistence' && source.includes('storage')) ||
+        (killStage === 'injection' && kind.includes('dom'))
+      if (!matches) continue
+    }
+    if (str(item.id)) refs.push({ kind: 'artifact', id: str(item.id) })
+    const linked = eventRef(item.eventSeq ?? obj(item.meta).eventSeq ?? obj(item.meta).seq)
+    if (linked) refs.push(linked)
+  }
+  const normalized = normalizeRefs(refs)
+  if (normalized.length > 0) return normalized
+  return normalizeRefs([stageRef(stageId, { count })])
 }
 
 /**
@@ -550,11 +834,19 @@ export function renderMarkdown(report) {
   lines.push(`- **Confidence:** ${formatConfidence(verdict.confidence)}`)
   lines.push(`- **Families:** ${joinValues(verdict.families)}`)
   const reasons = asArray(verdict.reasons)
+  const provenance = asArray(input.provenance)
   if (reasons.length > 0) {
     lines.push('', '| Code | Weight | Detail |', '| --- | ---: | --- |')
     for (const reason of reasons) {
       const item = obj(reason)
       lines.push(`| ${escapeCell(item.code)} | ${formatNumber(item.weight)} | ${escapeCell(item.detail)} |`)
+    }
+    lines.push('')
+    for (const reason of reasons) {
+      const item = obj(reason)
+      const entry = provenance.find((row) => obj(row).reasonCode === item.code)
+      const refs = asArray(item.refs?.length ? item.refs : obj(entry).refs)
+      lines.push(`- **Evidence (${escapeText(item.code)}):** ${escapeText(summarizeRefs(refs))}`)
     }
   }
   lines.push('')
@@ -1076,7 +1368,14 @@ function normalizeAst(value) {
 function normalizeIocs(value, sourceCode) {
   const input = value == null && sourceCode ? extractIOCs(sourceCode) : obj(value)
   const result = {}
-  for (const key of IOC_KEYS) result[key] = Array.isArray(input[key]) ? input[key] : []
+  for (const key of IOC_KEYS) {
+    const items = Array.isArray(input[key]) ? input[key] : []
+    result[key] = items.map((entry, index) => {
+      if (typeof entry === 'string') return { value: entry, id: `ioc:${key}:${index}` }
+      const item = obj(entry)
+      return { ...item, id: str(item.id) || `ioc:${key}:${index}` }
+    })
+  }
   result.meta = { truncated: obj(input.meta).truncated === true }
   return result
 }
@@ -1188,6 +1487,14 @@ function normalizeHooks(value) {
 /** @param {unknown} value */
 function normalizeArtifact(value) {
   const input = typeof value === 'object' && value !== null ? obj(value) : { id: str(value) }
+  const meta = obj(input.meta)
+  const eventSeq = Number.isFinite(input.eventSeq)
+    ? input.eventSeq
+    : Number.isFinite(meta.eventSeq)
+      ? meta.eventSeq
+      : Number.isFinite(meta.seq)
+        ? meta.seq
+        : undefined
   return {
     id: str(input.id),
     kind: str(input.kind),
@@ -1196,5 +1503,25 @@ function normalizeArtifact(value) {
     preview: str(input.preview),
     ...(input.source ? { source: str(input.source) } : {}),
     ...(Number.isFinite(input.count) && input.count > 1 ? { count: input.count } : {}),
+    ...(eventSeq !== undefined ? { eventSeq } : {}),
   }
+}
+
+/**
+ * One-line evidence summary for Markdown (already escaped by caller).
+ * @param {unknown[]} refs
+ */
+function summarizeRefs(refs) {
+  const items = asArray(refs)
+  if (items.length === 0) return 'none'
+  return items
+    .map((item) => {
+      const ref = obj(item)
+      const kind = str(ref.kind) || 'ref'
+      const id = str(ref.id)
+      if (ref.value) return `${kind} ${id} (${str(ref.value).slice(0, 60)})`
+      if (Number.isFinite(ref.count)) return `${kind} ${id}×${ref.count}`
+      return `${kind} ${id}`
+    })
+    .join('; ')
 }

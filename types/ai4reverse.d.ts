@@ -1033,15 +1033,37 @@ export interface IOCResult {
 
 export interface IocOptions {
   maxCandidates?: number
+  /** Per-category match budget. Defaults to 800. */
+  maxPerCategory?: number
   maxLength?: number
   decodeBase64?: boolean
   benignHosts?: string[]
+}
+
+export type ProvenanceRefKind = 'event' | 'ioc' | 'artifact' | 'stage' | 'killChain'
+
+export interface ProvenanceRef {
+  kind: ProvenanceRefKind
+  id: string
+  value?: string
+  count?: number
+  seq?: number
+  offset?: number
+  source?: string
 }
 
 export interface VerdictReason {
   code: string
   weight: number
   detail: string
+  /** Evidence refs; every scored reason has at least one. */
+  refs: ProvenanceRef[]
+}
+
+export interface ProvenanceEntry {
+  reasonCode: string
+  weight: number
+  refs: ProvenanceRef[]
 }
 
 export interface Verdict {
@@ -1050,6 +1072,8 @@ export interface Verdict {
   confidence: number
   families: string[]
   reasons: VerdictReason[]
+  /** Present on `scoreVerdict()` return; mirrored to report.provenance by buildReport. */
+  provenance?: ProvenanceEntry[]
 }
 
 export interface AnalysisReport {
@@ -1065,8 +1089,19 @@ export interface AnalysisReport {
   }
   sample: object
   verdict: Verdict
+  /** Per-reason evidence chain (Wave 3 report-internal provenance). */
+  provenance: ProvenanceEntry[]
   static: object
-  dynamic: object
+  /**
+   * Normalised dynamic section. `provisional` mirrors the sandbox run;
+   * `eventsTruncated` is set when the retained slice drops events or the run
+   * is provisional. Other runtime fields stay on the index signature.
+   */
+  dynamic: {
+    provisional?: boolean
+    eventsTruncated?: boolean
+    [key: string]: unknown
+  }
   tracing: object
   hooks: object
   artifacts: object[]

@@ -324,14 +324,25 @@ export function extractFromEvents(events, options = {}) {
     }
     const strings = []
     collectStrings(event, strings, 0)
-    for (const value of strings) {
-      if (value.length < 4 || seen.has(value)) continue
-      if (state.candidates >= state.settings.maxCandidates) {
-        state.truncated = true
-        break
+    scanEventSeq = Number.isFinite(event.seq) ? event.seq : null
+    try {
+      for (const value of strings) {
+        if (value.length < 4 || seen.has(value)) continue
+        if (state.candidates >= state.settings.maxCandidates) {
+          state.truncated = true
+          break
+        }
+        seen.add(value)
+        scanText(result, value, state, {
+          source: 'dynamic',
+          depth: 0,
+          offsetBase: null,
+          charCodeDepth: 0,
+          eventSeq: scanEventSeq,
+        })
       }
-      seen.add(value)
-      scanText(result, value, state, { source: 'dynamic', depth: 0, offsetBase: null, charCodeDepth: 0 })
+    } finally {
+      scanEventSeq = null
     }
   }
   return materialize(result, state)
@@ -1126,8 +1137,9 @@ function collectStrings(value, out, depth) {
  */
 function materialize(result, state) {
   return {
-    urls: [...result.urls.values()].map((record) => {
+    urls: [...result.urls.values()].map((record, index) => {
       const url = {
+        id: `ioc:urls:${index}`,
         value: record.value,
         scheme: record.scheme,
         host: record.host,
@@ -1136,19 +1148,27 @@ function materialize(result, state) {
         offset: record.offset,
       }
       if (record.benignHost) url.benignHost = true
+      if (Number.isFinite(record.eventSeq)) url.eventSeq = record.eventSeq
       return url
     }),
-    domains: [...result.domains.values()].map((record) => {
-      const domain = { value: record.value, count: record.count, offset: record.offset }
+    domains: [...result.domains.values()].map((record, index) => {
+      const domain = {
+        id: `ioc:domains:${index}`,
+        value: record.value,
+        count: record.count,
+        offset: record.offset,
+      }
       if (record.suspiciousTld) domain.suspiciousTld = true
+      if (Number.isFinite(record.eventSeq)) domain.eventSeq = record.eventSeq
       return domain
     }),
-    ips: [...result.ips.values()],
-    emails: [...result.emails.values()],
-    hashes: [...result.hashes.values()],
-    wallets: [...result.wallets.values()],
-    base64: [...result.base64.values()].map((record) => {
+    ips: withIocIds('ips', result.ips),
+    emails: withIocIds('emails', result.emails),
+    hashes: withIocIds('hashes', result.hashes),
+    wallets: withIocIds('wallets', result.wallets),
+    base64: [...result.base64.values()].map((record, index) => {
       const item = {
+        id: `ioc:base64:${index}`,
         value: record.value,
         length: record.length,
         count: record.count,
@@ -1156,16 +1176,28 @@ function materialize(result, state) {
       }
       if (record.decodedPreview) item.decodedPreview = record.decodedPreview
       if (record.decodedKind) item.decodedKind = record.decodedKind
+      if (Number.isFinite(record.eventSeq)) item.eventSeq = record.eventSeq
       return item
     }),
-    telegram: [...result.telegram.values()],
-    discordWebhooks: [...result.discordWebhooks.values()],
-    crypto: [...result.crypto.values()],
-    shellCommands: [...result.shellCommands.values()],
-    registryKeys: [...result.registryKeys.values()],
-    filePaths: [...result.filePaths.values()],
-    mutexes: [...result.mutexes.values()],
-    other: [...result.other.values()],
+    telegram: withIocIds('telegram', result.telegram),
+    discordWebhooks: withIocIds('discordWebhooks', result.discordWebhooks),
+    crypto: withIocIds('crypto', result.crypto),
+    shellCommands: withIocIds('shellCommands', result.shellCommands),
+    registryKeys: withIocIds('registryKeys', result.registryKeys),
+    filePaths: withIocIds('filePaths', result.filePaths),
+    mutexes: withIocIds('mutexes', result.mutexes),
+    other: withIocIds('other', result.other),
     meta: { truncated: state.truncated },
   }
+}
+
+/**
+ * @param {string} category
+ * @param {Map<string, object>} map
+ */
+function withIocIds(category, map) {
+  return [...map.values()].map((record, index) => {
+    const item = { ...record, id: `ioc:${category}:${index}` }
+    return item
+  })
 }

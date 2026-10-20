@@ -123,6 +123,7 @@ test('buildReport produces the full top-level schema', () => {
     'hooks',
     'integrity',
     'meta',
+    'provenance',
     'recommendations',
     'sample',
     'static',
@@ -638,4 +639,67 @@ test('tracing carries an explicit, bounded truncation flag', () => {
   assert.match(markdown, /Trace truncated:\*\* yes/)
   assert.match(markdown, /code-step budget reached/)
   assert.match(markdown, /80 event\(s\) dropped/)
+})
+
+
+test('provenance is required for every scored reason', () => {
+  const report = buildReport(analysisFixture)
+  assert.ok(Array.isArray(report.provenance))
+  assert.equal(report.provenance.length, report.verdict.reasons.length)
+  for (const reason of report.verdict.reasons) {
+    assert.ok(Array.isArray(reason.refs) && reason.refs.length >= 1, reason.code)
+    const entry = report.provenance.find((row) => row.reasonCode === reason.code)
+    assert.ok(entry, reason.code)
+    assert.equal(entry.weight, reason.weight)
+    assert.deepEqual(entry.refs, reason.refs)
+    for (const ref of reason.refs) {
+      assert.ok(['event', 'ioc', 'artifact', 'stage', 'killChain'].includes(ref.kind), JSON.stringify(ref))
+      assert.equal(typeof ref.id, 'string')
+      assert.ok(ref.id.length > 0)
+    }
+  }
+  const markdown = renderMarkdown(report)
+  assert.match(markdown, /\*\*Evidence \(/)
+})
+
+test('platform events never appear in provenance event refs', () => {
+  const report = buildReport({
+    dynamic: {
+      ok: true,
+      counts: { byKind: { dom: 2, net: 1 } },
+      behavior: {
+        counts: { dom: 1, network: 1, platform: 2 },
+        dom: [{ api: 'document.write', seq: 21 }],
+        network: [{ method: 'GET', url: 'https://c2.example/a', seq: 30, firstSeq: 30 }],
+        killChain: [{ stage: 'command-and-control', stageId: 'kc:command-and-control', detail: 'outbound' }],
+      },
+      events: [
+        { seq: 6, kind: 'dom', phase: 'emit', api: 'document.installed' },
+        { seq: 9, kind: 'dom', phase: 'emit', event: 'document.fonts.installed' },
+        { seq: 16, kind: 'api', phase: 'emit', api: 'window.fetch', event: 'api.wrapped' },
+        { seq: 21, kind: 'dom', phase: 'before', api: 'document.write', text: '<div/>' },
+        { seq: 30, kind: 'net', phase: 'before', url: 'https://c2.example/a' },
+      ],
+    },
+  })
+  const eventIds = new Set()
+  for (const entry of report.provenance) {
+    for (const ref of entry.refs) {
+      if (ref.kind === 'event') eventIds.add(String(ref.id))
+    }
+  }
+  assert.equal(eventIds.has('6'), false, 'document.installed must not be referenced')
+  assert.equal(eventIds.has('9'), false)
+  assert.equal(eventIds.has('16'), false)
+  assert.ok(eventIds.has('21') || eventIds.has('30') || report.provenance.some((e) => e.refs.some((r) => r.kind === 'killChain')), JSON.stringify([...eventIds]))
+})
+
+test('reasons without evidence refs score zero points', () => {
+  // scoreVerdict refuses to add a reason when refs normalize to empty.
+  const verdict = scoreVerdict({
+    staticSection: { ast: { evalLike: 0 } },
+  })
+  assert.deepEqual(verdict.reasons, [])
+  assert.deepEqual(verdict.provenance, [])
+  assert.equal(verdict.score, 0)
 })
