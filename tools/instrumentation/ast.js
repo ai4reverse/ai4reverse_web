@@ -1,5 +1,5 @@
 import { parse } from '../restore/parse.js'
-import { traverse } from '../restore/pass-context.js'
+import { traverse } from '../util/babel.js'
 
 /**
  * AST-level instrumentation and static analysis.

@@ -1,5 +1,5 @@
 import { parse } from '../restore/parse.js'
-import { traverse } from '../restore/pass-context.js'
+import { traverse } from '../util/babel.js'
 import { OPCODE_BY_CODE, SEMANTICS } from '../jsvmp/spec.js'
 
 /**

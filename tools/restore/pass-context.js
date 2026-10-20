@@ -1,11 +1,11 @@
-import * as t from '@babel/types'
-import traverseModule from '@babel/traverse'
-import * as templateModule from '@babel/template'
 import { generateExpression } from './generate.js'
 
-export const traverse = traverseModule.default ?? traverseModule.traverse ?? traverseModule
-export const template = templateModule.default ?? templateModule
-export const types = t
+import { traverse, template, types } from '../util/babel.js'
+
+export { traverse, template, types }
+
+// The helpers below say `t` for the Babel types namespace, as the passes do.
+const t = types
 
 /**
  * Build the `context` object handed to every restoration pass. Centralising it
