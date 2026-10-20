@@ -124,10 +124,14 @@ function installAbort(bridge, kit) {
   method(signalProto, 'throwIfAborted', bridge.fn('throwIfAborted', 0, ({ thisHandle }) => {
     const state = states.require(thisHandle)
     if (!state.aborted) return ctx.undefined
-    const dumped = state.reason ? bridge.fromGuest(state.reason) : undefined
-    const error = new Error(typeof dumped?.message === 'string' ? dumped.message : 'The operation was aborted.')
-    error.name = typeof dumped?.name === 'string' ? dumped.name : 'AbortError'
-    throw error
+    // P0-2: rethrow Error-like guest reasons so a forged `{name,message}` never
+    // becomes an untagged host Error (stack-exhaustion false positive). Primitive
+    // reasons stay AbortError so throwIfAborted keeps a stable error.name.
+    if (state.reason) {
+      const kind = ctx.typeof(state.reason)
+      if (kind === 'object' || kind === 'function') return { error: state.reason.dup() }
+    }
+    return { error: pinError('AbortError', 'The operation was aborted.') }
   }))
   signalProto.dispose()
 

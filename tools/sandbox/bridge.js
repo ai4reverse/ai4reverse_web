@@ -22,8 +22,10 @@
  */
 
 import { HandleBag } from '../util/disposable.js'
+import { CONVERTED_HOST_ERROR } from '../engine/runtime.js'
 /** Marker used for conversion failures that must not escape to the guest. */
 const CONVERSION_FAILED = Symbol('conversion-failed')
+export { CONVERTED_HOST_ERROR }
 
 /**
  * @param {object} options
@@ -762,14 +764,31 @@ export function isHandle(value) {
 /**
  * Convert an arbitrary thrown value into something safe to throw across the
  * WASM boundary. Host stack traces never reach the guest; only a message does.
+ *
+ * Genuine engine stack-overflow Errors are rethrown unconverted so the
+ * callback-boundary classifier can still certify them; every other Error is
+ * tagged with {@link CONVERTED_HOST_ERROR}.
  */
 export function toGuestError(error) {
+  if (error && typeof error === 'object' && error[CONVERTED_HOST_ERROR]) return error
+  if (isUntaggedEngineStackError(error)) return error
   if (error instanceof Error) {
     const safe = new Error(sanitizeHostMessage(error.message))
     safe.name = error.name === 'Error' ? 'Error' : error.name
+    safe[CONVERTED_HOST_ERROR] = true
     return safe
   }
-  return new Error(sanitizeHostMessage(String(error)))
+  const safe = new Error(sanitizeHostMessage(String(error)))
+  safe[CONVERTED_HOST_ERROR] = true
+  return safe
+}
+
+/** Host trampoline stack signal: exact wording, not guest-tagged. */
+function isUntaggedEngineStackError(error) {
+  if (!error || typeof error !== 'object' || error[CONVERTED_HOST_ERROR]) return false
+  if (error.name !== 'RangeError' && error.name !== 'Error') return false
+  const message = error.message
+  return message === 'Maximum call stack size exceeded' || message === 'stack overflow'
 }
 
 /** Remove host paths and internal module names from a message. */

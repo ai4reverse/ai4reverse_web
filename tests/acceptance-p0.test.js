@@ -71,9 +71,7 @@ test('P0-1 stolen channel cannot inject forged code:step events', {
   }
 })
 
-test('P0-2 AbortController.abort with forged stack shape does not hit stack limit', {
-  todo: 'ACCEPTANCE P0-2 — guest errors must not certify host stack evidence',
-}, async () => {
+test('P0-2 AbortController.abort with forged stack shape does not hit stack limit', async () => {
   const sb = await TracelessSandbox.create({ logLevel: 'silent', limits: { timeoutMs: 15_000 } })
   try {
     const run = await sb.run(`

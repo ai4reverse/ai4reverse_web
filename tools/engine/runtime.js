@@ -1,6 +1,13 @@
 import { getQuickJS, newQuickJSWASMModule } from 'quickjs-emscripten'
 
 /**
+ * Marks host Errors synthesised from guest-influenced values. Exact-match
+ * stack-exhaustion classifiers must reject tagged throws (P0-2).
+ * Defined here so `bridge.toGuestError` can tag without an engine→sandbox edge.
+ */
+export const CONVERTED_HOST_ERROR = Symbol('ai4r.converted-host-error')
+
+/**
  * QuickJS module + runtime lifecycle.
  *
  * A single WASM module instance is reused (WASM compilation is expensive); each
@@ -315,6 +322,9 @@ export function isHostStackExhaustion(thrown) {
  */
 function isCallbackStackExhaustion(thrown) {
   if (!thrown || typeof thrown !== 'object') return false
+  // Guest-influenced host Errors are tagged by `toGuestError` / env shims.
+  // Matching their wording would let a sample forge stack-exhaustion evidence.
+  if (thrown[CONVERTED_HOST_ERROR]) return false
   if (thrown.name !== 'RangeError') return false
   const message = thrown.message
   if (typeof message !== 'string') return false
