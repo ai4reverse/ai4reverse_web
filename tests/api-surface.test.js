@@ -51,7 +51,7 @@ test('every exports subpath resolves to an importable module', async () => {
   // roadmap to the wrong surface.
   assert.deepEqual(
     entries.filter(([subpath]) => subpath !== '.').map(([subpath]) => subpath),
-    ['./sandbox', './instrumentation', './hook', './restore', './analysis', './jsvmp', './logging', './invocation', './util', './cli'],
+    ['./sandbox', './instrumentation', './hook', './restore', './analysis', './jsvmp', './constraint', './logging', './invocation', './util', './cli'],
   )
 })
 

@@ -203,6 +203,7 @@ test('the declaration files are published, self-contained and parse as ES module
     'ai4reverse.d.ts',
     'analysis.d.ts',
     'cli.d.ts',
+    'constraint.d.ts',
     'hook.d.ts',
     'instrumentation.d.ts',
     'invocation.d.ts',

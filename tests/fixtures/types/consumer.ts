@@ -5,6 +5,7 @@ import * as hook from 'ai4reverse-web/hook'
 import * as restore from 'ai4reverse-web/restore'
 import * as analysis from 'ai4reverse-web/analysis'
 import * as jsvmp from 'ai4reverse-web/jsvmp'
+import * as constraint from 'ai4reverse-web/constraint'
 import * as logging from 'ai4reverse-web/logging'
 import * as invocation from 'ai4reverse-web/invocation'
 import * as util from 'ai4reverse-web/util'
@@ -19,6 +20,16 @@ const mappedLine: number = vm.sourceMap[0].line
 const bytecodeArgs: unknown[] = vm.bytecode[0].args
 const hostResult: unknown = vm.run({ trust: 'host', args: [42] })
 const rootSource: string = api.buildVM([]).code
+const constraintReport: constraint.ConstraintReport = await constraint.analyzeConstraints('if (1) { 0 }')
+const opaqueCount: number = constraintReport.stats.opaque
+const sat = await constraint.solveConstraints(['x * 2 === 42'])
+const solved: number | string | undefined = sat.model?.x
+const proof = await constraint.provePredicate('(x & 1) === 0 || (x & 1) === 1')
+const proven: boolean = proof.proved
+const translation: constraint.SafeTranslation = constraint.translateExpression(
+  {}, {}, { type: 'NumericLiteral', value: 1 },
+)
+const rendered: string = constraint.renderConstraintReport(constraintReport)
 
 const trace = instrumentation.createTraceRecorder({
   sink: { write(event) { const seq: number = event.seq; void seq } },
@@ -67,4 +78,4 @@ function consumeRuntimeChanges(
 
 void [hasListeners, consumeRuntimeChanges, source, opcode, caseLine, mappedLine, bytecodeArgs, hostResult, rootSource,
   events, childEvents, drained, consumeEnvironment, artifactId, text, hash, count, bytes, listed,
-  sandbox, hook, restore, invocation, util, cli]
+  sandbox, hook, restore, invocation, util, cli, opaqueCount, solved, proven, translation, rendered]

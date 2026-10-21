@@ -40,6 +40,11 @@
       "import": "./tools/jsvmp/index.js",
       "default": "./tools/jsvmp/index.js"
     },
+    "./constraint": {
+      "types": "./types/constraint.d.ts",
+      "import": "./tools/constraint/index.js",
+      "default": "./tools/constraint/index.js"
+    },
     "./logging": {
       "types": "./types/logging.d.ts",
       "import": "./tools/logging/index.js",
@@ -106,7 +111,8 @@
     "@babel/types": "^8.0.6",
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
-    "quickjs-emscripten": "^0.32.0"
+    "quickjs-emscripten": "^0.32.0",
+    "z3-solver": "^5.3.1"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
