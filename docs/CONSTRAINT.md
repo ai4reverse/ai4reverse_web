@@ -65,7 +65,15 @@ The exact fragment is larger than it looks:
   outside the exact fragment.
 - `>>>` is converted back to an unsigned integer.
 - `!`, `&&`, `||`, `?:`, `typeof`, and equality/comparison of exact values are
+  exact. A `&&`/`||`/`?:` operand yields the **operand value** rather than a
+  boolean, so a term derived from truthiness is marked as such and stays
+  `contingent` when compared across sorts even though the comparison itself is
   exact.
+- Cross-type equality is decided from literals and from exact numeric operands:
+  `1 === true`, `1 == true`, `null == undefined`, `null === undefined` and
+  `typeof x === '<non-tag>'` are claimed outright. `x === 'a'` and
+  `x === undefined` are decided only under `assumeIntegers`/`assumeInt32`,
+  where a symbol is declared to denote a number.
 - Identifiers carry two independent interpretations: an unbounded `Int` for
   arithmetic and a 32-bit vector for bitwise operators. They are independent by
   default, which over-approximates the program (sound for validity proofs). With
@@ -288,6 +296,14 @@ per-query timeout, total solver time, finding text and finding count. The
 `rlimit` is the deterministic budget; the wall-clock timeout is a host safety
 net, so a timeout-driven `unknown` is reported rather than hidden. A bound that trips sets `truncated: true` and a note; it never turns into
 a partial proof.
+
+Limits may be passed either as a nested `limits` object or as top-level keys on
+the same options bag. `solveConstraints()`, `provePredicate()`,
+`proveEquivalent()` and `simplifyExpression()` honour both: the nested object
+wins for most keys, while a top-level `timeoutMs` or `solverRlimit` wins over
+the nested value. `analyzeConstraints()` merges the two bags with the same
+top-level preference, and `collectPathConditions()` accepts only the nested
+form.
 
 - **No z3 load:** the analysis returns `ok:false` with an `error.message`; the
   rest of `analyzeSample()` continues.

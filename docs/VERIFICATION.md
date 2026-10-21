@@ -67,8 +67,8 @@ below is that pin, not the current baseline.
 
 ## Full suite
 
-The current working-tree run is **961 pass / 0 fail / 58 `tests/*.test.js`
-files / ~117 s** via `pnpm test` (2026-10-21, including
+The current working-tree run is **1046 pass / 0 fail / 60 `tests/*.test.js`
+files / ~161 s** via `pnpm test` (2026-10-21, including
 `tests/constraint.test.js` and `tests/constraint-translate.test.js`). The transcript below is the previous pin at
 `7c1df9c` (612 pass), kept as historical evidence rather than a current claim.
 
