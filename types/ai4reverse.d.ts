@@ -1188,6 +1188,159 @@ export interface AnalyzeSampleResult {
 }
 
 /* -------------------------------------------------------------------------- */
+/* taint analysis (Circle-IR)                                                  */
+/* -------------------------------------------------------------------------- */
+
+export interface TaintLimits {
+  maxSourceBytes: number
+  timeoutMs: number
+  /** Worker V8 old-generation heap limit, not a total process/WASM memory cap. */
+  memoryMb: number
+  maxSources: number
+  maxSinks: number
+  maxSanitizers: number
+  maxFlows: number
+  maxPathLength: number
+  maxTextLength: number
+}
+
+export interface TaintSourcePattern {
+  method?: string
+  class?: string
+  property?: string
+  object?: string
+  annotation?: string
+  method_annotation?: string
+  type: string
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  return_tainted?: boolean
+  param_tainted?: boolean
+  property_tainted?: boolean
+  languages?: Array<'javascript' | 'typescript' | 'tsx'>
+  note?: string
+}
+
+export interface TaintSinkPattern {
+  method: string
+  class?: string
+  type: string
+  cwe: string
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  arg_positions: number[]
+  languages?: Array<'javascript' | 'typescript' | 'tsx'>
+  exclude_languages?: Array<'javascript' | 'typescript' | 'tsx'>
+  allow_unresolved_receiver?: boolean
+  note?: string
+}
+
+export interface TaintSanitizerPattern {
+  method?: string
+  class?: string
+  annotation?: string
+  removes: string[]
+  note?: string
+}
+
+export interface TaintConfig {
+  sources?: TaintSourcePattern[]
+  sinks?: TaintSinkPattern[]
+  sanitizers?: TaintSanitizerPattern[]
+}
+
+export interface TaintAnalysisOptions {
+  filename?: string
+  /** Inferred from .ts/.mts/.cts/.tsx, otherwise JavaScript (includes JSX). */
+  language?: 'javascript' | 'typescript' | 'tsx'
+  limits?: Partial<TaintLimits>
+  /** Additional patterns merged with built-ins; no configuration files are read. */
+  config?: TaintConfig
+  /** Disable configured defaults, not Circle-IR's language-specific passes. */
+  useDefaultConfig?: boolean
+  /** Treat bare parameters as speculative sources. Default false. */
+  speculativeParamSources?: boolean
+}
+
+export interface TaintSource {
+  type: string
+  line: number
+  location: string
+  confidence: number
+  method: string
+  code: string
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  variable: string
+  in_method: string
+}
+
+export interface TaintSink {
+  type: string
+  line: number
+  location: string
+  confidence: number
+  method: string
+  code: string
+  cwe: string
+  argPositions: number[]
+}
+
+export interface TaintSanitizer {
+  type: string
+  method: string
+  line: number
+  sanitizes: string[]
+}
+
+export interface TaintFlowStep {
+  variable: string
+  line: number
+  type: string
+}
+
+export interface TaintFlow {
+  source_line: number
+  sink_line: number
+  source_type: string
+  sink_type: string
+  confidence: number
+  sanitized: boolean
+  /** True if intermediate steps were omitted; endpoints are preserved. */
+  pathTruncated: boolean
+  path: TaintFlowStep[]
+}
+
+export interface TaintReport {
+  enabled: boolean
+  ok: boolean
+  engine: 'circle-ir'
+  engineVersion: string | null
+  filename: string
+  language: string
+  parse: { ok: boolean; errorCount: number; errors: Array<{ line: number; column: number; message: string }> }
+  /** Counts before retention limits; array lengths can be smaller. */
+  stats: { sources: number; sinks: number; sanitizers: number; flows: number; taintedMethods: number; methodFlows: number }
+  sources: TaintSource[]
+  sinks: TaintSink[]
+  sanitizers: TaintSanitizer[]
+  flows: TaintFlow[]
+  interprocedural: {
+    tainted_methods: string[]
+    taint_bridges: string[]
+    method_flows: Array<{ caller: string; callee: string; call_line: number; tainted_args: number[]; returns_taint: boolean }>
+  }
+  limits: TaintLimits
+  truncated: boolean
+  truncatedBy: string[]
+  notes: string[]
+  error: { code: string; message: string } | null
+  elapsedMs: number
+}
+
+export declare const TAINT_LIMITS: Readonly<TaintLimits>
+/** Invalid options throw; engine/parse/timeout failures return `ok:false`. */
+export declare function analyzeTaint(source: string, options?: TaintAnalysisOptions): Promise<TaintReport>
+export declare function renderTaintReport(report?: TaintReport | object): string
+
+/* -------------------------------------------------------------------------- */
 /* constraint solving (z3)                                                     */
 /* -------------------------------------------------------------------------- */
 

@@ -4,3 +4,4 @@ export { buildReport, renderMarkdown, scoreVerdict, VERDICT_WEIGHTS } from './re
 export { summarizeBehavior, inferKillChain } from './behavior.js'
 export { createArtifactStore, ARTIFACT_KINDS } from './artifact.js'
 export { extractStagedPayloads } from './stage.js'
+export { analyzeTaint, renderTaintReport, TAINT_LIMITS } from '../taint/index.js'

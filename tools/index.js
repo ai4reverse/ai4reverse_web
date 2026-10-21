@@ -72,6 +72,8 @@ export {
   CONSTRAINT_LIMITS,
 } from './constraint/index.js'
 
+export { analyzeTaint, renderTaintReport, TAINT_LIMITS } from './taint/index.js'
+
 export { createLogger, createEventSink, createMemoryDestination, redactPaths, scopeLogger } from './logging/logger.js'
 
 import { analyzeSample } from './analysis/index.js'

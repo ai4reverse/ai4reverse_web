@@ -45,6 +45,11 @@
       "import": "./tools/constraint/index.js",
       "default": "./tools/constraint/index.js"
     },
+    "./taint": {
+      "types": "./types/taint.d.ts",
+      "import": "./tools/taint/index.js",
+      "default": "./tools/taint/index.js"
+    },
     "./logging": {
       "types": "./types/logging.d.ts",
       "import": "./tools/logging/index.js",
@@ -109,6 +114,7 @@
     "@babel/template": "^8.0.0",
     "@babel/traverse": "^8.0.7",
     "@babel/types": "^8.0.6",
+    "circle-ir": "^4.17.0",
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
     "quickjs-emscripten": "^0.32.0",

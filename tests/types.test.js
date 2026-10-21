@@ -211,6 +211,7 @@ test('the declaration files are published, self-contained and parse as ES module
     'logging.d.ts',
     'restore.d.ts',
     'sandbox.d.ts',
+    'taint.d.ts',
     'util.d.ts',
   ])
 
