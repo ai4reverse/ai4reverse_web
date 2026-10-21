@@ -164,6 +164,7 @@ See `examples/national-sdk/README.md`, `docs/THREAT-MODEL.md`,
 | `hooks-demo.mjs` | traceless API mock (`sendBeacon`), synthetic network route, exception/code hooks, hook audit and trace counts |
 | `restore-demo.mjs` | per-pass restoration table and restored excerpts for several samples |
 | `jsvmp-demo.mjs` | build an obfuscated JSVMP, static dispatch/handler analysis, opcode-level dynamic trace and devirtualised sequence |
+| `constraint-demo.mjs` | z3 opaque predicates, unreachable arms, a solved model, validity/equivalence checks and an SMT normal form |
 | `build-jsvmp-sample.mjs` | regenerates `jsvmp-sample.js` after changes to `tools/jsvmp/` |
 
 ```bash
@@ -171,6 +172,7 @@ node examples/api-usage.mjs
 node examples/hooks-demo.mjs
 node examples/restore-demo.mjs
 node examples/jsvmp-demo.mjs
+node examples/constraint-demo.mjs
 node examples/build-jsvmp-sample.mjs   # only when regenerating the VM sample
 ```
 

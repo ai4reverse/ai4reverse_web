@@ -34,6 +34,9 @@ node tools/cli.js restore examples/control-flow-flattened.js --passes control-fl
 section "single dynamic run with the raw trace"
 node tools/cli.js run examples/anti-analysis.js --events | head -5
 
+section "constraint solving (opaque predicates and dead arms)"
+node tools/cli.js constraint examples/control-flow-flattened.js
+
 section "JSVMP tracing summary"
 node tools/cli.js analyze examples/jsvmp-sample.js --json --log-level silent \
   | node -e 'let raw="";process.stdin.on("data",c=>raw+=c).on("end",()=>{const r=JSON.parse(raw);console.log(r.tracing.jsvmp)})'

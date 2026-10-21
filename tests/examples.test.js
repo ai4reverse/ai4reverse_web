@@ -25,7 +25,7 @@ const SAMPLES = [
   'jsvmp-sample.js',
 ]
 
-const DEMOS = ['api-usage.mjs', 'hooks-demo.mjs', 'restore-demo.mjs', 'jsvmp-demo.mjs']
+const DEMOS = ['api-usage.mjs', 'hooks-demo.mjs', 'restore-demo.mjs', 'jsvmp-demo.mjs', 'constraint-demo.mjs']
 
 async function analyzeFile(name) {
   const source = await readFile(`${EXAMPLES}/${name}`, 'utf8')
