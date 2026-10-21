@@ -64,6 +64,29 @@ test('boolean structure is short-circuit-correct and does not execute the sample
   assert.equal((await provePredicate('x !== x')).proved, false)
 })
 
+test('strict and loose equality keep JS type rules', async () => {
+  const cases = [
+    ['1 === true', {}, 'always-false'],
+    ['1 == true', {}, 'always-true'],
+    ['2 == true', {}, 'always-false'],
+    ['0 == false', {}, 'always-true'],
+    ['null == undefined', {}, 'always-true'],
+    ['null === undefined', {}, 'always-false'],
+    ["typeof x === 'toString'", {}, 'always-false'],
+    ["x === 'a'", { assumeIntegers: true }, 'always-false'],
+    ["x !== 'a'", { assumeIntegers: true }, 'always-true'],
+  ]
+  for (const [source, options, expected] of cases) {
+    const proof = await provePredicate(source, options)
+    assert.equal(proof.status, expected, `${source}: ${JSON.stringify(proof)}`)
+  }
+
+  // A non-literal string expression may evaluate to a real tag, so it must not
+  // be collapsed to `false` just because the sorts differ.
+  const dynamicTag = await provePredicate("typeof x === ('num' + 'ber')")
+  assert.equal(dynamicTag.proved, false, JSON.stringify(dynamicTag))
+})
+
 test('strings, typeof tags and Math helpers are translated', async () => {
   for (const source of [
     "'a' + 'b' === 'ab'",

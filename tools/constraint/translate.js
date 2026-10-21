@@ -481,6 +481,51 @@ export function createTranslator(api, context, options = {}) {
       })
     }
 
+    if (a.exact && b.exact) {
+      const typeString = classifyTypeStringEquality(a, b, node)
+      if (typeString !== null) {
+        const eq = context.Bool.val(typeString)
+        return term(negated ? context.Not(eq) : eq, BOOL, {
+          exact: true, integral: true, pure, variables, uninterpreted,
+        })
+      }
+      const typeStringMix =
+        (a.sort === TYPE && b.sort === STRING) || (a.sort === STRING && b.sort === TYPE)
+      if (strict && a.sort !== b.sort && !typeStringMix && !(isArith(a) && isArith(b))) {
+        // Strict equality across different JS types is always false.
+        const eq = context.Bool.val(false)
+        return term(negated ? context.Not(eq) : eq, BOOL, {
+          exact: true, integral: true, pure, variables, uninterpreted,
+        })
+      }
+      if (!strict) {
+        const nullish =
+          (a.sort === NULL && b.sort === UNDEFINED) || (a.sort === UNDEFINED && b.sort === NULL)
+        if (nullish) {
+          const eq = context.Bool.val(true)
+          return term(negated ? context.Not(eq) : eq, BOOL, {
+            exact: true, integral: true, pure, variables, uninterpreted,
+          })
+        }
+        if (a.sort === BOOL && isArith(b)) {
+          const leftInt = asInt(a, state)
+          const rightInt = asInt(b, state)
+          const eq = leftInt.expr.eq(rightInt.expr)
+          return term(negated ? context.Not(eq) : eq, BOOL, {
+            exact: true, integral: true, pure, variables, uninterpreted,
+          })
+        }
+        if (b.sort === BOOL && isArith(a)) {
+          const leftInt = asInt(a, state)
+          const rightInt = asInt(b, state)
+          const eq = leftInt.expr.eq(rightInt.expr)
+          return term(negated ? context.Not(eq) : eq, BOOL, {
+            exact: true, integral: true, pure, variables, uninterpreted,
+          })
+        }
+      }
+    }
+
     // A pure, non-exact equality is still a deterministic boolean. Sharing one
     // atom per operator family + operand pair keeps `p !== p` the complement of
     // `p === p` without claiming either one is constant.
@@ -837,6 +882,29 @@ export function createTranslator(api, context, options = {}) {
       state.typeofNodes.set(node, symbol)
     }
     return symbol
+  }
+
+  /**
+   * A `typeof` tag compared with a literal string that is not a tag can never
+   * be equal. A non-literal string expression may evaluate to a tag, so it is
+   * left as an atom.
+   *
+   * @param {Translation} left
+   * @param {Translation} right
+   * @param {object} node
+   * @returns {boolean|null} equality value, or null when not decidable here
+   */
+  function classifyTypeStringEquality(left, right, node) {
+    const cases = [
+      { typeSide: left, stringSide: right, stringNode: node.right },
+      { typeSide: right, stringSide: left, stringNode: node.left },
+    ]
+    for (const item of cases) {
+      if (item.typeSide.sort !== TYPE || item.stringSide.sort !== STRING) continue
+      const value = stringLiteralOf(item.stringNode)
+      if (value !== null && !Object.hasOwn(TYPE_TAGS, value)) return false
+    }
+    return null
   }
 
   /**
