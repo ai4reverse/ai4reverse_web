@@ -1097,7 +1097,10 @@ export interface AnalysisReport {
   verdict: Verdict
   /** Per-reason evidence chain (Wave 3 report-internal provenance). */
   provenance: ProvenanceEntry[]
-  static: object
+  static: {
+    taint: TaintReport
+    [key: string]: unknown
+  }
   /**
    * Normalised dynamic section. `provisional` mirrors the sandbox run;
    * `eventsTruncated` is set when the retained slice drops events or the run
@@ -1162,6 +1165,8 @@ export interface AnalyzeSampleOptions extends SandboxOptions {
   strictEnv?: boolean
   jsvmpAnalysis?: boolean
   constraints?: boolean | ConstraintAnalysisOptions
+  /** Enabled by default; `false` disables the Circle-IR worker. */
+  taint?: boolean | TaintAnalysisOptions
   generateOptions?: object
   restoreHooks?: HookBus | null
   filename?: string
@@ -1185,6 +1190,8 @@ export interface AnalyzeSampleResult {
   vmAnalysis: object | null
   /** z3 constraint analysis; `null` only when the component was disabled. */
   constraint: ConstraintReport | null
+  /** Circle-IR taint evidence; `null` only when disabled. */
+  taint: TaintReport | null
 }
 
 /* -------------------------------------------------------------------------- */

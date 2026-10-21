@@ -15,6 +15,8 @@
 import { createRequire } from 'node:module'
 import { extractIOCs } from './ioc.js'
 import { isPlatformEvent } from './behavior.js'
+import { normalizeTaintReport } from '../taint/report.js'
+import { renderTaintReport } from '../taint/render.js'
 
 const require = createRequire(import.meta.url)
 
@@ -184,6 +186,7 @@ export function buildReport(analysis) {
     iocs,
     techniques: asArray(staticInput.techniques),
     constraint: normalizeConstraint(staticInput.constraint ?? input.constraint),
+    taint: { ...normalizeTaintReport(staticInput.taint ?? input.taint), elapsedMs: 0 },
   }
 
   const dynamicInput = obj(input.dynamic)
@@ -929,6 +932,13 @@ export function renderMarkdown(report) {
       }
     }
     lines.push('')
+  }
+
+  // Taint evidence stays separate from dynamic behaviour and verdict weights.
+  if (obj(staticSection.taint).enabled === true) {
+    const taintMarkdown = renderTaintReport(staticSection.taint)
+      .replace(/^### /gm, '#### ').replace(/^## /gm, '### ').replace(/^# /gm, '## ')
+    lines.push(taintMarkdown.trimEnd(), '')
   }
 
   // IOCs

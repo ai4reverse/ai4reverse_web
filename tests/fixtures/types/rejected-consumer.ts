@@ -37,4 +37,14 @@ function rejectPhantomEnvironmentFields(result: EnvironmentInstallResult): void 
   void missing
 }
 
+import { analyzeTaint } from 'ai4reverse-web/taint'
+// @ts-expect-error The taint component accepts source bytes, not a file object.
+analyzeTaint({ file: 'sample.js' })
+// @ts-expect-error Only JS/TS/TSX parsers are exposed by this adapter.
+analyzeTaint('42', { language: 'python' })
+// @ts-expect-error Limit values must be numbers.
+analyzeTaint('42', { limits: { timeoutMs: '1000' } })
+// @ts-expect-error Sink patterns must state their argument positions.
+analyzeTaint('42', { config: { sinks: [{ method: 'sink', type: 'xss', cwe: 'CWE-79', severity: 'high' }] } })
+
 void [source, text, rejectPhantomEnvironmentFields]

@@ -6,6 +6,7 @@ import * as restore from 'ai4reverse-web/restore'
 import * as analysis from 'ai4reverse-web/analysis'
 import * as jsvmp from 'ai4reverse-web/jsvmp'
 import * as constraint from 'ai4reverse-web/constraint'
+import * as taint from 'ai4reverse-web/taint'
 import * as logging from 'ai4reverse-web/logging'
 import * as invocation from 'ai4reverse-web/invocation'
 import * as util from 'ai4reverse-web/util'
@@ -30,6 +31,15 @@ const translation: constraint.SafeTranslation = constraint.translateExpression(
   {}, {}, { type: 'NumericLiteral', value: 1 },
 )
 const rendered: string = constraint.renderConstraintReport(constraintReport)
+const taintOptions: taint.TaintAnalysisOptions = { limits: { maxFlows: 10 }, filename: 'sample.ts' }
+const taintReport: taint.TaintReport = await taint.analyzeTaint('eval(location.hash)', taintOptions)
+const taintFlow: taint.TaintFlow | undefined = taintReport.flows[0]
+const taintText: string = analysis.renderTaintReport(taintReport)
+const maxFlows: number = api.TAINT_LIMITS.maxFlows
+const analyzed = await api.analyzeSample('42', { dynamic: false, taint: taintOptions })
+const taintEnabled: boolean = analyzed.report.static.taint.enabled
+const sameReport: api.TaintReport | null = analyzed.taint
+void [taintFlow, taintText, maxFlows, taintEnabled, sameReport]
 
 const trace = instrumentation.createTraceRecorder({
   sink: { write(event) { const seq: number = event.seq; void seq } },

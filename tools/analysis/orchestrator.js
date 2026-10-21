@@ -9,6 +9,8 @@ import { createLogger } from '../logging/logger.js'
 import { sha256, shortHash } from '../util/hash.js'
 import { analyzeVM, summarizeVM } from '../jsvmp/index.js'
 import { analyzeConstraints } from '../constraint/analyze.js'
+import { analyzeTaint } from '../taint/index.js'
+import { normalizeTaintReport } from '../taint/report.js'
 
 /**
  * Analysis orchestrator: the composed pipeline an analyst actually runs.
@@ -36,6 +38,8 @@ import { analyzeConstraints } from '../constraint/analyze.js'
  * @param {boolean|object} [options.constraints] run z3 constraint analysis
  *   (default true); pass `false` to disable or an option bag for
  *   `analyzeConstraints` (`assumeIntegers`, `timeoutMs`, `limits`, ...)
+ * @param {boolean|object} [options.taint] static Circle-IR taint analysis
+ *   (default true); `false` disables it, an object configures `analyzeTaint`
  * @param {object} [options.sandbox] reuse an initialised sandbox
  * @param {Array} [options.hooks]
  * @param {string} [options.entry] entry function to call after evaluation
@@ -89,6 +93,27 @@ export async function analyzeSample(source, options = {}) {
         truncated: false,
         elapsedMs: 0,
       }
+    }
+  }
+
+  // ---- taint analysis ----------------------------------------------------
+  // Analyze original bytes only: restored offsets describe a different source.
+  let taint = null
+  if (options.taint !== false) {
+    try {
+      if (options.taint !== undefined && options.taint !== true &&
+          (!options.taint || typeof options.taint !== 'object' || Array.isArray(options.taint))) {
+        throw new TypeError('taint must be boolean or an option object')
+      }
+      const taintOptions = typeof options.taint === 'object' ? options.taint : {}
+      taint = await analyzeTaint(text, { filename: name, ...taintOptions })
+    } catch (error) {
+      logger.warn({ err: error.message }, 'taint analysis failed; continuing')
+      taint = normalizeTaintReport({
+        enabled: true,
+        filename: name,
+        error: { code: 'TAINT_OPTIONS', message: error.message },
+      })
     }
   }
 
@@ -261,6 +286,7 @@ export async function analyzeSample(source, options = {}) {
       : null,
     iocs: mergedIocs,
     techniques: facts?.techniques ?? [],
+    taint: taint ?? normalizeTaintReport({ notes: ['taint analysis disabled'] }),
     constraint: constraint ?? {
       enabled: false,
       ok: false,
@@ -379,6 +405,7 @@ export async function analyzeSample(source, options = {}) {
     jsvmp: vmSummary,
     vmAnalysis,
     constraint,
+    taint,
     traceTruncation: truncation,
   }
 }

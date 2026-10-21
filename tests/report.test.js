@@ -158,7 +158,7 @@ test('buildReport produces the full top-level schema', () => {
     'sourceUrl',
     'truncated',
   ])
-  assert.deepEqual(Object.keys(report.static).sort(), ['ast', 'constraint', 'iocs', 'parse', 'restoration', 'techniques'])
+  assert.deepEqual(Object.keys(report.static).sort(), ['ast', 'constraint', 'iocs', 'parse', 'restoration', 'taint', 'techniques'])
   assert.deepEqual(Object.keys(report.static.ast).sort(), [
     'evalLike',
     'functions',
