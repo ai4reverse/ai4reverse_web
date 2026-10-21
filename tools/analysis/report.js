@@ -143,6 +143,10 @@ const LEVEL_SUSPICIOUS_MAX = 59
 /** Hook failures are evidence, but a report never carries an unbounded list. */
 const MAX_REPORTED_HOOK_ERRORS = 50
 
+/** Constraint findings are bounded like every other report list. */
+const MAX_CONSTRAINT_FINDINGS = 100
+const MAX_CONSTRAINT_TEXT = 240
+
 /** Truncation causes the report understands; anything else is dropped. */
 const TRACE_TRUNCATION_REASONS = Object.freeze(['code-budget', 'event-limit'])
 
@@ -179,6 +183,7 @@ export function buildReport(analysis) {
     ast: normalizeAst(staticInput.ast ?? input.ast),
     iocs,
     techniques: asArray(staticInput.techniques),
+    constraint: normalizeConstraint(staticInput.constraint ?? input.constraint),
   }
 
   const dynamicInput = obj(input.dynamic)
@@ -890,6 +895,42 @@ export function renderMarkdown(report) {
   lines.push(`- **Techniques:** ${joinValues(staticSection.techniques)}`)
   lines.push('')
 
+  // Constraint solving
+  const constraint = obj(staticSection.constraint)
+  if (constraint.enabled === true) {
+    const constraintStats = obj(constraint.stats)
+    lines.push('## Constraint solving', '')
+    lines.push(`- **Engine:** ${renderValue(constraint.engine)}`)
+    lines.push(`- **Proved constant:** ${formatNumber(constraintStats.opaque)} of ${formatNumber(constraintStats.predicates)} translated condition(s)`)
+    lines.push(`- **Unreachable branches:** ${formatNumber(constraintStats.unreachable)}`)
+    lines.push(`- **Simplifications:** ${formatNumber(constraintStats.simplifications)}`)
+    if (constraint.truncated) lines.push('- **Truncated:** true (candidate or time budget reached)')
+    if (constraint.error != null) lines.push(`- **Error:** ${escapeText(obj(constraint.error).message ?? constraint.error)}`)
+    const constraintAssumptions = asArray(constraint.assumptions)
+    if (constraintAssumptions.length > 0) lines.push(`- **Assumptions:** ${joinValues(constraintAssumptions)}`)
+    const opaque = asArray(constraint.opaquePredicates)
+    if (opaque.length > 0) {
+      lines.push('', '| Location | Verdict | Role | Condition |', '| --- | --- | --- | --- |')
+      for (const finding of opaque) {
+        const item = obj(finding)
+        lines.push(
+          `| ${formatNumber(item.line)}:${formatNumber(item.column)} | ${escapeCell(item.kind)} | ${escapeCell(item.role)} | ${escapeCell(item.text)} |`,
+        )
+      }
+    }
+    const unreachable = asArray(constraint.unreachableBranches)
+    if (unreachable.length > 0) {
+      lines.push('', '| Location | Arm | Path |', '| --- | --- | --- |')
+      for (const finding of unreachable) {
+        const item = obj(finding)
+        lines.push(
+          `| ${formatNumber(item.line)}:${formatNumber(item.column)} | ${escapeCell(item.kind)} | ${escapeCell(joinValues(item.path))} |`,
+        )
+      }
+    }
+    lines.push('')
+  }
+
   // IOCs
   lines.push('## IOCs', '')
   lines.push(...renderIocs(iocs))
@@ -1341,6 +1382,113 @@ function normalizeError(value) {
   const input = obj(value)
   const message = str(input.message ?? input.name ?? '')
   return message.length > 0 ? message : null
+}
+
+/**
+ * Normalize the z3 constraint report. Every key is present even when the
+ * component did not run, so a consumer never branches on a missing section.
+ *
+ * @param {unknown} value
+ */
+function normalizeConstraint(value) {
+  const input = obj(value)
+  // `buildReport({})` must say "not run", not "enabled with no findings".
+  const enabled = value != null && typeof value === 'object' ? input.enabled !== false : false
+  const statsInput = obj(input.stats)
+  return {
+    enabled,
+    ok: input.ok === true,
+    engine: str(input.engine) || 'z3-solver',
+    engineVersion: str(input.engineVersion) || null,
+    parse: {
+      ok: obj(input.parse).ok === true,
+      sourceType: str(obj(input.parse).sourceType),
+      errors: asArray(obj(input.parse).errors)
+        .slice(0, 10)
+        .map((error) => ({
+          message: constraintText(typeof error === 'string' ? error : obj(error).message ?? 'parse error'),
+        })),
+    },
+    stats: {
+      candidates: toCount(statsInput.candidates),
+      predicates: toCount(statsInput.predicates),
+      proven: toCount(statsInput.proven),
+      opaque: toCount(statsInput.opaque),
+      undecided: toCount(statsInput.undecided),
+      unsupported: toCount(statsInput.unsupported),
+      inexact: toCount(statsInput.inexact),
+      branches: toCount(statsInput.branches),
+      unreachable: toCount(statsInput.unreachable),
+      unsupportedBranches: toCount(statsInput.unsupportedBranches),
+      undecidedBranches: toCount(statsInput.undecidedBranches),
+      simplifications: toCount(statsInput.simplifications),
+      solverCalls: toCount(statsInput.solverCalls),
+    },
+    opaquePredicates: asArray(input.opaquePredicates)
+      .slice(0, MAX_CONSTRAINT_FINDINGS)
+      .map((finding) => {
+        const item = obj(finding)
+        return {
+          kind: str(item.kind),
+          role: str(item.role),
+          line: Number.isInteger(item.line) ? item.line : null,
+          column: Number.isInteger(item.column) ? item.column : null,
+          text: constraintText(item.text),
+          variables: asArray(item.variables).map((name) => str(name)).slice(0, 12),
+          exact: item.exact === true,
+          pure: item.pure !== false,
+          assumptions: asArray(item.assumptions).map((name) => str(name)).slice(0, 4),
+          proof: str(item.proof),
+        }
+      }),
+    unreachableBranches: asArray(input.unreachableBranches)
+      .slice(0, MAX_CONSTRAINT_FINDINGS)
+      .map((finding) => {
+        const item = obj(finding)
+        return {
+          kind: str(item.kind),
+          line: Number.isInteger(item.line) ? item.line : null,
+          column: Number.isInteger(item.column) ? item.column : null,
+          text: constraintText(item.text),
+          path: asArray(item.path).map((entry) => constraintText(entry)).slice(0, 12),
+          variables: asArray(item.variables).map((name) => str(name)).slice(0, 12),
+          exact: item.exact === true,
+          pure: item.pure !== false,
+          assumptions: asArray(item.assumptions).map((name) => str(name)).slice(0, 4),
+          proof: str(item.proof),
+        }
+      }),
+    simplifications: asArray(input.simplifications)
+      .slice(0, MAX_CONSTRAINT_FINDINGS)
+      .map((finding) => {
+        const item = obj(finding)
+        return {
+          role: str(item.role),
+          line: Number.isInteger(item.line) ? item.line : null,
+          column: Number.isInteger(item.column) ? item.column : null,
+          text: constraintText(item.text),
+          simplified: constraintText(item.simplified),
+          variables: asArray(item.variables).map((name) => str(name)).slice(0, 12),
+          exact: item.exact === true,
+          pure: item.pure !== false,
+          assumptions: asArray(item.assumptions).map((name) => str(name)).slice(0, 4),
+          verification: str(item.verification),
+        }
+      }),
+    assumptions: asArray(input.assumptions).map((name) => str(name)).slice(0, 4),
+    truncated: input.truncated === true,
+    notes: asArray(input.notes).map((note) => constraintText(note)).slice(0, 20),
+    error: normalizeError(input.error) ? { message: normalizeError(input.error) } : null,
+    // Host timing is not part of the deterministic report contract.
+    elapsedMs: 0,
+    limits: obj(input.limits),
+  }
+}
+
+/** Bound one finding string for the report. */
+function constraintText(value) {
+  const text = str(value)
+  return text.length > MAX_CONSTRAINT_TEXT ? `${text.slice(0, MAX_CONSTRAINT_TEXT)}…` : text
 }
 
 /** @param {unknown} value */

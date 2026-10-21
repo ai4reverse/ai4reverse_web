@@ -62,6 +62,16 @@ export {
   summarizeVM,
 } from './jsvmp/index.js'
 
+export {
+  analyzeConstraints,
+  solveConstraints,
+  provePredicate,
+  proveEquivalent,
+  simplifyExpression,
+  renderConstraintReport,
+  CONSTRAINT_LIMITS,
+} from './constraint/index.js'
+
 export { createLogger, createEventSink, createMemoryDestination, redactPaths, scopeLogger } from './logging/logger.js'
 
 import { analyzeSample } from './analysis/index.js'

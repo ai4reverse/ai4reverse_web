@@ -16,6 +16,7 @@ import { createLogger } from './logging/logger.js'
 import { analyzeSample } from './analysis/orchestrator.js'
 import { restore, listPasses } from './restore/index.js'
 import { TracelessSandbox } from './sandbox/sandbox.js'
+import { analyzeConstraints, renderConstraintReport } from './constraint/index.js'
 
 const USAGE = `ai4reverse — traceless malicious JavaScript analysis
 
@@ -23,6 +24,7 @@ Usage:
   ai4reverse analyze <file> [options]     static + dynamic analysis with report
   ai4reverse restore <file> [options]     restored (deobfuscated) source
   ai4reverse run <file> [options]         single dynamic run, trace summary
+  ai4reverse constraint <file> [options]  z3 constraint/opaque-predicate analysis
   ai4reverse passes [--json]              list restoration passes
   ai4reverse version
   ai4reverse --help
@@ -52,6 +54,12 @@ Options (restore):
   --passes <ids>         comma-separated pass ids (default: all)
   --exclude <ids>        comma-separated pass ids to skip
   --rounds <n>           pipeline rounds, integer 1-5 (default 2)
+
+Options (constraint):
+  --json                 emit the full constraint report as JSON
+  --timeout <ms>         per-query z3 timeout (default 500)
+  --assume-integers      allow integer-model proofs (fraction/NaN excluded)
+  --assume-int32         model symbolic numbers as signed 32-bit integers
 
 Option values are validated: an unknown option, an unknown pass id, a bad
 --level or a malformed number is a usage error (exit 2) with the message on
@@ -99,6 +107,8 @@ function parseCli(argv) {
       passes: { type: 'string' },
       exclude: { type: 'string' },
       rounds: { type: 'string' },
+      'assume-integers': { type: 'boolean', default: false },
+      'assume-int32': { type: 'boolean', default: false },
       events: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -243,6 +253,9 @@ export async function main(argv = process.argv.slice(2)) {
   if (values.events && command !== 'run') {
     throw new UsageError('--events is only valid with the run command')
   }
+  if ((values['assume-integers'] || values['assume-int32']) && command !== 'constraint') {
+    throw new UsageError('--assume-integers and --assume-int32 are only valid with the constraint command')
+  }
   // Validate every closed-set option before a file is read or analysis starts.
   // A typo must never produce a result: batch pipelines treat a silent default
   // as evidence.
@@ -281,6 +294,20 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (values.events && values.json && command === 'run') {
     throw new UsageError('--events and --json are mutually exclusive')
+  }
+
+  if (command === 'constraint') {
+    const source = await readSource(file)
+    if (source.trim().length === 0) throw new UsageError(`${file} is empty`)
+    const result = await analyzeConstraints(source, {
+      filename: file,
+      timeoutMs: settings.limits.timeoutMs,
+      assumeIntegers: values['assume-integers'],
+      assumeInt32: values['assume-int32'],
+    })
+    const output = values.json ? `${JSON.stringify(result, null, 2)}\n` : renderConstraintReport(result)
+    await emitResult(output, values)
+    return result.ok ? 0 : 1
   }
 
   if (command === 'restore') {

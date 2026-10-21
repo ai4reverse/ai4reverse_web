@@ -1161,6 +1161,7 @@ export interface AnalyzeSampleOptions extends SandboxOptions {
   settle?: SandboxSettleOptions
   strictEnv?: boolean
   jsvmpAnalysis?: boolean
+  constraints?: boolean | ConstraintAnalysisOptions
   generateOptions?: object
   restoreHooks?: HookBus | null
   filename?: string
@@ -1182,7 +1183,233 @@ export interface AnalyzeSampleResult {
   iocs: IOCResult
   jsvmp: object | null
   vmAnalysis: object | null
+  /** z3 constraint analysis; `null` only when the component was disabled. */
+  constraint: ConstraintReport | null
 }
+
+/* -------------------------------------------------------------------------- */
+/* constraint solving (z3)                                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface ConstraintLimits {
+  maxPredicates: number
+  maxBranches: number
+  maxPathConditions: number
+  maxDepth: number
+  maxNodes: number
+  solverRlimit: number
+  timeoutMs: number
+  budgetMs: number
+  maxTextLength: number
+  maxFindings: number
+  maxVariables: number
+}
+
+export interface ConstraintAnalysisOptions {
+  filename?: string
+  sourceType?: 'script' | 'module' | 'unambiguous'
+  /** Allow proofs under the integer model (fraction/NaN/Infinity excluded). */
+  assumeIntegers?: boolean
+  /** Tie the Int and BitVec interpretations to signed 32-bit values. */
+  assumeInt32?: boolean
+  limits?: Partial<ConstraintLimits>
+  maxPredicates?: number
+  timeoutMs?: number
+  solverRlimit?: number
+  budgetMs?: number
+  [key: string]: unknown
+}
+
+export interface ConstraintStats {
+  candidates: number
+  predicates: number
+  proven: number
+  opaque: number
+  undecided: number
+  unsupported: number
+  inexact: number
+  branches: number
+  unreachable: number
+  unsupportedBranches: number
+  undecidedBranches: number
+  simplifications: number
+  solverCalls: number
+}
+
+export interface ConstraintFinding {
+  kind: string
+  role: string
+  line: number | null
+  column: number | null
+  text: string
+  variables: string[]
+  exact: boolean
+  pure: boolean
+  assumptions: string[]
+  proof: string
+}
+
+export interface ConstraintUnreachableBranch {
+  kind: string
+  line: number | null
+  column: number | null
+  text: string
+  path: string[]
+  variables: string[]
+  exact: boolean
+  pure: boolean
+  assumptions: string[]
+  proof: string
+}
+
+export interface ConstraintSimplification {
+  role: string
+  line: number | null
+  column: number | null
+  text: string
+  simplified: string
+  variables: string[]
+  exact: boolean
+  pure: boolean
+  assumptions: string[]
+  verification: string
+}
+
+export interface ConstraintReport {
+  enabled: boolean
+  ok: boolean
+  engine: string
+  engineVersion?: string | null
+  parse: { ok: boolean; sourceType: string; errors: { message: string }[] }
+  stats: ConstraintStats
+  opaquePredicates: ConstraintFinding[]
+  unreachableBranches: ConstraintUnreachableBranch[]
+  simplifications: ConstraintSimplification[]
+  assumptions: string[]
+  limits: Partial<ConstraintLimits>
+  truncated: boolean
+  notes: string[]
+  error: { message: string } | null
+  elapsedMs: number
+}
+
+export interface ConstraintSolveOptions extends ConstraintAnalysisOptions {
+  timeoutMs?: number
+  assumeIntegers?: boolean
+  assumeInt32?: boolean
+  /** Babel scope for a single condition's binding identity. */
+  scope?: object | null
+  leftScope?: object | null
+  rightScope?: object | null
+}
+
+export interface ConstraintSolveResult {
+  ok: boolean
+  status: 'sat' | 'unsat' | 'unknown' | 'error'
+  satisfiable: boolean
+  /** True when the solver model is a coherent JS-value assignment. */
+  modelSafe?: boolean
+  model: Record<string, number | string> | null
+  modelBitVec?: Record<string, number | string> | null
+  variables: string[]
+  expressions: string[]
+  assumptions: string[]
+  elapsedMs: number
+  reason: string | null
+  error: { message: string; code?: string | null } | null
+  [key: string]: unknown
+}
+
+export interface ConstraintProofResult {
+  ok: boolean
+  status: 'always-true' | 'always-false' | 'contingent' | 'unknown' | 'unsupported' | 'error'
+  alwaysTrue: boolean
+  alwaysFalse: boolean
+  proved: boolean
+  /** True when model/counterexample values are coherent witness assignments. */
+  modelSafe?: boolean
+  model: Record<string, number | string> | null
+  counterexample: Record<string, number | string> | null
+  variables: string[]
+  expression: string
+  exact: boolean
+  assumptions: string[]
+  elapsedMs: number
+  reason: string | null
+  error: { message: string; code?: string | null } | null
+  [key: string]: unknown
+}
+
+export interface ConstraintEquivalenceResult {
+  ok: boolean
+  equivalent: boolean
+  /** True only when the terms are exact; a model equivalence is not a JS proof. */
+  proved: boolean
+  status: 'equivalent' | 'different' | 'unknown' | 'unsupported' | 'error'
+  left: string
+  right: string
+  modelSafe?: boolean
+  counterexample: Record<string, number | string> | null
+  exact: boolean
+  assumptions: string[]
+  variables: string[]
+  elapsedMs: number
+  reason: string | null
+  error: { message: string; code?: string | null } | null
+  [key: string]: unknown
+}
+
+export interface ConstraintSimplificationResult {
+  ok: boolean
+  status: string
+  original: string
+  simplified: string
+  changed: boolean
+  equivalent: boolean
+  proved: boolean
+  sort: string | null
+  exact: boolean
+  assumptions: string[]
+  variables: string[]
+  verification: string
+  elapsedMs: number
+  reason: string | null
+  error: { message: string; code?: string | null } | null
+  [key: string]: unknown
+}
+
+export declare const CONSTRAINT_LIMITS: Readonly<ConstraintLimits>
+
+/**
+ * Static, z3-backed constraint analysis. Never executes the sample.
+ * Unsupported constructs and solver timeouts are counted outcomes, not errors.
+ */
+export declare function analyzeConstraints(source: string, options?: ConstraintAnalysisOptions): Promise<ConstraintReport>
+
+/** Solve a conjunction of JS conditions and return one model when satisfiable. */
+export declare function solveConstraints(
+  constraints: string | object | Array<string | object>,
+  options?: ConstraintSolveOptions,
+): Promise<ConstraintSolveResult>
+
+/** Prove whether a condition is true/false for every value in the modeled domain. */
+export declare function provePredicate(condition: string | object, options?: ConstraintSolveOptions): Promise<ConstraintProofResult>
+
+/** Prove `left === right` in the modeled domain. */
+export declare function proveEquivalent(
+  left: string | object,
+  right: string | object,
+  options?: ConstraintSolveOptions,
+): Promise<ConstraintEquivalenceResult>
+
+/** z3 normal form plus an equivalence check; the result is SMT-LIB text. */
+export declare function simplifyExpression(
+  expression: string | object,
+  options?: ConstraintSolveOptions,
+): Promise<ConstraintSimplificationResult>
+
+/** Human-readable rendering of a constraint analysis report. */
+export declare function renderConstraintReport(report: ConstraintReport | object): string
 
 /* -------------------------------------------------------------------------- */
 /* JSVMP                                                                       */

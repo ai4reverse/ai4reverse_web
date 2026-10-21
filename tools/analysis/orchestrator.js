@@ -8,6 +8,7 @@ import { extractStagedPayloads } from './stage.js'
 import { createLogger } from '../logging/logger.js'
 import { sha256, shortHash } from '../util/hash.js'
 import { analyzeVM, summarizeVM } from '../jsvmp/index.js'
+import { analyzeConstraints } from '../constraint/analyze.js'
 
 /**
  * Analysis orchestrator: the composed pipeline an analyst actually runs.
@@ -32,6 +33,9 @@ import { analyzeVM, summarizeVM } from '../jsvmp/index.js'
  * @param {boolean} [options.restore] restore code (default true)
  * @param {boolean} [options.runRestored] also execute restored code for comparison
  * @param {object} [options.instrumentation]
+ * @param {boolean|object} [options.constraints] run z3 constraint analysis
+ *   (default true); pass `false` to disable or an option bag for
+ *   `analyzeConstraints` (`assumeIntegers`, `timeoutMs`, `limits`, ...)
  * @param {object} [options.sandbox] reuse an initialised sandbox
  * @param {Array} [options.hooks]
  * @param {string} [options.entry] entry function to call after evaluation
@@ -51,6 +55,42 @@ export async function analyzeSample(source, options = {}) {
   // ---- static ------------------------------------------------------------
   const staticAnalysis = analyzeSource(text, { filename: name })
   const facts = staticAnalysis.ok ? staticAnalysis.facts : null
+
+  // ---- constraint solving ------------------------------------------------
+  // Static, z3-backed evidence about branch conditions. It never executes the
+  // sample; a z3 failure is reported as `ok:false` and the analysis continues.
+  let constraint = null
+  if (options.constraints !== false) {
+    const constraintOptions = typeof options.constraints === 'object' && options.constraints !== null
+      ? options.constraints
+      : {}
+    try {
+      constraint = await analyzeConstraints(text, {
+        filename: name,
+        sourceType: staticAnalysis.sourceType,
+        ...constraintOptions,
+      })
+    } catch (error) {
+      logger.warn({ err: error.message }, 'constraint analysis failed; continuing')
+      constraint = {
+        enabled: true,
+        ok: false,
+        engine: 'z3-solver',
+        engineVersion: null,
+        parse: { ok: false, sourceType: null, errors: [] },
+        error: { message: error.message },
+        stats: {},
+        opaquePredicates: [],
+        unreachableBranches: [],
+        simplifications: [],
+        assumptions: [],
+        limits: {},
+        notes: [],
+        truncated: false,
+        elapsedMs: 0,
+      }
+    }
+  }
 
   let restoration = null
   if (options.restore !== false) {
@@ -221,6 +261,20 @@ export async function analyzeSample(source, options = {}) {
       : null,
     iocs: mergedIocs,
     techniques: facts?.techniques ?? [],
+    constraint: constraint ?? {
+      enabled: false,
+      ok: false,
+      engine: 'z3-solver',
+      parse: { ok: false, sourceType: null, errors: [] },
+      stats: {},
+      opaquePredicates: [],
+      unreachableBranches: [],
+      simplifications: [],
+      assumptions: [],
+      truncated: false,
+      notes: ['constraint analysis disabled'],
+      error: null,
+    },
   }
 
   const maxRetainedEvents = options.maxRetainedEvents ?? 5000
@@ -324,6 +378,7 @@ export async function analyzeSample(source, options = {}) {
     iocs: mergedIocs,
     jsvmp: vmSummary,
     vmAnalysis,
+    constraint,
     traceTruncation: truncation,
   }
 }
