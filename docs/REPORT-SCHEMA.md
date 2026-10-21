@@ -14,7 +14,7 @@ same object.
 | `sample` | object | analysed sample identity |
 | `verdict` | object | weighted score, level, confidence and reasons |
 | `provenance` | array | per-reason evidence refs (event/ioc/artifact/stage/killChain) |
-| `static` | object | parse, restoration, AST summary, IOCs, techniques and z3 constraint evidence |
+| `static` | object | parse, restoration, AST summary, IOCs, techniques, z3 constraints and Circle-IR taint evidence |
 | `dynamic` | object | sandbox result, trace events and observed behaviour |
 | `tracing` | object | trace volume and JSVMP detection |
 | `hooks` | object | hook activity and mocked environment APIs |
@@ -158,6 +158,34 @@ Findings are **evidence**. They do not add a verdict reason or weight; the
 `verdict` table above is unchanged. The raw component result is also returned as
 `result.constraint` from `analyzeSample()` and carries its measured
 `elapsedMs`.
+
+`taint`: bounded Circle-IR taint evidence, always present (disabled by
+`analyzeSample(source, {taint:false})`). This is static analysis of the original
+source, not evidence that a path executed or a proof of safety.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `enabled`, `ok` | boolean | Disabled sections have both false; syntax recovery or engine/budget failure has `ok:false` |
+| `engine`, `engineVersion` | string, string \| null | `circle-ir` and the installed engine version when available |
+| `filename`, `language` | string | Original source metadata/parser selection |
+| `parse` | object | `{ok,errorCount,errors:[{line,column,message}]}`; lines 1-based, columns 0-based |
+| `stats` | object | `{sources,sinks,sanitizers,flows,taintedMethods,methodFlows}` before retention caps |
+| `sources` | array | `{type,line,location,confidence,method,code,severity,variable,in_method}` |
+| `sinks` | array | `{type,line,location,confidence,method,code,cwe,argPositions}` |
+| `sanitizers` | array | `{type,method,line,sanitizes}` |
+| `flows` | array | `{source_line,sink_line,source_type,sink_type,confidence,sanitized,pathTruncated,path:[{variable,line,type}]}` |
+| `interprocedural` | object | `{tainted_methods,taint_bridges,method_flows:[{caller,callee,call_line,tainted_args,returns_taint}]}` |
+| `truncated`, `truncatedBy` | boolean, array | Resource or retention bounds: source-size, timeout, memory, source/sink/sanitizer/flow/path/text limits and bounded metadata-list limits |
+| `limits` | object | Effective `TAINT_LIMITS` |
+| `error` | object \| null | `{code,message}`, including `TAINT_PARSE`, `TAINT_TIMEOUT`, `TAINT_MEMORY`, `TAINT_SOURCE_LIMIT`, `TAINT_ENGINE`, `TAINT_WORKER_EXIT`, `TAINT_OPTIONS` |
+| `notes` | array | Bounded explanations and safety caveats |
+| `elapsedMs` | number | Always 0 in the composed report, measured in raw `result.taint` |
+
+Missing optional engine strings normalize to `""`, missing lists to `[]`.
+Path truncation preserves endpoints; independently capped source/sink arrays may
+not retain every point referenced by a flow. Counts describe the pre-cap
+engine output. Taint findings do not change verdict weights. See
+[TAINT.md](TAINT.md) for examples, configuration and engine precision limits.
 
 ### `dynamic`
 

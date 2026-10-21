@@ -235,6 +235,24 @@ modeled fragment become uninterpreted; the report says `unknown`/`unsupported`
 rather than inventing a result. The integer/`NaN` domain assumptions are
 explicit and recorded on every finding (`docs/CONSTRAINT.md`).
 
+## Static taint analysis
+
+`tools/taint/` parses samples with Circle-IR in a fresh Worker. It never
+evaluates source, decoded strings, import targets or configuration code. It
+loads only installed analyzer/parser assets; the filename is metadata. The
+Worker has no shared guest state and is terminated/joined on completion, error
+or deadline. Source-size rejection, a wall deadline, V8 old-generation heap
+limits and bounded output reduce resource exposure. The heap limit does not
+cap WASM/native allocations or total process RSS; a Worker is not an OS sandbox.
+Use process/container limits and bounded batch concurrency for hostile corpora.
+
+Engine/parser recovery and resource failures are explicit failed/partial
+reports, never a clean bill of health. Circle-IR taint propagation and sanitizer
+modeling are heuristic, so an empty flow list does not prove safety. Reports
+contain original code as live evidence; Markdown escapes source-controlled
+markup. No real network or sample filesystem access is introduced. See
+[TAINT.md](TAINT.md).
+
 ## Threat model for the analysed code
 
 The sample is assumed to:

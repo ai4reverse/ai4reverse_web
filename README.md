@@ -12,8 +12,9 @@ sample ──► static analysis ──► Babel restoration ──► traceless
               obfuscation)         unified parse/        browser profile,          behaviour, artifacts,
                                    transform/generate)   trace channel)            opcode trace)
                     │
-                    └──► constraint solving (z3): opaque predicates, unreachable arms,
-                         sat models, equivalence and normal forms
+                    ├──► constraint solving (z3): opaque predicates, unreachable arms,
+                    │    sat models, equivalence and normal forms
+                    └──► taint analysis (Circle-IR): sources, sinks, sanitizers and flow paths
 ```
 
 ## Highlights
@@ -25,6 +26,7 @@ sample ──► static analysis ──► Babel restoration ──► traceless
 | Traceless instrumentation (Code/API/Exception/AST/JSVMP) | `tools/instrumentation/` | `tests/instrumentation.test.js`, `tests/jsvmp-trace.test.js` |
 | Traceless hooks (Code/API/Exception/AST) | `tools/hook/` | `tests/hook.test.js` |
 | Code restoration with Babel | `tools/restore/` | `tests/restore-*.test.js`, `tests/restore-pipeline.test.js` |
+| Static taint analysis (Circle-IR): sources, sinks, sanitizers, propagation paths | `tools/taint/` | `tests/taint.test.js`, `tests/taint-cli.test.js`, `docs/TAINT.md` |
 | Constraint solving (z3): opaque predicates, unreachable arms, models, equivalence | `tools/constraint/` | `tests/constraint.test.js`, `docs/CONSTRAINT.md` |
 | Logging (pino / pino-pretty) | `tools/logging/` | `tests/logging.test.js` |
 | Browser-grade environment, 28 modules (documented limits, no WASM execution) | `tools/sandbox/env/` | `tests/env-*.test.js`, `tests/env-surface.test.js`, `tests/env-fidelity.test.js` |
@@ -82,6 +84,10 @@ node tools/cli.js run examples/sample-loader.js --events
 # z3 constraint/opaque-predicate analysis (JSON with --json)
 node tools/cli.js constraint examples/sample-loader.js
 
+# Static taint evidence (no sample execution)
+node tools/cli.js taint examples/sample-loader.js --json
+node examples/taint-demo.mjs
+
 # Every committed example, sample and demo
 bash examples/cli-usage.sh
 node examples/api-usage.mjs
@@ -131,6 +137,13 @@ sandbox.dispose()
 const restored = restore(source)
 console.log(restored.code, restored.passes.filter((p) => p.changed))
 ```
+
+`analyzeSample()` includes bounded Circle-IR taint evidence under
+`report.static.taint` by default. Use `taint:false` or CLI `analyze --no-taint`
+to disable it. The standalone `analyzeTaint()` API is exported from the root,
+`/analysis` and `/taint`; it never executes sample code. See
+[`docs/TAINT.md`](docs/TAINT.md) for options, custom patterns, resource limits
+and precision caveats. Static flows are evidence, not execution or safety proofs.
 
 ## Traceless design in one page
 
@@ -365,13 +378,13 @@ Exit codes: `0` success, `1` analysis/run failure, `2` usage error.
 
 Packaging (`package.json`): `type: module`, `engines.node >= 24.18`,
 `bin: ai4reverse → tools/cli.js` (mode `100755` in git), `files: [tools, docs,
-types, README.md, LICENSE]`, ISC `LICENSE`, and 12 `exports` subpaths
+types, README.md, LICENSE]`, ISC `LICENSE`, and 13 `exports` subpaths
 (`.`, `./sandbox`, `./instrumentation`, `./hook`, `./restore`, `./analysis`,
-`./jsvmp`, `./constraint`, `./logging`, `./invocation`, `./util`, `./cli`) each
-with its own `types/*.d.ts`. The entry barrel exports **75** names. `restoreCode` is a
-root-entry convenience API; `restoreWithPass` is exported both from the root
-barrel and from `./restore`. `validateOutput` and `isDeferredPass` are on
-`./restore` only.
+`./jsvmp`, `./constraint`, `./taint`, `./logging`, `./invocation`, `./util`,
+`./cli`) each with its own `types/*.d.ts`. The entry barrel exports **78** names.
+`restoreCode` is a root-entry convenience API; `restoreWithPass` is exported
+both from the root barrel and from `./restore`. `validateOutput` and
+`isDeferredPass` are on `./restore` only.
 
 ## Report
 

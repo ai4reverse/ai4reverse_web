@@ -7,8 +7,8 @@ what it is, and where to extend it.
 
 ```
 tools/
-├── index.js                  public barrel (75 exports)
-├── cli.js                    analyze | restore | run | passes | version
+├── index.js                  public barrel (78 exports)
+├── cli.js                    analyze | restore | run | constraint | taint | passes | version
 │
 ├── logging/logger.js         pino + pino-pretty, redaction, event sink
 │
@@ -64,6 +64,13 @@ tools/
 │   ├── analyze.js            opaque predicates, path feasibility, budgets
 │   ├── limits.js             candidate/time/size bounds
 │   └── render.js             human-readable projection
+│
+├── taint/                    bounded static Circle-IR analysis
+│   ├── analyze.js             source/options validation, Worker deadline/lifecycle
+│   ├── worker.js              isolated engine + parser ownership
+│   ├── config.js              per-request source/sink/sanitizer configuration
+│   ├── report.js              bounded taint IR projection, truncation evidence
+│   └── limits.js render.js    budgets and Markdown evidence
 │
 └── analysis/
     ├── ioc.js                static/decoded/dynamic IOC extraction
@@ -361,7 +368,19 @@ Soundness is a contract, not a comment: `exact`, `nanSafe`, `integral` and
 counterexample and the integer-assumption gate. The full model is in
 `docs/CONSTRAINT.md`.
 
-## 8. Determinism
+## 8. Taint analysis
+
+`tools/taint/` adapts Circle-IR sources, sinks, sanitizers, flow paths and
+interprocedural metadata. Each call parses the original source in a fresh
+Worker; it does not execute code or resolve sample imports. Worker termination
+enforces a wall deadline even while the engine is synchronous. Source size,
+V8 old-generation heap and retained evidence are bounded independently.
+`analyzeSample()` enables it by default and publishes `static.taint` with
+deterministic timing metadata (`elapsedMs:0`); `taint:false` skips it. Failures
+do not prevent other stages, and findings do not change verdict weights.
+See [TAINT.md](TAINT.md) for precision and resource-boundary limitations.
+
+## 9. Determinism
 
 Given the same seed, source and options, these are byte-identical across runs:
 profile values, virtual timestamps, `Math.random`/crypto outputs, timer

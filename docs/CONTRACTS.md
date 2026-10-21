@@ -512,6 +512,29 @@ summarizeBehavior(trace)           // -> behaviour summary (killChain, counts, â
 extractStagedPayloads(...)         // -> artifact list
 ```
 
+## Taint-analysis contract (`tools/taint/*.js`)
+
+```js
+analyzeTaint(source, options)   // -> Promise<TaintReport>
+renderTaintReport(report)      // -> bounded Markdown string
+TAINT_LIMITS                  // frozen default resource/evidence budgets
+```
+
+The root, `/analysis` and `/taint` barrels export these names. Analysis is
+static, based on Circle-IR, and never evaluates source or follows sample
+imports. A fresh Worker owns engine state; a total deadline terminates it.
+`filename` is metadata/parser inference, not a file read. Invalid options throw;
+engine, parse and budget failures return explicit `ok:false` JSON evidence.
+Retained sources/sinks/sanitizers/flows, paths and text are capped, with
+pre-cap counts and `truncatedBy` reporting omissions. Syntax recovery is not a
+successful scan. No flows is not proof of safety.
+
+`analyzeSample()` runs it on original bytes by default and returns `taint`;
+`report.static.taint` has the same bounded shape with `elapsedMs:0` for
+determinism. `taint:false` returns raw `null` and a stable disabled report
+section. Findings are additive evidence, not verdict weights. See
+[TAINT.md](TAINT.md) for options, configuration, security boundaries and schema.
+
 ## Logger contract (`tools/logging/logger.js`)
 
 ```js

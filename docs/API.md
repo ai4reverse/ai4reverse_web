@@ -274,6 +274,29 @@ console.log(facts.facts.obfuscation, facts.facts.techniques)
 The sandbox composes instrumentation for you; use the module directly only when
 embedding the instrumenter in another runtime.
 
+## Taint analysis (Circle-IR)
+
+```js
+import { analyzeTaint, renderTaintReport } from 'ai4reverse-web/taint'
+
+const taint = await analyzeTaint(source, { filename: 'loader.js' })
+console.log(taint.sources, taint.sinks, taint.sanitizers, taint.flows)
+console.log(renderTaintReport(taint))
+```
+
+The root and `/analysis` barrels expose the same API and `TAINT_LIMITS`.
+`analyzeSample()` enables it by default: raw evidence is `result.taint`,
+normalized evidence is `report.static.taint`, and Markdown includes the section.
+`taint:false` disables it; an object configures its worker, patterns and limits.
+The standalone CLI is `taint <file> [--json] [--out <path>] [--timeout <ms>]`.
+`--taint-config '<JSON>'` adds patterns for `taint` or `analyze`;
+`analyze --no-taint` disables this stage.
+
+It parses only original source bytes, never executes the sample or follows its
+imports/URLs. Syntax recovery, timeouts and engine failures are explicit failed
+reports. All evidence is bounded; an empty flow list is not proof of safety.
+See [TAINT.md](TAINT.md) for the full options, patterns, schema and limitations.
+
 ## Constraint solving
 
 ```js
@@ -423,6 +446,6 @@ import { analyzeConstraints, solveConstraints } from 'ai4reverse-web/constraint'
 ```
 
 `package.json` maps `.`, `./sandbox`, `./instrumentation`, `./hook`, `./restore`,
-`./analysis`, `./jsvmp`, `./constraint`, `./logging`, `./invocation`, `./util`,
-`./cli` to `tools/**` with a matching `types/*.d.ts`. The entry barrel exports
-75 names; `validateOutput` and `isDeferredPass` are on `./restore` only.
+`./analysis`, `./jsvmp`, `./constraint`, `./taint`, `./logging`, `./invocation`,
+`./util`, `./cli` to `tools/**` with a matching `types/*.d.ts`. The entry barrel
+exports 78 names; `validateOutput` and `isDeferredPass` are on `./restore` only.
