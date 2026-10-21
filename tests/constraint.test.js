@@ -68,6 +68,28 @@ test('typeof is modelled as a deterministic tag, not a free boolean', async () =
   assert.equal(proof.exact, true)
 })
 
+test('top-level constraint limits apply without a nested limits object', async () => {
+  const result = await solveConstraints('x + 1 === 2', { maxDepth: 1 })
+  assert.equal(result.status, 'error')
+  assert.match(result.error.message, /nesting/i)
+})
+
+test('explicit solver options take precedence over nested limits', async () => {
+  const timeout = await solveConstraints('x === 1', {
+    limits: { timeoutMs: 25, solverRlimit: 1 },
+    timeoutMs: 75,
+    solverRlimit: 2_000_000,
+  })
+  assert.equal(timeout.timeoutMs, 75)
+  assert.equal(timeout.status, 'sat')
+
+  const rlimit = await solveConstraints('x === 1', {
+    limits: { solverRlimit: 2_000_000 },
+    solverRlimit: 1,
+  })
+  assert.equal(rlimit.status, 'unknown')
+})
+
 test('solving returns a deterministic model for a unique integer solution', async () => {
   const result = await solveConstraints(['x * 2 === 42'])
   assert.equal(result.ok, true)

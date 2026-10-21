@@ -95,7 +95,7 @@ function normalizeConstraints(constraints) {
  */
 export async function solveConstraints(constraints, options = {}) {
   const started = Date.now()
-  const limits = normalizeConstraintLimits(options.limits ?? options)
+  const limits = resolveLimits(options)
   const timeoutMs = positive(options.timeoutMs, limits.timeoutMs)
   const assumeIntegers = options.assumeIntegers !== false
   let assumptions = []
@@ -246,7 +246,7 @@ export async function solveConstraints(constraints, options = {}) {
  */
 export async function provePredicate(condition, options = {}) {
   const started = Date.now()
-  const limits = normalizeConstraintLimits(options.limits ?? options)
+  const limits = resolveLimits(options)
   const timeoutMs = positive(options.timeoutMs, limits.timeoutMs)
   const assumeIntegers = options.assumeIntegers === true
   const assumeInt32 = options.assumeInt32 === true
@@ -406,7 +406,7 @@ export async function provePredicate(condition, options = {}) {
  */
 export async function proveEquivalent(left, right, options = {}) {
   const started = Date.now()
-  const limits = normalizeConstraintLimits(options.limits ?? options)
+  const limits = resolveLimits(options)
   const timeoutMs = positive(options.timeoutMs, limits.timeoutMs)
   const assumeIntegers = options.assumeIntegers === true
   const assumeInt32 = options.assumeInt32 === true
@@ -559,7 +559,7 @@ export async function proveEquivalent(left, right, options = {}) {
  */
 export async function simplifyExpression(expression, options = {}) {
   const started = Date.now()
-  const limits = normalizeConstraintLimits(options.limits ?? options)
+  const limits = resolveLimits(options)
   const timeoutMs = positive(options.timeoutMs, limits.timeoutMs)
   // Simplification defaults to the integer model (arithmetic needs it) but
   // keeps the Int/BitVec interpretations separate unless asked.
@@ -834,6 +834,16 @@ function isNumericValue(value) {
 
 function union(left, right) {
   return new Set([...(left ?? []), ...(right ?? [])])
+}
+
+function resolveLimits(options = {}) {
+  const nested = options.limits && typeof options.limits === 'object' ? options.limits : {}
+  return normalizeConstraintLimits({
+    ...options,
+    ...nested,
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.solverRlimit !== undefined ? { solverRlimit: options.solverRlimit } : {}),
+  })
 }
 
 function positive(value, fallback) {
