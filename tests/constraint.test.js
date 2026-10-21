@@ -370,6 +370,20 @@ test('cli constraint prints a human summary with --assume-integers', async () =>
   assert.match(stdout, /Assumptions:\*\* integers/)
 })
 
+test('cli constraint --assume-int32 records the model assumption', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ai4r-constraint-'))
+  const file = join(dir, 'int32.js')
+  await writeFile(file, 'if ((x & 1) === 0) { if ((x & 1) === 1) {} }', 'utf8')
+  const { stdout } = await exec(
+    process.execPath,
+    [CLI, 'constraint', file, '--assume-int32', '--json'],
+    { cwd: ROOT, timeout: 60_000 },
+  )
+  const report = JSON.parse(stdout)
+  assert.ok(report.assumptions.includes('int32'), JSON.stringify(report.assumptions))
+  assert.equal(report.unreachableBranches.length, 1, JSON.stringify(report.unreachableBranches))
+})
+
 test('cli rejects assumption flags on other commands', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'ai4r-constraint-'))
   const file = join(dir, 'x.js')
