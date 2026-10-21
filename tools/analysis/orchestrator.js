@@ -367,7 +367,7 @@ export async function analyzeSample(source, options = {}) {
     },
     artifacts,
     integrity: run?.integrity ?? { intact: false, drift: [{ kind: 'no-dynamic-run', detail: 'dynamic execution disabled or failed' }] },
-    recommendations: recommend({ run, runError, facts, behavior, tracing, restoration, mergedIocs, staticAnalysis, traceTruncation: truncation }),
+    recommendations: recommend({ run, runError, facts, behavior, tracing, restoration, mergedIocs, staticAnalysis, taint, traceTruncation: truncation }),
   })
 
   // Expose the detailed behaviour sections without changing the stable schema:
@@ -509,7 +509,7 @@ function tagIocs(iocs, source) {
  * @param {object} context
  */
 export function recommend(context) {
-  const { run, runError, facts, behavior, tracing, restoration, mergedIocs, staticAnalysis } = context
+  const { run, runError, facts, behavior, tracing, restoration, mergedIocs, staticAnalysis, taint } = context
   const out = []
 
   if (!staticAnalysis?.ok) out.push('Source did not parse as a valid JavaScript program; treat as truncated or encrypted container.')
@@ -524,6 +524,9 @@ export function recommend(context) {
   }
   if (restoration?.error) {
     out.push(`Restoration failed (${restoration.error.message ?? restoration.error}); the static section contains the raw source, so read the original bytes.`)
+  }
+  if (taint?.enabled === true && taint.ok === false) {
+    out.push(`Taint analysis failed (${taint.error?.code ?? 'TAINT_ENGINE'}); no complete source-to-sink evidence for this sample.`)
   }
   if (context.traceTruncation?.truncated) {
     out.push(`Trace truncated (${context.traceTruncation.truncatedBy.join(', ')}); later behaviour may be unobserved.`)

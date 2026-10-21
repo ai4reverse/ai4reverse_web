@@ -385,6 +385,8 @@ node tools/cli.js restore <file> [options] [--passes a,b] [--exclude c] [--round
 node tools/cli.js run <file> [--json|--out path] [--events]
 node tools/cli.js constraint <file> [--json|--out path] [--timeout ms]
                                   [--assume-integers|--assume-int32]
+node tools/cli.js taint <file> [--json|--out path] [--timeout ms]
+                               [--taint-config JSON]
 node tools/cli.js passes [--json]
 node tools/cli.js version
 
@@ -393,6 +395,7 @@ shared options (parsed by one strict parser for analyze/restore/run):
   --level off|function|branch|statement | --no-dynamic | --no-restore
   --run-restored | --source-url url | --entry fn | --arg JSON|string
   --profile JSON | --mocks JSON | --log-level L | --pretty
+  --no-taint | --taint-config JSON (analyze)
 ```
 
 `restore` therefore accepts `--json`, `--seed`, `--out` and `--level` too
@@ -404,7 +407,7 @@ Exit codes: `0` success, `1` analysis/run failure, `2` usage error.
 
 | Invocation | Exit | stderr | stdout |
 | --- | --- | --- | --- |
-| valid `analyze`/`restore`/`run`/`passes`/`version`/`--help` | 0 | empty (logs only with `--log-level`) | result (pure JSON with `--json`) |
+| valid `analyze`/`restore`/`run`/`constraint`/`taint`/`passes`/`version`/`--help` | 0 | empty (logs only with `--log-level`) | result (pure JSON with `--json`) |
 | unknown option (`--nonsense`) | 2 | `error: invalid arguments: Unknown option '--nonsense'. …` | empty |
 | `--seed zzz` / `--seed 0xzz` | 2 | `error: --seed must be a decimal or 0x-prefixed hex integer, got "zzz"` | empty |
 | `--rounds 0`, `--rounds 6`, `--rounds 2.5` | 2 | `error: --rounds must be an integer between 1 and 5, got "0"` | empty |

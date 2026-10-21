@@ -374,10 +374,12 @@ counterexample and the integer-assumption gate. The full model is in
 interprocedural metadata. Each call parses the original source in a fresh
 Worker; it does not execute code or resolve sample imports. Worker termination
 enforces a wall deadline even while the engine is synchronous. Source size,
-V8 old-generation heap and retained evidence are bounded independently.
+line layout (Circle-IR blanks lines over 10,000 code units), V8 old-generation
+heap and retained evidence are bounded independently.
 `analyzeSample()` enables it by default and publishes `static.taint` with
 deterministic timing metadata (`elapsedMs:0`); `taint:false` skips it. Failures
-do not prevent other stages, and findings do not change verdict weights.
+do not prevent other stages, add an analyst recommendation, and findings do not
+change verdict weights.
 See [TAINT.md](TAINT.md) for precision and resource-boundary limitations.
 
 ## 9. Determinism

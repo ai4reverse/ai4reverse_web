@@ -41,6 +41,12 @@ section "JSVMP tracing summary"
 node tools/cli.js analyze examples/jsvmp-sample.js --json --log-level silent \
   | node -e 'let raw="";process.stdin.on("data",c=>raw+=c).on("end",()=>{const r=JSON.parse(raw);console.log(r.tracing.jsvmp)})'
 
+section "static taint evidence (no execution)"
+node tools/cli.js taint examples/sample-loader.js --json \
+  | node -e 'let raw="";process.stdin.on("data",c=>raw+=c).on("end",()=>{const r=JSON.parse(raw);console.log({ok:r.ok,engine:r.engine,flows:r.flows.length,sinks:r.stats.sinks})})'
+node tools/cli.js analyze examples/sample-loader.js --no-dynamic --no-taint --json --log-level silent \
+  | node -e 'let raw="";process.stdin.on("data",c=>raw+=c).on("end",()=>{const r=JSON.parse(raw);if(r.static.taint.enabled!==false)throw new Error("static.taint.enabled should be false");console.log({taint:{enabled:r.static.taint.enabled,flows:r.static.taint.flows.length}})})'
+
 section "write a report to a file"
 tmp_report="${TMPDIR:-/tmp}/ai4reverse-example-report.md"
 node tools/cli.js analyze examples/network-c2.js --out "$tmp_report" --log-level silent

@@ -1,7 +1,10 @@
+import { createRequire } from 'node:module'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { analyzeTaint, renderTaintReport, TAINT_LIMITS } from '../tools/taint/index.js'
 import { analyzeSample, buildReport, renderMarkdown } from '../tools/analysis/index.js'
+import { classifyWorkerFailure, countOverlongLines, TAINT_MAX_LINE_LENGTH, workerExitFailure } from '../tools/taint/analyze.js'
+import { buildTaintConfig, validateTaintConfig } from '../tools/taint/config.js'
 import { normalizeTaintReport } from '../tools/taint/report.js'
 import * as api from '../tools/index.js'
 
@@ -328,4 +331,326 @@ test('Markdown escapes source-controlled HTML, table delimiters and line breaks'
   assert.match(rendered, /\\\|/)
   assert.doesNotMatch(rendered, /\[object Object\]/)
   assert.doesNotThrow(() => renderTaintReport(null))
+})
+
+// ---- hardening regressions ------------------------------------------------
+
+test('over-long lines are counted and rejected instead of silently blanked', async () => {
+  assert.equal(TAINT_MAX_LINE_LENGTH, 10_000)
+  assert.equal(countOverlongLines('x'.repeat(10_000)), 0)
+  assert.equal(countOverlongLines('x'.repeat(10_001)), 1)
+  assert.equal(countOverlongLines(['x'.repeat(10_001), 'ok', 'y'.repeat(10_002)].join('\n')), 2)
+  assert.equal(countOverlongLines('x'.repeat(10_001) + '\n'), 1)
+  const accepted = await analyzeTaint('x'.repeat(TAINT_MAX_LINE_LENGTH))
+  assert.equal(accepted.error, null)
+  const single = await analyzeTaint('x'.repeat(10_001))
+  assert.equal(single.ok, false)
+  assert.equal(single.error.code, 'TAINT_SOURCE_LAYOUT')
+  assert.deepEqual(single.truncatedBy, ['overlong-line'])
+  const mixed = await analyzeTaint(`const input = location.hash;\n${'var z=0;'.repeat(1300)}\neval(input);`)
+  assert.equal(mixed.ok, false)
+  assert.equal(mixed.error.code, 'TAINT_SOURCE_LAYOUT')
+  assert.deepEqual(mixed.truncatedBy, ['overlong-line'])
+  assert.deepEqual(mixed.stats, { sources: 0, sinks: 0, sanitizers: 0, flows: 0, taintedMethods: 0, methodFlows: 0 })
+  assert.equal(mixed.parse.ok, false)
+  const minified = await analyzeTaint('var t=location.hash;eval(t);' + 'var z=0;'.repeat(1300))
+  assert.equal(minified.ok, false)
+  assert.equal(minified.error.code, 'TAINT_SOURCE_LAYOUT')
+  assert.deepEqual(minified.flows, [])
+})
+
+test('worker failures map to stable codes, messages and truncation reasons', () => {
+  const memory = classifyWorkerFailure(Object.assign(new Error('worker ran out of memory'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }))
+  assert.equal(memory.code, 'TAINT_MEMORY')
+  assert.equal(memory.message, 'worker ran out of memory')
+  assert.deepEqual(memory.truncatedBy, ['memory'])
+  const other = classifyWorkerFailure(new Error('engine exploded'))
+  assert.equal(other.code, 'TAINT_ENGINE')
+  assert.equal(other.message, 'engine exploded')
+  assert.deepEqual(other.truncatedBy, [])
+  const exit = workerExitFailure(3)
+  assert.equal(exit.code, 'TAINT_WORKER_EXIT')
+  assert.match(exit.message, /exit 3/)
+  assert.deepEqual(exit.truncatedBy, [])
+  const projected = normalizeTaintReport({ enabled: true, error: { code: exit.code, message: exit.message }, truncatedBy: exit.truncatedBy })
+  assert.equal(projected.error.code, 'TAINT_WORKER_EXIT')
+  assert.equal(projected.truncated, false)
+})
+
+test('custom pattern type failures are structured engine errors, not exceptions', async () => {
+  const badSource = await analyzeTaint(SOURCE, { config: { sources: [{ method: 'read', type: 'not-a-source-type', severity: 'high' }] } })
+  assert.equal(badSource.ok, false)
+  assert.equal(badSource.error.code, 'TAINT_ENGINE')
+  assert.match(badSource.error.message, /unknown source type/)
+  const badSink = await analyzeTaint(SOURCE, { config: { sinks: [{ method: 'publish', type: 'not-a-sink-type', cwe: 'CWE-79', severity: 'high', arg_positions: [0] }] } })
+  assert.equal(badSink.ok, false)
+  assert.equal(badSink.error.code, 'TAINT_ENGINE')
+  assert.match(badSink.error.message, /unknown sink type/)
+  const badSanitizer = await analyzeTaint(SOURCE, { config: { sanitizers: [{ method: 'scrub', removes: ['not-a-sink-type'] }] } })
+  assert.equal(badSanitizer.ok, false)
+  assert.equal(badSanitizer.error.code, 'TAINT_ENGINE')
+  assert.match(badSanitizer.error.message, /unknown sanitizer sink type/)
+})
+
+const validSourceRule = { method: 'readInput', type: 'user_input', severity: 'high' }
+const validSinkRule = { method: 'publish', type: 'external_taint_escape', cwe: 'CWE-668', severity: 'high', arg_positions: [0] }
+
+for (const [name, config, message] of [
+  ['more than 500 patterns', { sources: Array.from({ length: 501 }, () => ({ ...validSourceRule })) }, /sources must be an array of at most 500 patterns/],
+  ['a non-object rule', { sources: ['readInput'] }, /sources patterns must be objects/],
+  ['an unknown pattern key', { sources: [{ ...validSourceRule, bogus: 1 }] }, /unknown sources pattern key bogus/],
+  ['unsupported languages', { sources: [{ ...validSourceRule, languages: ['python'] }] }, /languages must contain javascript, typescript or tsx/],
+  ['an empty language list', { sources: [{ ...validSourceRule, languages: [] }] }, /languages must contain javascript, typescript or tsx/],
+  ['more than 20 arg_positions', { sinks: [{ ...validSinkRule, arg_positions: Array.from({ length: 21 }, (_, index) => index) }] }, /arg_positions must contain at most 20 argument indexes/],
+  ['a fractional arg_position', { sinks: [{ ...validSinkRule, arg_positions: [1.5] }] }, /arg_positions must contain at most 20 argument indexes/],
+  ['a negative arg_position', { sinks: [{ ...validSinkRule, arg_positions: [-1] }] }, /arg_positions must contain at most 20 argument indexes/],
+  ['a fractional safe_if_class_literal_at', { sinks: [{ ...validSinkRule, safe_if_class_literal_at: 1.5 }] }, /safe_if_class_literal_at must be an argument index from 0 to 100/],
+  ['a negative safe_if_string_literal_at', { sinks: [{ ...validSinkRule, safe_if_string_literal_at: -1 }] }, /safe_if_string_literal_at must be an argument index from 0 to 100/],
+  ['a safe_if_stream_arg_at above 100', { sinks: [{ ...validSinkRule, safe_if_stream_arg_at: 101 }] }, /safe_if_stream_arg_at must be an argument index from 0 to 100/],
+  ['a non-boolean return_tainted', { sources: [{ ...validSourceRule, return_tainted: 'true' }] }, /return_tainted must be boolean/],
+  ['a non-boolean allow_unresolved_receiver', { sinks: [{ ...validSinkRule, allow_unresolved_receiver: 1 }] }, /allow_unresolved_receiver must be boolean/],
+  ['an over-long string field', { sources: [{ ...validSourceRule, class: 'x'.repeat(1025) }] }, /class must be a non-empty string of at most 1024 characters/],
+  ['a source without method, property or annotation', { sources: [{ type: 'user_input', severity: 'high' }] }, /a source needs method, property or annotation/],
+  ['a property source without object', { sources: [{ property: 'name', type: 'user_input', severity: 'high' }] }, /a property source needs object/],
+  ['a sanitizer without method or annotation', { sanitizers: [{ removes: ['xss'] }] }, /a sanitizer needs method or annotation, and removes/],
+  ['a sink without arg_positions', { sinks: [{ method: 'publish', type: 'xss', cwe: 'CWE-79', severity: 'high' }] }, /a sink needs method, cwe and arg_positions/],
+  ['a sink without cwe', { sinks: [{ method: 'publish', type: 'xss', severity: 'high', arg_positions: [0] }] }, /a sink needs method, cwe and arg_positions/],
+]) {
+  test(`validateTaintConfig rejects ${name}`, () => {
+    assert.throws(() => validateTaintConfig(config), { name: 'TypeError', message })
+  })
+}
+
+const stubEngine = () => ({
+  getDefaultConfig: () => structuredClone({
+    sources: [{ method: 'defaultSource', type: 'user_input', severity: 'low' }],
+    sinks: [],
+    sanitizers: [],
+    sinkSemantics: { eval: { sanitizers: ['xss'] } },
+  }),
+  SOURCE_TYPES: ['user_input'],
+  SINK_TYPES: ['xss', 'code_injection', 'external_taint_escape'],
+})
+
+test('buildTaintConfig coerces documented intent and keeps sink semantics without defaults', () => {
+  const engine = stubEngine()
+  const implicit = buildTaintConfig(engine, { sources: [{ method: 'readInput', type: 'user_input', severity: 'high' }] }, false)
+  assert.equal(implicit.sources[0].return_tainted, true)
+  const explicitOff = buildTaintConfig(engine, { sources: [{ method: 'readInput', type: 'user_input', severity: 'high', return_tainted: false }] }, false)
+  assert.equal(explicitOff.sources[0].return_tainted, false)
+  const property = buildTaintConfig(engine, { sources: [{ property: 'name', object: 'window', type: 'user_input', severity: 'high' }] }, false)
+  assert.equal(property.sources[0].property_tainted, true)
+  const propertyOff = buildTaintConfig(engine, { sources: [{ property: 'name', object: 'window', type: 'user_input', severity: 'high', property_tainted: false }] }, false)
+  assert.equal(propertyOff.sources[0].property_tainted, false)
+  const noDefaults = buildTaintConfig(engine, {}, false)
+  assert.deepEqual(noDefaults.sources, [])
+  assert.deepEqual(noDefaults.sinks, [])
+  assert.deepEqual(noDefaults.sanitizers, [])
+  assert.deepEqual(noDefaults.sinkSemantics, { eval: { sanitizers: ['xss'] } })
+  const withDefaults = buildTaintConfig(engine, {}, true)
+  assert.equal(withDefaults.sources.length, 1)
+  assert.equal(withDefaults.sources[0].return_tainted, true)
+})
+
+test('a method source without return_tainted is coerced into a flow', async () => {
+  const source = 'const value = readInput();\neval(value);'
+  const coerced = await analyzeTaint(source, {
+    config: { sources: [{ method: 'readInput', type: 'user_input', severity: 'high' }] },
+    useDefaultConfig: false,
+  })
+  assert.equal(coerced.ok, true)
+  assert.ok(coerced.flows.some((flow) => flow.source_type === 'user_input'))
+  const explicitOff = await analyzeTaint(source, {
+    config: { sources: [{ method: 'readInput', type: 'user_input', severity: 'high', return_tainted: false }] },
+    useDefaultConfig: false,
+  })
+  assert.equal(explicitOff.ok, true)
+  assert.equal(explicitOff.flows.some((flow) => flow.source_type === 'user_input'), false)
+})
+
+test('the source byte limit counts UTF-8 bytes, not UTF-16 characters', async () => {
+  const source = '界界界界'
+  assert.equal(Buffer.byteLength(source), 12)
+  const rejected = await analyzeTaint(source, { limits: { maxSourceBytes: 8 } })
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.error.code, 'TAINT_SOURCE_LIMIT')
+  assert.deepEqual(rejected.truncatedBy, ['source-size'])
+  const accepted = await analyzeTaint(source, { limits: { maxSourceBytes: 12 } })
+  assert.equal(accepted.ok, true)
+  assert.equal(accepted.error, null)
+})
+
+test('projection bounds bridges, sanitizer types, argument indexes and notes', () => {
+  const report = normalizeTaintReport({
+    enabled: true,
+    ok: true,
+    parse: { ok: true },
+    sinks: [{
+      method: 'publish',
+      type: 'xss',
+      cwe: 'CWE-79',
+      argPositions: [0, 'x', -1, 1.5, ...Array.from({ length: 21 }, (_, index) => index)],
+    }],
+    sanitizers: [{ method: 'scrub()', sanitizes: Array.from({ length: 41 }, (_, index) => `type-${index}`) }],
+    interprocedural: { taint_bridges: Array.from({ length: TAINT_LIMITS.maxFlows + 1 }, (_, index) => `bridge-${index}`) },
+    notes: Array.from({ length: 21 }, (_, index) => `note-${index}`),
+  })
+  assert.deepEqual([...report.truncatedBy].sort(), ['argument-limit', 'bridge-limit', 'note-limit', 'sanitizer-type-limit'])
+  assert.equal(report.sinks[0].argPositions.length, 17)
+  assert.deepEqual(report.sinks[0].argPositions, [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+  assert.ok(report.sinks[0].argPositions.every((index) => Number.isSafeInteger(index) && index >= 0))
+  assert.equal(report.sanitizers[0].sanitizes.length, 40)
+  assert.equal(report.interprocedural.taint_bridges.length, TAINT_LIMITS.maxFlows)
+  assert.equal(report.notes.length, 20)
+})
+
+test('a disabled taint stage produces the documented empty report idempotently', async () => {
+  const result = await analyzeSample(SOURCE, { dynamic: false, restore: false, constraints: false, taint: false })
+  const report = result.report.static.taint
+  assert.equal(result.taint, null)
+  assert.equal(report.enabled, false)
+  assert.equal(report.ok, false)
+  assert.deepEqual(report.sources, [])
+  assert.deepEqual(report.sinks, [])
+  assert.deepEqual(report.sanitizers, [])
+  assert.deepEqual(report.flows, [])
+  assert.deepEqual(report.interprocedural, { tainted_methods: [], taint_bridges: [], method_flows: [] })
+  assert.equal(report.error, null)
+  assert.ok(report.notes.some((note) => /disabled/i.test(note)))
+  assert.deepEqual(normalizeTaintReport(report), report)
+})
+
+test('the synthesized disabled note respects maxTextLength without clipping supplied notes', () => {
+  const clipped = normalizeTaintReport({ limits: { maxTextLength: 1 } })
+  assert.equal(clipped.notes.length, 1)
+  assert.equal(clipped.notes[0].length, 1)
+  assert.ok(clipped.truncatedBy.includes('text-limit'))
+  const supplied = normalizeTaintReport({
+    enabled: true,
+    notes: Array.from({ length: 20 }, (_, index) => `note-${index}`),
+  })
+  assert.equal(supplied.notes.length, 20)
+  assert.equal(supplied.truncatedBy.includes('note-limit'), false)
+})
+
+test('the renderer distinguishes disabled, not-parsed and parsed-empty reports', () => {
+  const disabled = renderTaintReport({ enabled: false })
+  assert.match(disabled, /\*\*Status:\*\* disabled/)
+  assert.match(disabled, /\*\*Parse:\*\* not run/)
+  assert.match(disabled, /Taint analysis was disabled/)
+  const timeout = renderTaintReport({ enabled: true, ok: false, parse: { ok: false }, error: { code: 'TAINT_TIMEOUT', message: 'budget' } })
+  assert.match(timeout, /\*\*Parse:\*\* not run/)
+  assert.match(timeout, /did not reach a complete parse/)
+  assert.doesNotMatch(timeout, /not proof of safety/)
+  const parsedEmpty = renderTaintReport(normalizeTaintReport({ enabled: true, ok: true, parse: { ok: true } }))
+  assert.match(parsedEmpty, /not proof of safety/)
+})
+
+test('the renderer prints evidence sections and omits a missing error code', () => {
+  const synthetic = normalizeTaintReport({
+    enabled: true,
+    ok: true,
+    parse: { ok: true },
+    sanitizers: [{ method: 'scrub()', sanitizes: ['xss'] }],
+    interprocedural: {
+      taint_bridges: ['relay -> eval'],
+      method_flows: [{ caller: 'relay', callee: 'eval', call_line: 3, tainted_args: [0], returns_taint: true }],
+    },
+    notes: ['evidence note'],
+  })
+  const rendered = renderTaintReport(synthetic)
+  assert.match(rendered, /## Sanitizers/)
+  assert.match(rendered, /scrub/)
+  assert.match(rendered, /## Interprocedural evidence/)
+  assert.match(rendered, /relay/)
+  assert.match(rendered, /## Notes/)
+  assert.match(rendered, /evidence note/)
+  const noCode = renderTaintReport({ enabled: true, ok: false, parse: { ok: false }, error: 'boom' })
+  assert.match(noCode, /\*\*Error:\*\* boom/)
+  assert.doesNotMatch(noCode, /\*\*Error:\*\*: /)
+})
+
+test('successful taint evidence carries the static-analysis safety notes', async () => {
+  const report = await analyzeTaint(SOURCE)
+  assert.equal(report.ok, true)
+  assert.ok(report.notes.some((note) => note.includes('no sample code was executed')))
+  assert.ok(report.notes.some((note) => note.includes('No flows does not prove safety')))
+})
+
+test('engine metadata and the escapeHtml over-suppression are reported as evidence', async () => {
+  const installedVersion = createRequire(import.meta.url)('circle-ir/package.json').version
+  const report = await analyzeTaint(SOURCE)
+  assert.equal(report.engineVersion, installedVersion)
+  assert.deepEqual(report.sinks.find((sink) => sink.method === 'eval').argPositions, [0])
+  // escapeHtml is modeled as an xss sanitizer, so Circle-IR also drops the
+  // code_injection flow through it. The sink and the sanitizer stay visible.
+  const escaped = await analyzeTaint('const input = location.hash;\nconst clean = escapeHtml(input);\neval(clean);')
+  assert.equal(escaped.ok, true)
+  assert.equal(escaped.flows.some((flow) => flow.sink_type === 'code_injection'), false)
+  assert.ok(escaped.sinks.some((sink) => sink.method === 'eval'))
+  assert.ok(escaped.sanitizers.some((item) => item.method === 'escapeHtml()' && item.sanitizes.includes('xss')))
+})
+
+test('concurrent custom configuration stays isolated from default analyses', async () => {
+  const config = {
+    sources: [{ method: 'readInput', type: 'user_input', severity: 'high' }],
+    sinks: [{ method: 'publish', type: 'external_taint_escape', cwe: 'CWE-668', severity: 'high', arg_positions: [0] }],
+  }
+  const customSource = 'const value = readInput();\npublish(value);'
+  const [custom, first, second] = await Promise.all([
+    analyzeTaint(customSource, { config }),
+    analyzeTaint(SOURCE),
+    analyzeTaint(SOURCE),
+  ])
+  assert.ok(custom.flows.some((flow) => flow.source_type === 'user_input' && flow.sink_type === 'external_taint_escape'))
+  for (const report of [first, second]) {
+    assert.equal(report.sources.some((item) => item.type === 'user_input'), false)
+    assert.equal(report.sinks.some((item) => item.type === 'external_taint_escape'), false)
+    assert.equal(report.flows.some((flow) => flow.sink_type === 'external_taint_escape'), false)
+    assert.ok(report.flows.some((flow) => flow.sink_type === 'code_injection'))
+  }
+})
+
+test('the taint report shape and default limits are the documented contract', async () => {
+  const reportKeys = [
+    'elapsedMs', 'enabled', 'engine', 'engineVersion', 'error', 'filename', 'flows', 'interprocedural',
+    'language', 'limits', 'notes', 'ok', 'parse', 'sanitizers', 'sinks', 'sources', 'stats', 'truncated', 'truncatedBy',
+  ]
+  assert.equal(reportKeys.length, 19)
+  const report = await analyzeTaint(SOURCE)
+  assert.deepEqual(Object.keys(report).sort(), reportKeys)
+  assert.deepEqual(TAINT_LIMITS, {
+    maxSourceBytes: 1024 * 1024,
+    timeoutMs: 5000,
+    memoryMb: 256,
+    maxSources: 200,
+    maxSinks: 200,
+    maxSanitizers: 100,
+    maxFlows: 100,
+    maxPathLength: 40,
+    maxTextLength: 240,
+  })
+})
+
+test('retained taint evidence overrides a caller-supplied enabled:false', () => {
+  const report = normalizeTaintReport({
+    enabled: false,
+    sources: [{ type: 'http_param', line: 2, code: 'const value = location.hash;' }],
+  })
+  assert.equal(report.enabled, true)
+  assert.equal(report.sources.length, 1)
+  assert.equal(report.sources[0].type, 'http_param')
+  assert.equal(report.stats.sources, 1)
+})
+
+test('a taint failure adds a recommendation without destabilizing the report', async () => {
+  const result = await analyzeSample(SOURCE, {
+    dynamic: false,
+    restore: false,
+    constraints: false,
+    taint: { limits: { timeoutMs: 1 } },
+  })
+  assert.equal(result.report.static.taint.error.code, 'TAINT_TIMEOUT')
+  assert.ok(result.report.recommendations.some((item) => /Taint analysis failed \(TAINT_TIMEOUT\)/.test(item)))
+  assertJson(result.report)
 })

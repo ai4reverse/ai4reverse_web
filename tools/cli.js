@@ -8,7 +8,7 @@
  *   ai4reverse run sample.js --events | head
  */
 
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, stat } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -17,8 +17,9 @@ import { analyzeSample } from './analysis/orchestrator.js'
 import { restore, listPasses } from './restore/index.js'
 import { TracelessSandbox } from './sandbox/sandbox.js'
 import { analyzeConstraints, renderConstraintReport } from './constraint/index.js'
-import { analyzeTaint, renderTaintReport } from './taint/index.js'
+import { analyzeTaint, renderTaintReport, TAINT_LIMITS } from './taint/index.js'
 import { normalizeTaintOptions } from './taint/analyze.js'
+import { normalizeTaintReport } from './taint/report.js'
 
 const USAGE = `ai4reverse — traceless malicious JavaScript analysis
 
@@ -135,6 +136,36 @@ async function readSource(path) {
   } catch (error) {
     throw new UsageError(`cannot read ${path}: ${error.code ?? error.message}`)
   }
+}
+
+/**
+ * Reject an oversized taint input from its stat before decoding it into host
+ * memory. The API receives an existing string; the CLI is the entry point that
+ * can still avoid allocating a multi-GB hostile file.
+ * @returns {Promise<{ source: string } | { report: object }>}
+ */
+async function readTaintSource(path) {
+  if (!path) throw new UsageError('missing input file')
+  let info
+  try {
+    info = await stat(path)
+  } catch (error) {
+    throw new UsageError(`cannot read ${path}: ${error.code ?? error.message}`)
+  }
+  if (!info.isFile()) throw new UsageError(`cannot read ${path}: not a regular file`)
+  if (info.size > TAINT_LIMITS.maxSourceBytes) {
+    const language = /\.tsx$/i.test(path) ? 'tsx' : /\.(?:ts|mts|cts)$/i.test(path) ? 'typescript' : 'javascript'
+    return {
+      report: normalizeTaintReport({
+        enabled: true,
+        filename: path,
+        language,
+        error: { code: 'TAINT_SOURCE_LIMIT', message: 'Source exceeds the taint analysis byte limit; no analysis was performed' },
+        truncatedBy: ['source-size'],
+      }),
+    }
+  }
+  return { source: await readSource(path) }
 }
 
 /** Parse a CLI JSON option, converting failures into usage errors. */
@@ -339,7 +370,11 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (command === 'taint') {
-    const source = await readSource(file)
+    const { source, report: oversized } = await readTaintSource(file)
+    if (oversized) {
+      await emitResult(values.json ? `${JSON.stringify(oversized, null, 2)}\n` : renderTaintReport(oversized), values)
+      return 1
+    }
     if (source.trim().length === 0) throw new UsageError(`${file} is empty`)
     let result
     try {

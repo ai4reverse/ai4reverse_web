@@ -95,6 +95,7 @@ node examples/hooks-demo.mjs
 node examples/restore-demo.mjs
 node examples/jsvmp-demo.mjs
 node examples/constraint-demo.mjs
+node examples/taint-demo.mjs
 
 # Hardened SDK: build, demo, full revalidation matrix
 node examples/national-sdk/build/build-sdk.mjs --seeds 1001-1003

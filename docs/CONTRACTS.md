@@ -527,12 +527,15 @@ imports. A fresh Worker owns engine state; a total deadline terminates it.
 engine, parse and budget failures return explicit `ok:false` JSON evidence.
 Retained sources/sinks/sanitizers/flows, paths and text are capped, with
 pre-cap counts and `truncatedBy` reporting omissions. Syntax recovery is not a
-successful scan. No flows is not proof of safety.
+successful scan. Lines Circle-IR would blank (over 10,000 code units) are
+rejected as `TAINT_SOURCE_LAYOUT`, so a minified one-liner is never a clean
+scan. No flows is not proof of safety.
 
 `analyzeSample()` runs it on original bytes by default and returns `taint`;
 `report.static.taint` has the same bounded shape with `elapsedMs:0` for
 determinism. `taint:false` returns raw `null` and a stable disabled report
-section. Findings are additive evidence, not verdict weights. See
+section. Findings are additive evidence, not verdict weights; a failed stage
+adds an analyst recommendation. See
 [TAINT.md](TAINT.md) for options, configuration, security boundaries and schema.
 
 ## Logger contract (`tools/logging/logger.js`)

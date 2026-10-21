@@ -185,16 +185,17 @@ below).
 | Babel code restoration (unified parse/transform/generate), output validated | `tools/restore/{parse,generate,pass-context,index}.js`, `passes/` (11 passes) | `node --test tests/restore-*.test.js` — 8 files / 147 tests, semantics preservation by execution, `outputValid` fallback |
 | Pass `changed` is evidence-bound and the pipeline is a fixed point | `tools/restore/pass-context.js` (`compareGeneratedText`), `passes/{strings,jsfuck}.js` | `restore-accuracy` 10/10; second application reports `changed:false` on all 11 committed `examples/*.js` |
 | Logging with pino / pino-pretty | `tools/logging/logger.js` | `node --test tests/logging.test.js` — 6/6; `node tools/cli.js passes --pretty` renders via pino-pretty |
-| Final implementation under `tools/` | 91 JS modules / 35 118 lines | `find tools -name '*.js' \| wc -l` = 91; `find tools -name '*.js' -exec cat {} + \| wc -l` = 35118 |
-| Tests under `tests/` | 42 test files + `tests/helpers/` | `git ls-files 'tests/*.test.js' \| wc -l` = 42 |
-| Public surface | 68 exports from `tools/index.js`; 11 `exports` subpaths with `types` | `node -e "import('./tools/index.js').then(m=>console.log(Object.keys(m).length))"` → 68; `types` — 6/6 |
-| Composable auxiliary analysis | `tools/analysis/*` (IOC, report, behaviour, artifacts, stages, orchestrator), CLI, hooks, passes | `node --test tests/analysis-e2e.test.js tests/cli.test.js` — 44/44 |
+| Final implementation under `tools/` | 108 JS modules / 41 737 lines | `find tools -name '*.js' \| wc -l` = 108; `find tools -name '*.js' -exec cat {} + \| wc -l` = 41737 |
+| Tests under `tests/` | 60 test files + `tests/helpers/` | `git ls-files 'tests/*.test.js' \| wc -l` = 60 |
+| Public surface | 78 exports from `tools/index.js`; 12 `exports` subpaths with `types` | `node -e "import('./tools/index.js').then(m=>console.log(Object.keys(m).length))"` → 78; `types` — 6/6 |
+| Composable auxiliary analysis | `tools/analysis/*` (IOC, report, behaviour, artifacts, stages, orchestrator), CLI, hooks, passes | `node --test tests/analysis-e2e.test.js tests/cli.test.js` — 50/50 |
+| Static taint analysis (Circle-IR) | `tools/taint/*` (worker adapter, config, limits, projection, renderer), composed pipeline and CLI | `node --test tests/taint.test.js tests/taint-cli.test.js`; `docs/TAINT.md`; CLI `taint --json` exit/output contract |
 | CLI contract: strict validation, exit codes, stdout purity | `tools/cli.js` | `node --test tests/cli.test.js` — 30/30 |
 | Environment fidelity (D6 surfaces) | `tools/sandbox/env/*`: DOM hierarchy, `dom-parser`, `eventsource`, `url`, `blob`, `navigator`, `globals` (WebAssembly + isolation triple) | `env-fidelity` 16/16, `env-dom` 16/16, `env-surface` 18/18, `env-misc` 19/19, `env-observers` 14/14, `env-encoding` 12/12, `env-canvas` 32/32, `env-network` 18/18 |
 | Deterministic runs | seeded profile/clock/PRNG; `anti-fingerprint` reports a count, never a handle address | `determinism` 2/2 (identical dynamic events after removing `wall`; identical report after removing timing) |
-| Runnable examples / ecosystem docs | `examples/*.js` (11 samples), `examples/*.mjs` (4 demos), `examples/build-jsvmp-sample.mjs`, `examples/cli-usage.sh`, `examples/README.md` | `node --test tests/examples.test.js` — 12/12 (all samples execute; all demos and the CLI cookbook run); `bash examples/cli-usage.sh` → exit 0 |
+| Runnable examples / ecosystem docs | `examples/*.js` (11 samples), `examples/*.mjs` (7 demos), `examples/build-jsvmp-sample.mjs`, `examples/cli-usage.sh`, `examples/README.md` | `node --test tests/examples.test.js` — 12/12 (all samples execute; all demos and the CLI cookbook run); `bash examples/cli-usage.sh` → exit 0 |
 | Hardened national JS-SDK | `examples/national-sdk/` (signing, fingerprint, white-box crypto, JSVMP, zero-trust guard, build pipeline, server verifier, docs) | `node --test tests/national-sdk.test.js` — 13/13; `node examples/national-sdk/verify.mjs` — 37/37 |
-| Many subagents used | Parallel workers for env modules, restoration passes, JSVMP, IOC/report, plus research + review + audit agents | session history; artefacts summarised in "Review and re-validation" below |
+| Many subagents used | Parallel workers for env modules, restoration passes, JSVMP, IOC/report, Circle-IR taint adapter, plus research + review + audit agents | session history; artefacts summarised in "Review and re-validation" below |
 
 ## CLI evidence
 

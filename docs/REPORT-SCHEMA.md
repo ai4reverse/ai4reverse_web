@@ -165,7 +165,7 @@ source, not evidence that a path executed or a proof of safety.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `enabled`, `ok` | boolean | Disabled sections have both false; syntax recovery or engine/budget failure has `ok:false` |
+| `enabled`, `ok` | boolean | Disabled sections have both false; retained sources/sinks/sanitizers/flows keep `enabled:true` even when a partial caller-supplied bundle omitted the flag. Syntax recovery or engine/budget failure has `ok:false` |
 | `engine`, `engineVersion` | string, string \| null | `circle-ir` and the installed engine version when available |
 | `filename`, `language` | string | Original source metadata/parser selection |
 | `parse` | object | `{ok,errorCount,errors:[{line,column,message}]}`; lines 1-based, columns 0-based |
@@ -175,16 +175,19 @@ source, not evidence that a path executed or a proof of safety.
 | `sanitizers` | array | `{type,method,line,sanitizes}` |
 | `flows` | array | `{source_line,sink_line,source_type,sink_type,confidence,sanitized,pathTruncated,path:[{variable,line,type}]}` |
 | `interprocedural` | object | `{tainted_methods,taint_bridges,method_flows:[{caller,callee,call_line,tainted_args,returns_taint}]}` |
-| `truncated`, `truncatedBy` | boolean, array | Resource or retention bounds: source-size, timeout, memory, source/sink/sanitizer/flow/path/text limits and bounded metadata-list limits |
+| `truncated`, `truncatedBy` | boolean, array | Resource or retention bounds: `source-size`, `overlong-line`, `timeout`, `memory`, `source-limit`, `sink-limit`, `sanitizer-limit`, `flow-limit`, `path-limit`, `text-limit`, `method-limit`, `bridge-limit`, `method-flow-limit`, `parse-error-limit`, `sanitizer-type-limit`, `argument-limit`, `note-limit` |
 | `limits` | object | Effective `TAINT_LIMITS` |
-| `error` | object \| null | `{code,message}`, including `TAINT_PARSE`, `TAINT_TIMEOUT`, `TAINT_MEMORY`, `TAINT_SOURCE_LIMIT`, `TAINT_ENGINE`, `TAINT_WORKER_EXIT`, `TAINT_OPTIONS` |
+| `error` | object \| null | `{code,message}`, including `TAINT_PARSE`, `TAINT_TIMEOUT`, `TAINT_MEMORY`, `TAINT_SOURCE_LIMIT`, `TAINT_SOURCE_LAYOUT`, `TAINT_ENGINE`, `TAINT_WORKER_EXIT`, `TAINT_OPTIONS` |
 | `notes` | array | Bounded explanations and safety caveats |
 | `elapsedMs` | number | Always 0 in the composed report, measured in raw `result.taint` |
 
-Missing optional engine strings normalize to `""`, missing lists to `[]`.
+Missing optional engine strings normalize to `""`, missing lists to `[]`;
+`language` defaults to `"javascript"` when absent, and `tsx` is retained as the
+requested parser tag even though Circle-IR uses its TypeScript grammar.
 Path truncation preserves endpoints; independently capped source/sink arrays may
 not retain every point referenced by a flow. Counts describe the pre-cap
-engine output. Taint findings do not change verdict weights. See
+engine output. Taint findings do not change verdict weights, but a failed taint
+stage adds a recommendation. See
 [TAINT.md](TAINT.md) for examples, configuration and engine precision limits.
 
 ### `dynamic`

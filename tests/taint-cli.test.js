@@ -6,6 +6,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { TAINT_LIMITS } from '../tools/taint/index.js'
 
 const exec = promisify(execFile)
 const CLI = fileURLToPath(new URL('../tools/cli.js', import.meta.url))
@@ -86,10 +87,13 @@ test('taint CLI accepts additional patterns and infers TypeScript', async (t) =>
 
 test('taint CLI usage errors are explained on stderr with empty stdout', async (t) => {
   const { path } = await fixture(t, '42')
+  const { path: empty } = await fixture(t, '', 'empty.js')
   for (const args of [
     ['taint'], ['taint', path, '--timeout', '0'], ['taint', path, '--timeout', '1.5'],
+    ['taint', path, '--timeout', '200000'],
     ['taint', path, '--taint-config', '{'], ['taint', path, '--taint-config', 'null'],
     ['taint', path, '--taint-config', '{"sinks":[{}]}'], ['taint', path, '--no-taint'],
+    ['taint', empty],
     ['run', path, '--taint-config', '{}'], ['analyze', path, '--no-taint', '--taint-config', '{}'],
     ['analyze', path, '--taint-config', '{"sources":"oops"}'],
   ]) {
@@ -97,5 +101,58 @@ test('taint CLI usage errors are explained on stderr with empty stdout', async (
     assert.equal(result.code, 2, `${JSON.stringify(args)}: ${result.stderr}`)
     assert.equal(result.stdout, '')
     assert.match(result.stderr, /error:/)
+    // The reason is named, not just signalled by the exit code.
+    if (args[1] === empty) assert.match(result.stderr, /is empty/, `${JSON.stringify(args)}: ${result.stderr}`)
+    if (args.at(-1) === '200000') assert.match(result.stderr, /integer from 1 to 120000/, `${JSON.stringify(args)}: ${result.stderr}`)
   }
+})
+
+test('taint CLI refuses sources whose overlong lines Circle-IR would blank', async (t) => {
+  // Circle-IR replaces every line longer than 10 000 characters with an empty
+  // line without reporting it, so a minified one-liner must fail loudly instead
+  // of returning a clean scan with no evidence.
+  const { path } = await fixture(t, `const value = location.hash;${' '.repeat(10_001)}\neval(value);`)
+  const result = await run(['taint', path, '--json'])
+  assert.equal(result.code, 1, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.error.code, 'TAINT_SOURCE_LAYOUT')
+  assert.deepEqual(report.truncatedBy, ['overlong-line'])
+  assert.equal(report.ok, false)
+  assert.deepEqual(report.sources, [])
+  assert.deepEqual(report.sinks, [])
+  assert.deepEqual(report.flows, [])
+})
+
+test('taint CLI refuses an oversized file from its stat before reading it', async (t) => {
+  // The API receives an existing string; the CLI is the entry point that can
+  // still avoid decoding a hostile multi-GB file into host memory.
+  const { path } = await fixture(t, 'a'.repeat(TAINT_LIMITS.maxSourceBytes + 1))
+  const result = await run(['taint', path, '--json'])
+  assert.equal(result.code, 1, result.stderr)
+  assert.equal(result.stderr, '')
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.error.code, 'TAINT_SOURCE_LIMIT')
+  assert.deepEqual(report.truncatedBy, ['source-size'])
+  assert.deepEqual(report.sources, [])
+  assert.deepEqual(report.flows, [])
+})
+
+test('taint CLI accepts sink suppression fields and an empty arg_positions list', async (t) => {
+  const { path } = await fixture(t, 'const input = location.hash;\ncustomEval(input);')
+  const config = {
+    sinks: [{
+      method: 'customEval',
+      type: 'code_injection',
+      cwe: 'CWE-94',
+      severity: 'high',
+      arg_positions: [],
+      safe_if_string_literal_at: 0,
+    }],
+  }
+  const result = await run(['taint', path, '--json', '--taint-config', JSON.stringify(config)])
+  assert.equal(result.code, 0, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.ok, true)
+  assert.ok(report.sinks.some((sink) => sink.method === 'customEval' && sink.cwe === 'CWE-94'), JSON.stringify(report.sinks))
+  assert.ok(report.flows.some((flow) => flow.sink_type === 'code_injection'), JSON.stringify(report.flows))
 })

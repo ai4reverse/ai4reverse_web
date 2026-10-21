@@ -120,6 +120,11 @@ test('example demos run end-to-end', async () => {
     if (demo === 'hooks-demo.mjs') assert.match(stdout, /network IOCs:/)
     if (demo === 'restore-demo.mjs') assert.match(stdout, /passes:/)
     if (demo === 'jsvmp-demo.mjs') assert.match(stdout, /opcode trace events:/)
+    if (demo === 'taint-demo.mjs') {
+      assert.match(stdout, /^# Taint analysis/m)
+      assert.match(stdout, /CWE-94/)
+      assert.match(stdout, /sanitized DOM example/)
+    }
   }
 })
 

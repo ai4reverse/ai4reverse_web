@@ -63,7 +63,7 @@ only output on stdout with `--json`; diagnostics cannot corrupt it.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `filename` | `sample.js` | Metadata and parser inference only; the path is not read |
-| `language` | inferred | `javascript` (also JSX), `typescript` or `tsx`; `.ts`/`.mts`/`.cts` and `.tsx` select the corresponding parser |
+| `language` | inferred | `javascript` (also JSX), `typescript` or `tsx`; `.ts`/`.mts`/`.cts` and `.tsx` select the corresponding parser. `tsx` is echoed as requested while Circle-IR uses its TypeScript grammar internally |
 | `limits` | `TAINT_LIMITS` | Positive-integer resource and evidence bounds below |
 | `config` | `{}` | Additional Circle-IR source/sink/sanitizer patterns |
 | `useDefaultConfig` | `true` | Include the engine's configured defaults; `false` does **not** disable its language-specific passes |
@@ -72,7 +72,9 @@ only output on stdout with `--json`; diagnostics cannot corrupt it.
 Invalid source types, options, limits or malformed pattern shapes throw a
 `TypeError`/`RangeError`. Engine errors (including unknown pattern type names)
 return an explicit `ok:false` report. The empty string is a valid empty program
-for the API; the CLI rejects an empty input file.
+for the API; the CLI rejects an empty input file. Only JavaScript, TypeScript
+and TSX are accepted; Circle-IR's HTML/Vue markup preprocessor is not exposed,
+and any other language is rejected before analysis.
 
 ## Composed pipeline
 
@@ -92,7 +94,8 @@ result.markdown                  // includes the taint section
 `null` and the stable report section has `enabled:false`, `ok:false`, empty
 lists and a disabled note. An engine, timeout or option error in taint analysis
 does not prevent the remaining analysis stages from running. Taint evidence
-does not add verdict weights or claim dynamic execution of a path.
+does not add verdict weights or claim dynamic execution of a path, but a failed
+taint stage does add a recommendation so it is not silently ignored.
 
 ## Report
 
@@ -112,13 +115,25 @@ The JSON-only report contains:
   `error:{code,message}|null` and `elapsedMs`.
 
 An engine syntax-recovery tree produces `ok:false`, `TAINT_PARSE` and may still
-contain partial evidence. A source-size or deadline failure does not present an
-empty flow list as a successful scan. Sources and sinks can appear without a
-reported flow. Every list and quoted text has a retention cap. When a path is
-shortened, its source and sink endpoints remain and `pathTruncated:true` records
-the missing intermediate steps. Sources/sinks may be capped independently;
-flows carry their own endpoint lines and types even if the corresponding point
-record was not retained.
+contain partial evidence. A source-size, source-layout or deadline failure does
+not present an empty flow list as a successful scan. Sources and sinks can
+appear without a reported flow. Every list and quoted text has a retention cap.
+When a path is shortened, its source and sink endpoints remain and
+`pathTruncated:true` records the missing intermediate steps. Sources/sinks may
+be capped independently; flows carry their own endpoint lines and types even if
+the corresponding point record was not retained. Fixed metadata caps also
+apply: at most 20 argument indexes per sink (`argument-limit`), 40 sanitizer
+sink types (`sanitizer-type-limit`), 20 parser errors (`parse-error-limit`) and
+20 notes (`note-limit`). `tainted_methods` is bounded by `maxSources`;
+`taint_bridges` and `method_flows` by `maxFlows`.
+
+Failure codes are `TAINT_PARSE`, `TAINT_SOURCE_LIMIT`, `TAINT_SOURCE_LAYOUT`,
+`TAINT_TIMEOUT`, `TAINT_MEMORY`, `TAINT_ENGINE`, `TAINT_WORKER_EXIT` and
+`TAINT_OPTIONS`. `truncatedBy` uses `source-size`, `overlong-line`, `timeout`,
+`memory`, `source-limit`, `sink-limit`, `sanitizer-limit`, `flow-limit`,
+`path-limit`, `text-limit`, `method-limit`, `bridge-limit`,
+`method-flow-limit`, `parse-error-limit`, `sanitizer-type-limit`,
+`argument-limit` and `note-limit`.
 
 ## Configuration
 
@@ -142,15 +157,29 @@ const report = await analyzeTaint(source, {
 ```
 
 Property sources use `object`, `property` and optionally `property_tainted`
-(automatically set for object/property patterns). In Circle-IR 4.17.0, custom
-property patterns are recognized primarily in call arguments; a custom property
-read assigned to an intermediate variable can be missed. Built-in URL/Storage
-sources have additional language-specific handling. `class`, `annotation` and
-source `method_annotation` restrictions are supported. Source/sink `languages`
-and sink `exclude_languages` restrict matching. Use Circle-IR's source/sink
+(defaults to true for object/property patterns; an explicit `false` is
+respected) and a property pattern requires `object`. A `method` source defaults
+`return_tainted` to true and an `annotation` source defaults `param_tainted` to
+true, because Circle-IR otherwise accepts the pattern but can never match it.
+Circle-IR matches `object` and `property` as regular-expression fragments, not
+literal names, so keep them identifier-shaped unless a pattern is intended. In
+Circle-IR 4.17.0, custom property patterns are recognized primarily in call
+arguments; a custom property read assigned to an intermediate variable can be
+missed. Built-in URL/Storage sources have additional language-specific handling.
+`class`, `annotation` and source `method_annotation` restrictions are supported.
+Source/sink `languages` and sink `exclude_languages` restrict matching. Sink
+`arg_positions` may be empty for receiver-carried sinks, and
+`safe_if_class_literal_at`, `safe_if_string_literal_at` and
+`safe_if_stream_arg_at` suppress a sink when that argument is a class literal,
+string literal or stream value. Use Circle-IR's source/sink
 type names, for example `http_param`, `http_cookie`, `dom_input`, `user_input`,
 `code_injection`, `xss`, `ssrf` or `external_taint_escape`. Pattern arrays are
-limited to 500 entries each. Source/sink severities are `critical|high|medium|low`.
+limited to 500 entries each; `arg_positions` holds at most 20 indexes from 0 to
+100, `safe_if_*` is an index from 0 to 100, `removes` holds at most 40 sink
+types, and `languages`/`exclude_languages` must be non-empty subsets of
+`javascript`, `typescript` and `tsx`. Source/sink severities are
+`critical|high|medium|low`. `useDefaultConfig:false` omits the pattern lists but
+keeps the engine's sink-semantics registry.
 
 CLI equivalent: `--taint-config '<JSON object>'` works with `taint` and `analyze`.
 It cannot be combined with `--no-taint`.
@@ -182,11 +211,24 @@ filenames retain up to 4096 characters, independently of the snippet limit.
 
 The deadline includes Worker startup, module loading, WASM initialization,
 analysis and result projection. Source size uses UTF-8 bytes and rejects the
-**whole** program, not an analyzed prefix. A `memoryMb` breach can produce
-`TAINT_MEMORY`, but this is a V8 old-generation heap limit, **not** a total
-process-RSS or WASM/native-memory cap. Workers are not OS security sandboxes;
-container/process resource limits remain necessary for hostile corpora. Each
-concurrent caller starts a Worker, so callers must bound batch concurrency.
+**whole** program, not an analyzed prefix. The CLI stats a `taint` input before
+decoding it and returns the same `TAINT_SOURCE_LIMIT` failure for an oversized
+file without allocating it. Circle-IR 4.17.0 also blanks any line
+longer than 10,000 UTF-16 code units before parsing and does not report that loss in
+`parse_status`. The adapter scans first and returns `ok:false`,
+`TAINT_SOURCE_LAYOUT` and `truncatedBy:['overlong-line']` without analyzing, so
+a minified one-line bundle cannot be reported as a clean scan. A `memoryMb`
+breach can produce `TAINT_MEMORY`, but this is a V8 old-generation heap limit,
+**not** a total process-RSS or WASM/native-memory cap. Workers are not OS
+security sandboxes; container/process resource limits remain necessary for
+hostile corpora. Each concurrent caller starts a Worker, so callers must bound
+batch concurrency.
+
+For `analyze`, CLI `--timeout` bounds the dynamic run only; the taint worker
+keeps its own budget. Configure it through `taint:{limits:{timeoutMs}}` in the
+API or use the standalone `taint --timeout`. In a composed report the taint
+section always has `elapsedMs:0` for determinism; the raw `result.taint` carries
+the measured time.
 
 ## Precision and limits of the evidence
 
@@ -211,7 +253,9 @@ of exfiltration or an actual network request.
 No reported flow, sanitizer or interprocedural path is a reachability proof or
 exploitability proof. Correlate it with original code, constraint evidence and
 sandbox observations. Reports contain live sample strings; render them as text,
-not trusted HTML. The Markdown renderer escapes markup and table delimiters.
+not trusted HTML. The Markdown renderer escapes markup and table delimiters. It
+is a bounded summary: use the JSON report for full source/sink records (for
+example sink argument indexes and source `in_method`).
 
 ## Verification
 

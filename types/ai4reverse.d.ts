@@ -1234,6 +1234,12 @@ export interface TaintSinkPattern {
   cwe: string
   severity: 'critical' | 'high' | 'medium' | 'low'
   arg_positions: number[]
+  /** Suppress the sink when this argument is a class literal (0-indexed). */
+  safe_if_class_literal_at?: number
+  /** Suppress the sink when this argument is a compile-time string literal. */
+  safe_if_string_literal_at?: number
+  /** Suppress the sink when this argument is a known stream value. */
+  safe_if_stream_arg_at?: number
   languages?: Array<'javascript' | 'typescript' | 'tsx'>
   exclude_languages?: Array<'javascript' | 'typescript' | 'tsx'>
   allow_unresolved_receiver?: boolean

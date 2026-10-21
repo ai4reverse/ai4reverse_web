@@ -247,7 +247,10 @@ cap WASM/native allocations or total process RSS; a Worker is not an OS sandbox.
 Use process/container limits and bounded batch concurrency for hostile corpora.
 
 Engine/parser recovery and resource failures are explicit failed/partial
-reports, never a clean bill of health. Circle-IR taint propagation and sanitizer
+reports, never a clean bill of health. Circle-IR blanks lines longer than 10,000
+UTF-16 code units before parsing, so the adapter detects that layout first and
+returns `TAINT_SOURCE_LAYOUT` instead of presenting the blanked program as a
+clean scan. Circle-IR taint propagation and sanitizer
 modeling are heuristic, so an empty flow list does not prove safety. Reports
 contain original code as live evidence; Markdown escapes source-controlled
 markup. No real network or sample filesystem access is introduced. See
