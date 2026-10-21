@@ -187,7 +187,7 @@ below).
 | Logging with pino / pino-pretty | `tools/logging/logger.js` | `node --test tests/logging.test.js` — 6/6; `node tools/cli.js passes --pretty` renders via pino-pretty |
 | Final implementation under `tools/` | 108 JS modules / 41 737 lines | `find tools -name '*.js' \| wc -l` = 108; `find tools -name '*.js' -exec cat {} + \| wc -l` = 41737 |
 | Tests under `tests/` | 60 test files + `tests/helpers/` | `git ls-files 'tests/*.test.js' \| wc -l` = 60 |
-| Public surface | 78 exports from `tools/index.js`; 12 `exports` subpaths with `types` | `node -e "import('./tools/index.js').then(m=>console.log(Object.keys(m).length))"` → 78; `types` — 6/6 |
+| Public surface | 78 exports from `tools/index.js`; 12 non-root `exports` subpaths with `types` | `node -e "import('./tools/index.js').then(m=>console.log(Object.keys(m).length))"` → 78; `types` — 6/6 |
 | Composable auxiliary analysis | `tools/analysis/*` (IOC, report, behaviour, artifacts, stages, orchestrator), CLI, hooks, passes | `node --test tests/analysis-e2e.test.js tests/cli.test.js` — 50/50 |
 | Static taint analysis (Circle-IR) | `tools/taint/*` (worker adapter, config, limits, projection, renderer), composed pipeline and CLI | `node --test tests/taint.test.js tests/taint-cli.test.js`; `docs/TAINT.md`; CLI `taint --json` exit/output contract |
 | CLI contract: strict validation, exit codes, stdout purity | `tools/cli.js` | `node --test tests/cli.test.js` — 30/30 |
