@@ -156,6 +156,14 @@ See `examples/national-sdk/README.md`, `docs/THREAT-MODEL.md`,
 `docs/ALGORITHMS.md`, `docs/ENVIRONMENT-DETECTION.md`,
 `docs/VERIFICATION.md` and `docs/DESIGN-REVIEW.md` inside that directory.
 
+## Static taint-analysis demo
+
+`taint-demo.mjs` parses source strings with Circle-IR without executing them.
+It verifies URL → decoding → eval propagation and a sanitized DOM negative.
+Run `node examples/taint-demo.mjs` or
+`node tools/cli.js taint examples/sample-loader.js --json`. See
+[`docs/TAINT.md`](../docs/TAINT.md) for configuration and precision limits.
+
 ## Programmatic demos (run with Node)
 
 | File | Demonstrates |
