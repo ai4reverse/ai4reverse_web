@@ -7,7 +7,7 @@ what it is, and where to extend it.
 
 ```
 tools/
-├── index.js                  public barrel (68 exports)
+├── index.js                  public barrel (75 exports)
 ├── cli.js                    analyze | restore | run | passes | version
 │
 ├── logging/logger.js         pino + pino-pretty, redaction, event sink
@@ -56,6 +56,14 @@ tools/
 │   ├── spec.js               opcode table + assembler + semantics
 │   ├── builder.js            runnable (obfuscatable) JSVMP source generator
 │   └── analyze.js            dispatch/handler/const-pool recovery
+│
+├── constraint/               z3-backed static constraint solving
+│   ├── z3.js                 lazy WASM load, private contexts
+│   ├── translate.js          Babel AST → z3 terms, exactness/purity tracking
+│   ├── solve.js              sat/model, validity, equivalence, simplification
+│   ├── analyze.js            opaque predicates, path feasibility, budgets
+│   ├── limits.js             candidate/time/size bounds
+│   └── render.js             human-readable projection
 │
 └── analysis/
     ├── ioc.js                static/decoded/dynamic IOC extraction
@@ -295,6 +303,9 @@ released at all and is abandoned instead (section 1.2).
 - **New analysis section:** add a module under `tools/analysis/`, wire it in
   `orchestrator.js`, and extend `docs/REPORT-SCHEMA.md` (keep the shape
   additive).
+- **New constraint theory:** extend `tools/constraint/translate.js` and set
+  `exact`/`pure` honestly; a term that only holds under the integer model must
+  stay `exact:false`. Add a regression in `tests/constraint.test.js`.
 - **New JSVMP shape:** extend `tools/jsvmp/spec.js` semantics and
   `detectDispatch()` heuristics; the instrumentation only needs case offsets.
 
@@ -316,7 +327,41 @@ text || generated text !== input)`, and a pass may only claim a change when
 `compareGeneratedText` reports different text. `rename` declares
 `meta.deferred` and runs once, in the final round.
 
-## 7. Determinism
+## 7. Constraint solving
+
+`tools/constraint/` answers four questions statically: is a condition constant,
+is an `if` arm reachable, what input satisfies a conjunction, and are two
+expressions equivalent? It never executes the sample.
+
+The pipeline is one parse → candidate collection → AST→z3 translation → bounded
+solver queries:
+
+- **Candidates.** `if`/ternary/loop tests and logical expressions, deduplicated
+  by source span. `enclosingConditions()` walks outward to the nearest function
+  boundary, adding `if`/ternary polarity, short-circuit facts and loop guards.
+- **Translation.** `translate.js` models bitwise operators through signed
+  32-bit vectors (exact for every JS value), boolean structure, `typeof` and
+  comparisons of exact values. Integer arithmetic is an `Int` model and carries
+  `exact:false` unless the caller sets `assumeIntegers`.
+- **Proofs.** `unsat(not P)` means always-true; `unsat(P)` means always-false.
+  A branch is unreachable when its path conjunction is `unsat`. `unknown` from a
+  timeout is counted, never treated as a proof.
+- **Fresh names.** Atoms are unique for the lifetime of a context. Per-call
+  `b0`/`eq0` names would conflate unrelated path conditions and could produce a
+  false `unsat`.
+- **Integration.** `analyzeSample()` runs the analyzer by default and writes
+  `report.static.constraint` plus a Markdown section. Findings are evidence, not
+  verdict weights. `constraints:false` keeps a stable disabled shape.
+- **Limits.** `CONSTRAINT_LIMITS` bounds candidates, branches, path depth,
+  expression depth/nodes, per-query time and total solver time; a tripped bound
+  sets `truncated` and a note.
+
+Soundness is a contract, not a comment: `exact`, `nanSafe`, `integral` and
+`pure` are tracked per term, and the tests pin the `NaN` reflexivity
+counterexample and the integer-assumption gate. The full model is in
+`docs/CONSTRAINT.md`.
+
+## 8. Determinism
 
 Given the same seed, source and options, these are byte-identical across runs:
 profile values, virtual timestamps, `Math.random`/crypto outputs, timer

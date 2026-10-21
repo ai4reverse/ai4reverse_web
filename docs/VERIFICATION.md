@@ -51,21 +51,26 @@ below is that pin, not the current baseline.
 - Node.js v24.19.0 (contract requires >= 24.18), pnpm 12.14.
 - Dependency set: `quickjs-emscripten@0.32.0`,
   `@babel/{parser,traverse,generator,types,template}@8.x`, `pino@10`,
-  `pino-pretty@13`. `z3-solver` is not a dependency (ACCEPTANCE H13); confirm
-  with:
+  `pino-pretty@13`, and `z3-solver@5.3.1` (used by `tools/constraint/`; it is
+  loaded lazily, so importing the root barrel does not start the WASM module).
+  Confirm the dependency and its users with:
 
   ```
   $ grep -c z3-solver pnpm-lock.yaml package.json
-  0
+  pnpm-lock.yaml:3
+  package.json:1
+  $ grep -rl "import('z3-solver')" tools/
+  tools/constraint/z3.js
   ```
 
 - No network access is required or performed by the platform or its tests.
 
 ## Full suite
 
-The current working-tree run is the opening baseline: **907 pass / 0 fail /
-~106 s** via `pnpm test`. The transcript below is the previous pin at
-`7c1df9c` (612 pass).
+The current working-tree run is **961 pass / 0 fail / 58 `tests/*.test.js`
+files / ~117 s** via `pnpm test` (2026-10-21, including
+`tests/constraint.test.js` and `tests/constraint-translate.test.js`). The transcript below is the previous pin at
+`7c1df9c` (612 pass), kept as historical evidence rather than a current claim.
 
 ```
 $ node --test --test-concurrency=1 $(git ls-files 'tests/*.test.js')   # commit 7c1df9c

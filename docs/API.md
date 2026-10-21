@@ -274,6 +274,43 @@ console.log(facts.facts.obfuscation, facts.facts.techniques)
 The sandbox composes instrumentation for you; use the module directly only when
 embedding the instrumenter in another runtime.
 
+## Constraint solving
+
+```js
+import {
+  analyzeConstraints, collectPathConditions, solveConstraints, provePredicate,
+  proveEquivalent, simplifyExpression,
+} from './tools/constraint/index.js'
+
+// Static evidence about branch conditions (never executes the sample).
+const report = await analyzeConstraints(source, { filename: 'loader.js' })
+console.log(report.stats.opaque, report.opaquePredicates)
+const paths = collectPathConditions(source) // syntactic path conditions, no solver
+console.log(report.unreachableBranches, report.simplifications)
+console.log(report.truncated, report.assumptions)
+
+// A model for a conjunction.
+const sat = await solveConstraints(['x * 2 === 42'])       // {status:'sat', model:{x:21}}
+const unsat = await solveConstraints(['x > 10', 'x < 5']) // {status:'unsat'}
+
+// Validity and counterexamples.
+await provePredicate('(x & 1) === 0 || (x & 1) === 1')    // always-true, no assumptions
+await provePredicate('x + 1 > x')                         // contingent (NaN/Infinity/precision)
+await provePredicate('x + 1 > x', { assumeIntegers: true }) // always-true, ['integers']
+await proveEquivalent('x + y', 'y + x', { assumeIntegers: true })
+await simplifyExpression('(x & 1) === 0 || (x & 1) === 1') // SMT normal form + verification
+```
+
+The default domain is the exact JS fragment (bitwise through 32-bit vectors,
+boolean structure, `typeof`, exact comparisons). Integer arithmetic is an
+explicit `assumeIntegers` assumption and is reported on every finding.
+`unknown` is a normal solver answer and is never treated as a proof. See
+`docs/CONSTRAINT.md` for the full soundness model, budgets and limits.
+
+`analyzeSample()` runs this component unless `constraints: false`; the result is
+`report.static.constraint` (plus `result.constraint`) and a
+`## Constraint solving` Markdown section.
+
 ## JSVMP
 
 ```js
@@ -323,6 +360,8 @@ pino-pretty is used automatically on a TTY (or `--pretty` in the CLI).
 node tools/cli.js analyze <file> [options]
 node tools/cli.js restore <file> [options] [--passes a,b] [--exclude c] [--rounds n]
 node tools/cli.js run <file> [--json|--out path] [--events]
+node tools/cli.js constraint <file> [--json|--out path] [--timeout ms]
+                                  [--assume-integers|--assume-int32]
 node tools/cli.js passes [--json]
 node tools/cli.js version
 
@@ -380,9 +419,10 @@ import { TracelessSandbox } from 'ai4reverse-web/sandbox'
 import { createHookBus } from 'ai4reverse-web/hook'
 import { analyzeSample } from 'ai4reverse-web/analysis'
 import { createLogger, scopeLogger } from 'ai4reverse-web/logging'
+import { analyzeConstraints, solveConstraints } from 'ai4reverse-web/constraint'
 ```
 
 `package.json` maps `.`, `./sandbox`, `./instrumentation`, `./hook`, `./restore`,
-`./analysis`, `./jsvmp`, `./logging`, `./invocation`, `./util`, `./cli` to
-`tools/**` with a matching `types/*.d.ts`. The entry barrel exports 68 names;
-`validateOutput` and `isDeferredPass` are on `./restore` only.
+`./analysis`, `./jsvmp`, `./constraint`, `./logging`, `./invocation`, `./util`,
+`./cli` to `tools/**` with a matching `types/*.d.ts`. The entry barrel exports
+75 names; `validateOutput` and `isDeferredPass` are on `./restore` only.

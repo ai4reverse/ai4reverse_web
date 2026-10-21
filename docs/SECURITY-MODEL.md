@@ -223,6 +223,18 @@ the default profile must not expose one — it is a one-line detection tell.
 is a surface, not a lock implementation, and no data can cross an isolation
 boundary through it.
 
+## Constraint analysis
+
+`tools/constraint/` is static. It parses the sample, translates selected
+expressions to z3 terms, and asks the host-side z3 WASM module for `sat` /
+`unsat` / `unknown`. The guest never sees z3, and no sample code is executed to
+answer a query. Candidate count, expression size, path depth, per-query timeout
+and total solver time are bounded (`CONSTRAINT_LIMITS`), so a hostile condition
+cannot turn analysis into an unbounded host computation. Constructs outside the
+modeled fragment become uninterpreted; the report says `unknown`/`unsupported`
+rather than inventing a result. The integer/`NaN` domain assumptions are
+explicit and recorded on every finding (`docs/CONSTRAINT.md`).
+
 ## Threat model for the analysed code
 
 The sample is assumed to:

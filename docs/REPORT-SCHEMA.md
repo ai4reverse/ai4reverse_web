@@ -14,7 +14,7 @@ same object.
 | `sample` | object | analysed sample identity |
 | `verdict` | object | weighted score, level, confidence and reasons |
 | `provenance` | array | per-reason evidence refs (event/ioc/artifact/stage/killChain) |
-| `static` | object | parse, restoration, AST summary, IOCs and techniques |
+| `static` | object | parse, restoration, AST summary, IOCs, techniques and z3 constraint evidence |
 | `dynamic` | object | sandbox result, trace events and observed behaviour |
 | `tracing` | object | trace volume and JSVMP detection |
 | `hooks` | object | hook activity and mocked environment APIs |
@@ -132,6 +132,32 @@ obfuscation}` where `obfuscation` is `{score, indicators}`.
 `iocs`: the output of `extractIOCs()` (see below).
 
 `techniques`: array of analyst-facing technique labels.
+
+`constraint`: z3 constraint-solving evidence. The section is always present;
+`enabled:false` and empty lists are the stable "not run" shape.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `enabled` | boolean | `false` when `analyzeSample({constraints:false})` ran |
+| `ok` | boolean | the component ran and returned a report |
+| `engine` | string | `"z3-solver"` |
+| `engineVersion` | string \| null | z3 version reported by the loaded WASM build |
+| `parse` | object | `{ok, sourceType, errors}` from the analyzer's own tolerant parse |
+| `stats` | object | `{candidates, predicates, proven, opaque, undecided, unsupported, inexact, branches, unreachable, unsupportedBranches, undecidedBranches, simplifications, solverCalls}` |
+| `opaquePredicates` | array | `[{kind, role, line, column, text, variables, exact, pure, assumptions, proof}]`; `kind` is `always-true` or `always-false`, `proof` is `unsat-negation` or `unsat-positive` |
+| `unreachableBranches` | array | `[{kind, line, column, text, path, variables, exact, pure, assumptions, proof}]`; `kind` is `if-consequent` or `if-alternate`, `path` lists the enclosing constraints and `proof` is `unsat-path` |
+| `simplifications` | array | `[{role, line, column, text, simplified, variables, exact, pure, assumptions, verification}]`; `simplified` is SMT-LIB, `verification` is `unsat-negation`, `counterexample`, `unknown` or `unchanged` |
+| `assumptions` | array | active domain assumptions: `[]`, `["integers"]` or `["int32","integers"]` |
+| `truncated` | boolean | a candidate or time bound was reached |
+| `notes` | array | bounded human-readable explanations |
+| `error` | object \| null | `{message}` when z3 could not load or the analyzer failed |
+| `limits` | object | the effective `CONSTRAINT_LIMITS` subset, including `solverRlimit` |
+| `elapsedMs` | number | always `0` in the report: host timing must not break determinism |
+
+Findings are **evidence**. They do not add a verdict reason or weight; the
+`verdict` table above is unchanged. The raw component result is also returned as
+`result.constraint` from `analyzeSample()` and carries its measured
+`elapsedMs`.
 
 ### `dynamic`
 

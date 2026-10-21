@@ -11,6 +11,9 @@ sample ──► static analysis ──► Babel restoration ──► traceless
              (AST facts,          (11 passes,            (isolated QuickJS,        (verdict, IOCs,
               obfuscation)         unified parse/        browser profile,          behaviour, artifacts,
                                    transform/generate)   trace channel)            opcode trace)
+                    │
+                    └──► constraint solving (z3): opaque predicates, unreachable arms,
+                         sat models, equivalence and normal forms
 ```
 
 ## Highlights
@@ -22,6 +25,7 @@ sample ──► static analysis ──► Babel restoration ──► traceless
 | Traceless instrumentation (Code/API/Exception/AST/JSVMP) | `tools/instrumentation/` | `tests/instrumentation.test.js`, `tests/jsvmp-trace.test.js` |
 | Traceless hooks (Code/API/Exception/AST) | `tools/hook/` | `tests/hook.test.js` |
 | Code restoration with Babel | `tools/restore/` | `tests/restore-*.test.js`, `tests/restore-pipeline.test.js` |
+| Constraint solving (z3): opaque predicates, unreachable arms, models, equivalence | `tools/constraint/` | `tests/constraint.test.js`, `docs/CONSTRAINT.md` |
 | Logging (pino / pino-pretty) | `tools/logging/` | `tests/logging.test.js` |
 | Browser-grade environment, 28 modules (documented limits, no WASM execution) | `tools/sandbox/env/` | `tests/env-*.test.js`, `tests/env-surface.test.js`, `tests/env-fidelity.test.js` |
 | Hardened national JS-SDK (SM2/SM3/SM4 signing, device fingerprint, white-box crypto, JSVMP, zero-trust guard) | `examples/national-sdk/` | `tests/national-sdk.test.js`, `examples/national-sdk/verify.mjs` |
@@ -75,12 +79,16 @@ node tools/cli.js restore examples/sample-loader.js
 # Raw dynamic run with the trace stream
 node tools/cli.js run examples/sample-loader.js --events
 
+# z3 constraint/opaque-predicate analysis (JSON with --json)
+node tools/cli.js constraint examples/sample-loader.js
+
 # Every committed example, sample and demo
 bash examples/cli-usage.sh
 node examples/api-usage.mjs
 node examples/hooks-demo.mjs
 node examples/restore-demo.mjs
 node examples/jsvmp-demo.mjs
+node examples/constraint-demo.mjs
 
 # Hardened SDK: build, demo, full revalidation matrix
 node examples/national-sdk/build/build-sdk.mjs --seeds 1001-1003
@@ -271,6 +279,38 @@ re-parsed before it is returned: `restore()` exposes `outputValid`,
 back code that does not parse. Passes are unit-tested by executing original vs
 transformed code in plain Node (`tests/restore-*.test.js`, 8 files / 147 tests).
 
+## Constraint solving (z3)
+
+`tools/constraint/` is a static, z3-backed analyzer. The lazy WASM loader keeps
+`z3-solver` out of the startup path for callers that never use it.
+
+- **Opaque predicates.** `if`, ternary, loop and logical conditions are
+  translated to z3 terms. A condition is `always-true` when `unsat(not P)` and
+  `always-false` when `unsat(P)`.
+- **Path feasibility.** `if` arms are checked against their enclosing path
+  conditions (outer `if`/ternary polarity, short-circuit facts, loop guards), so
+  a dead arm is reported with the path that proves it.
+- **Models.** `solveConstraints(['x * 2 === 42'])` returns `{status: 'sat',
+  model: {x: 21}}`; unsat constraints return no model.
+- **Equivalence/normal forms.** `proveEquivalent()` checks
+  `unsat(left !== right)`; `simplifyExpression()` returns z3's SMT normal form
+  and the equivalence query that verified it.
+
+The default domain is the **exact** JS fragment: bitwise operators (through
+signed 32-bit vectors over primitive values; object `ToPrimitive` calls are not
+modelled), boolean structure, `typeof`, comparisons of exact values. Integer
+arithmetic is an explicit assumption, because a JS number can be
+fractional, `NaN`, `Infinity` or rounded above 2^53. `x !== x` is therefore not
+claimed always-false; `x + 1 > x` is proven only with
+`assumeIntegers: true`, and every finding reports the assumption it used.
+Unsupported constructs become uninterpreted leaves, so the analyzer says
+`unknown`/`unsupported` instead of guessing. See `docs/CONSTRAINT.md`.
+
+`analyzeSample()` runs the component by default (`constraints: false` disables
+it) and exposes the normalized evidence under `report.static.constraint` plus a
+`## Constraint solving` Markdown section. Findings are evidence, not verdict
+weights; they do not silently move a product's pinned score.
+
 ## JSVMP support
 
 - `tools/jsvmp/spec.js` — canonical opcode table + assembler.
@@ -297,6 +337,8 @@ the CLI keeps stdout for results and stderr for diagnostics.
 node tools/cli.js analyze <file> [options]
 node tools/cli.js restore <file> [options] [--passes ids] [--exclude ids] [--rounds 1-5]
 node tools/cli.js run <file> [--json|--out path] [--events]
+node tools/cli.js constraint <file> [--json|--out path] [--timeout ms]
+                                  [--assume-integers|--assume-int32]
 node tools/cli.js passes [--json]
 node tools/cli.js version
 
@@ -323,10 +365,10 @@ Exit codes: `0` success, `1` analysis/run failure, `2` usage error.
 
 Packaging (`package.json`): `type: module`, `engines.node >= 24.18`,
 `bin: ai4reverse → tools/cli.js` (mode `100755` in git), `files: [tools, docs,
-types, README.md, LICENSE]`, ISC `LICENSE`, and 11 `exports` subpaths
+types, README.md, LICENSE]`, ISC `LICENSE`, and 12 `exports` subpaths
 (`.`, `./sandbox`, `./instrumentation`, `./hook`, `./restore`, `./analysis`,
-`./jsvmp`, `./logging`, `./invocation`, `./util`, `./cli`) each with its own
-`types/*.d.ts`. The entry barrel exports **68** names. `restoreCode` is a
+`./jsvmp`, `./constraint`, `./logging`, `./invocation`, `./util`, `./cli`) each
+with its own `types/*.d.ts`. The entry barrel exports **75** names. `restoreCode` is a
 root-entry convenience API; `restoreWithPass` is exported both from the root
 barrel and from `./restore`. `validateOutput` and `isDeferredPass` are on
 `./restore` only.
@@ -355,9 +397,13 @@ Evidence the report keeps:
   "nothing to restore"; Markdown prints `**Restoration error:**`.
 - **Hook failures.** `hooks.errors` keeps the newest 50 failing hooks (each
   `{hook, phase, message}`) plus `hooks.errorsTruncated`.
+- **Constraint evidence.** `static.constraint` keeps z3's opaque predicates,
+  unreachable arms and normal forms with their proof kind, exactness and
+  assumptions; `truncated` says a candidate or time bound was hit. Markdown
+  prints a `## Constraint solving` section.
 
-All four are Markdown-visible: `Platform events (not sample behaviour)`,
-`Trace truncated`, `Restoration error`, `Hook errors`.
+All five are Markdown-visible: `Platform events (not sample behaviour)`,
+`Trace truncated`, `Restoration error`, `Hook errors`, `Constraint solving`.
 
 ## Known limitations (honest list)
 
@@ -510,6 +556,8 @@ extracted payloads as live malware.
   `SharedArrayBuffer` policy, handle lifetime, threat model.
 - `docs/API.md` — public API cookbook (including `validateOutput`, `disposal`
   failure shape, CLI matrix).
+- `docs/CONSTRAINT.md` — soundness model, translation fragment, API, budgets and
+  known limits of the z3 component.
 - `docs/REPORT-SCHEMA.md` — report shape.
 - `docs/VERIFICATION.md` — every number in this README, with the command that
   produced it, plus the `D1`–`D12` disposition matrix.

@@ -441,6 +441,14 @@ conditions of the current decision. The other rows were not re-audited.
 | H11 | `sandbox/integrity.js:80-121` | The after-snapshot resolves `JSON.stringify`/`getOwnPropertyNames`/`Function.prototype.toString` from live guest globals, so a sample can return a captured pristine snapshot and defeat `intact`. | **[S]** (converse failure `{kind:'unavailable'}` is not in the schema's drift kinds). |
 | H12 **CLOSED** | `cli.js:159-166,303,351,376,272-274` | Default seed is the **number** `0x5eed`; `--seed 0x5eed` is a **string** hashed by `hashSeed`, producing a different profile. `analyze` exits 0 when the sample throws (`run` exits 1). `--events` is accepted and silently discarded by `analyze`/`restore`. No-argument invocation prints usage to stdout and exits 0. | **[V]** different UA/OS for default vs explicit seed; `analyze: 0` vs `run: 1`; `--events` cases `0`; no-args `0`. |
 | H13 **CLOSED** | `package.json:110`, `pnpm-lock.yaml:35,365,660` | `z3-solver@^5.3.1` is a shipped runtime dependency imported nowhere; `docs/VERIFICATION.md:29-34` claims it was removed and quotes a command that now returns 3. `node_modules/z3-solver` is 0 B, i.e. the green suite runs on a stale install. | **[V]** grep tools/tests → 0; lockfile → 3 entries; docs claim → false. |
+
+> **Superseded 2026-10-21.** H13's disposition ("remove z3") was correct for the
+> tree it reviewed. The constraint-solving component now uses z3 deliberately:
+> `tools/constraint/` loads `z3-solver@5.3.1` lazily and
+> `tests/constraint.test.js` / `tests/constraint-translate.test.js` exercise the
+> WASM module. The current dependency claim lives in
+> `docs/VERIFICATION.md`; see `docs/CONSTRAINT.md` for the component contract.
+
 | H14 | `instrumentation/code.js:117`, `sandbox/clock.js:82-83`, `env/performance.js:17` | Each traced statement ticks the virtual clock by 0.001 ms, so guest-observed `performance.now()` has a 1 µs grid that no claimed browser produces (100 µs clamp), and `level: 'off'` freezes the clock. Instrumentation is therefore visible in timing. | **[V]** after 50 statements `performance.now() = 1009.103` (microsecond grid); `level:'off'` returns integer ms. |
 | H15 | `tests/helpers/harness.js:100-115` + 250 call sites | The documented leak invariant is not enforced: 267/327 `.dispose()` sites discard the record. A live `ctx.newString` at dispose returns `{ok:true, leaked:false}`, and a context-scope leak prints `Aborted(…)` while the test still passes. | **[V]** harness probe: live handle, `disposal.ok: true`. |
 | H16 | `api.js:202`, `fetch.js:548-561`, `network.js:205` | API wrapper arity comes from a static table (wrapping `XHR.open` reports 5, shim has 3); `signal` is dropped by `fetch`; a refused network delivery timer leaves `pending` set and the promise never settles (probe: `net: 0, ioc: 1`, `settle.jobs: 0`). | **[S]** arity/signal; **[V]** missing `net` event. |
@@ -528,7 +536,7 @@ Current-contract documents (must match HEAD):
 
 | Claim | Doc | Code | Status |
 | --- | --- | --- | --- |
-| "z3-solver removed from package.json and lockfile; `grep -c` → 0" | `VERIFICATION.md:29-34` | 3 lockfile entries, `package.json:110` | **drifted** (also an unused dependency) |
+| "z3-solver removed from package.json and lockfile; `grep -c` → 0" | `VERIFICATION.md:29-34` | 3 lockfile entries, `package.json:110` | **historical** — superseded by `tools/constraint/`; current claim in `VERIFICATION.md` |
 | `maxSourceBytes` = 1 MiB | `CONTRACTS.md:279` | 8 MiB (`limits.js:27`) | **drifted** |
 | Report keeps the **newest** 50 hook failures | `REPORT-SCHEMA.md:144-146`, `README.md:345` | `slice(0,50)` keeps the oldest (`report.js:1163`) | **drifted** |
 | Every verdict point is attributable to a listed reason code | `REPORT-SCHEMA.md:54-85` | 5 undocumented codes, up to 27 points | **drifted** |
@@ -610,7 +618,7 @@ stay the older pins.
 | H9 | Same file: a `code:*` pipeline transform runs once; a throwing logger does not escape `dispatch`; `trace.child('hook').child('net')` emits. `tools/hook/hookbus.js` also removes a `once` registration when its handler throws. `tests/hook.test.js` asserts once-removal next to a throwing sibling; it does not itself throw from the `once` handler. |
 | H10 | `maxStageDepth` is gone from `DEFAULT_LIMITS`. `interruptQuantumMs` is passed as `resolutionMs` in `tools/sandbox/sandbox.js`. There is no test named H10; `tests/env-time.test.js` only comments on the quantum. |
 | H12 | `tests/cli.test.js`: no command exits 2; `--events` is rejected off `run`; `analyze` exits 1 when the guest throws. `seedOption` in `tools/cli.js` parses `0x5eed` to a number, so it matches the numeric default. The test accepts the hex form; it does not compare profiles. |
-| H13 | `z3-solver` is absent from `package.json` and `pnpm-lock.yaml`. No dedicated test. |
+| H13 | Historical: z3 was absent at the reviewed commit. The constraint component (2026-10-21) reinstates it by design and pins it in `tests/constraint.test.js`. |
 | H21 | `tests/acceptance-p0.test.js`: `planSize` and `insertions` stay within `maxInsertions`. |
 
 The table the REJECT required is the same bar. Each P0 row and H21 now has the
