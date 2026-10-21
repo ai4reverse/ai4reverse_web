@@ -491,7 +491,14 @@ export function createTranslator(api, context, options = {}) {
       }
       const typeStringMix =
         (a.sort === TYPE && b.sort === STRING) || (a.sort === STRING && b.sort === TYPE)
-      if (strict && a.sort !== b.sort && !typeStringMix && !(isArith(a) && isArith(b))) {
+      if (
+        strict &&
+        a.sort !== b.sort &&
+        !typeStringMix &&
+        !(isArith(a) && isArith(b)) &&
+        !a.truthiness &&
+        !b.truthiness
+      ) {
         // Strict equality across different JS types is always false.
         const eq = context.Bool.val(false)
         return term(negated ? context.Not(eq) : eq, BOOL, {
@@ -507,7 +514,7 @@ export function createTranslator(api, context, options = {}) {
             exact: true, integral: true, pure, variables, uninterpreted,
           })
         }
-        if (a.sort === BOOL && isArith(b)) {
+        if (a.sort === BOOL && isArith(b) && !a.truthiness && !b.truthiness) {
           const leftInt = asInt(a, state)
           const rightInt = asInt(b, state)
           const eq = leftInt.expr.eq(rightInt.expr)
@@ -515,7 +522,7 @@ export function createTranslator(api, context, options = {}) {
             exact: true, integral: true, pure, variables, uninterpreted,
           })
         }
-        if (b.sort === BOOL && isArith(a)) {
+        if (b.sort === BOOL && isArith(a) && !a.truthiness && !b.truthiness) {
           const leftInt = asInt(a, state)
           const rightInt = asInt(b, state)
           const eq = leftInt.expr.eq(rightInt.expr)
@@ -717,6 +724,9 @@ export function createTranslator(api, context, options = {}) {
     return term(expr, BOOL, {
       exact: true,
       integral: true,
+      // `&&` and `||` yield an operand value, so this term is the truthiness of
+      // the operands rather than a JavaScript boolean.
+      truthiness: true,
       pure: left.pure && right.pure,
       variables: mergeVars(left, right),
       uninterpreted: left.uninterpreted + right.uninterpreted,
@@ -741,6 +751,8 @@ export function createTranslator(api, context, options = {}) {
     const b = coerce(alternate, sort, state)
     return term(context.If(test.expr, a.expr, b.expr), sort, {
       exact: test.exact && a.exact && b.exact,
+      // A truthiness branch keeps the result from being a JavaScript-typed value.
+      truthiness: a.truthiness === true || b.truthiness === true,
       nanSafe: a.nanSafe && b.nanSafe,
       integral: a.integral && b.integral,
       pure: test.pure && a.pure && b.pure,
@@ -1173,6 +1185,7 @@ export function createTranslator(api, context, options = {}) {
       uninterpreted: flags.uninterpreted ?? 0,
       variables: new Set(flags.variables ?? (flags.variable ? [flags.variable] : [])),
       bvExpr: flags.bvExpr ?? null,
+      truthiness: flags.truthiness === true,
       reason: flags.reason ?? null,
     }
   }

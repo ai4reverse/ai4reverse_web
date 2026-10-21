@@ -87,6 +87,31 @@ test('strict and loose equality keep JS type rules', async () => {
   assert.equal(dynamicTag.proved, false, JSON.stringify(dynamicTag))
 })
 
+test('truthiness values are not treated as JavaScript booleans', async () => {
+  // `&&` and `||` yield an operand value, not a boolean, so a truthiness term
+  // must never be decided against a JavaScript-typed operand by comparing sorts.
+  for (const source of [
+    "('' || 'a') === 'a'",
+    '(1 && 5) == 1',
+    '(x || 5) === 5',
+    '(a ? (b || c) : true) === 5',
+    '(a ? (b || c) : true) == 5',
+  ]) {
+    const proof = await provePredicate(source)
+    assert.equal(proof.status, 'contingent', `${source}: ${JSON.stringify(proof)}`)
+  }
+
+  // The type rules themselves still decide the cases they can decide.
+  for (const [source, expected] of [
+    ['1 === true', 'always-false'],
+    ['1 == true', 'always-true'],
+    ['null == undefined', 'always-true'],
+  ]) {
+    const proof = await provePredicate(source)
+    assert.equal(proof.status, expected, `${source}: ${JSON.stringify(proof)}`)
+  }
+})
+
 test('strings, typeof tags and Math helpers are translated', async () => {
   for (const source of [
     "'a' + 'b' === 'ab'",
