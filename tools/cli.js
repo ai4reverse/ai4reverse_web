@@ -17,6 +17,8 @@ import { analyzeSample } from './analysis/orchestrator.js'
 import { restore, listPasses } from './restore/index.js'
 import { TracelessSandbox } from './sandbox/sandbox.js'
 import { analyzeConstraints, renderConstraintReport } from './constraint/index.js'
+import { analyzeTaint, renderTaintReport } from './taint/index.js'
+import { normalizeTaintOptions } from './taint/analyze.js'
 
 const USAGE = `ai4reverse — traceless malicious JavaScript analysis
 
@@ -25,6 +27,7 @@ Usage:
   ai4reverse restore <file> [options]     restored (deobfuscated) source
   ai4reverse run <file> [options]         single dynamic run, trace summary
   ai4reverse constraint <file> [options]  z3 constraint/opaque-predicate analysis
+  ai4reverse taint <file> [options]       static Circle-IR taint analysis
   ai4reverse passes [--json]              list restoration passes
   ai4reverse version
   ai4reverse --help
@@ -39,6 +42,7 @@ Options (analyze/run):
   --level <level>        instrumentation level: off|function|branch|statement
   --no-dynamic           static analysis only
   --no-restore           skip the Babel restoration pipeline
+  --no-taint             skip Circle-IR taint analysis (analyze only)
   --run-restored         also execute restored code for comparison
   --source-url <url>     original script URL (used for stack fidelity + IOCs)
   --entry <name>         call a global function after evaluation
@@ -60,6 +64,12 @@ Options (constraint):
   --timeout <ms>         per-query z3 timeout (default 500)
   --assume-integers      allow integer-model proofs (fraction/NaN excluded)
   --assume-int32         model symbolic numbers as signed 32-bit integers
+
+Options (taint):
+  --json                 emit the full taint report as JSON
+  --timeout <ms>         total worker deadline, including startup (default 5000)
+  --taint-config <json>  additional Circle-IR source/sink/sanitizer patterns
+                         (also supported by analyze)
 
 Option values are validated: an unknown option, an unknown pass id, a bad
 --level or a malformed number is a usage error (exit 2) with the message on
@@ -96,6 +106,8 @@ function parseCli(argv) {
       level: { type: 'string' },
       'no-dynamic': { type: 'boolean', default: false },
       'no-restore': { type: 'boolean', default: false },
+      'no-taint': { type: 'boolean', default: false },
+      'taint-config': { type: 'string' },
       'run-restored': { type: 'boolean', default: false },
       'source-url': { type: 'string' },
       entry: { type: 'string' },
@@ -256,6 +268,11 @@ export async function main(argv = process.argv.slice(2)) {
   if ((values['assume-integers'] || values['assume-int32']) && command !== 'constraint') {
     throw new UsageError('--assume-integers and --assume-int32 are only valid with the constraint command')
   }
+  if (values['no-taint'] && command !== 'analyze') throw new UsageError('--no-taint is only valid with analyze')
+  if (values['taint-config'] !== undefined && !['analyze', 'taint'].includes(command)) {
+    throw new UsageError('--taint-config is only valid with analyze or taint')
+  }
+  if (values['no-taint'] && values['taint-config'] !== undefined) throw new UsageError('--no-taint and --taint-config are mutually exclusive')
   // Validate every closed-set option before a file is read or analysis starts.
   // A typo must never produce a result: batch pipelines treat a silent default
   // as evidence.
@@ -267,9 +284,20 @@ export async function main(argv = process.argv.slice(2)) {
     exclude: passListOption('exclude', values.exclude),
     profile: values.profile !== undefined ? parseJsonOption('profile', values.profile) : undefined,
     mocks: values.mocks !== undefined ? parseJsonOption('mocks', values.mocks) : undefined,
+    taintConfig: values['taint-config'] !== undefined ? parseJsonOption('taint-config', values['taint-config']) : undefined,
     // Malformed numbers are usage errors too, and they are checked before any
     // file is read rather than when the limit object is finally built.
     limits: buildLimits(values),
+  }
+  if (command === 'taint' || (command === 'analyze' && !values['no-taint'])) {
+    try {
+      normalizeTaintOptions({
+        config: settings.taintConfig,
+        ...(command === 'taint' && settings.limits.timeoutMs !== undefined ? { limits: { timeoutMs: settings.limits.timeoutMs } } : {}),
+      })
+    } catch (error) {
+      throw new UsageError(error.message)
+    }
   }
   // Results go to stdout; every diagnostic belongs on stderr so
   // `ai4reverse analyze --json | jq` stays parseable.
@@ -307,6 +335,24 @@ export async function main(argv = process.argv.slice(2)) {
     })
     const output = values.json ? `${JSON.stringify(result, null, 2)}\n` : renderConstraintReport(result)
     await emitResult(output, values)
+    return result.ok ? 0 : 1
+  }
+
+  if (command === 'taint') {
+    const source = await readSource(file)
+    if (source.trim().length === 0) throw new UsageError(`${file} is empty`)
+    let result
+    try {
+      result = await analyzeTaint(source, {
+        filename: file,
+        config: settings.taintConfig,
+        limits: settings.limits.timeoutMs === undefined ? {} : { timeoutMs: settings.limits.timeoutMs },
+      })
+    } catch (error) {
+      if (error instanceof TypeError || error instanceof RangeError) throw new UsageError(error.message)
+      throw error
+    }
+    await emitResult(values.json ? `${JSON.stringify(result, null, 2)}\n` : renderTaintReport(result), values)
     return result.ok ? 0 : 1
   }
 
@@ -390,6 +436,7 @@ export async function main(argv = process.argv.slice(2)) {
       limits: settings.limits,
       dynamic: !values['no-dynamic'],
       restore: !values['no-restore'],
+      taint: values['no-taint'] ? false : { config: settings.taintConfig },
       runRestored: values['run-restored'],
       level: settings.level,
       entry: values.entry,
