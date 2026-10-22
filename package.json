@@ -108,7 +108,9 @@
   "engines": {
     "node": ">=24.18.0"
   },
-  "dependencies": {
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2",
     "@babel/generator": "^8.0.6",
     "@babel/parser": "^8.0.7",
     "@babel/template": "^8.0.0",
@@ -119,9 +121,5 @@
     "pino-pretty": "^13.2.0",
     "quickjs-emscripten": "^0.32.0",
     "z3-solver": "^5.3.1"
-  },
-  "devDependencies": {
-    "@types/node": "^24.19.2",
-    "typescript": "^7.0.2"
   }
 }
