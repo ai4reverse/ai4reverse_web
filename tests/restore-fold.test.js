@@ -396,7 +396,7 @@ test('strings: decodes every literal-built decoder idiom', () => {
     ['String.fromCharCode.apply(null, [104, 105])', "'hi'"],
     ['String.fromCharCode.apply(undefined, [104, 105])', "'hi'"],
     ["[104, 105].map(function (c) { return String.fromCharCode(c) }).join('')", "'hi'"],
-    ['[104, 105].map((c) => String.fromCharCode(c)).join()', "'hi'"],
+    ["[104, 105].map((c) => String.fromCharCode(c)).join('')", "'hi'"],
     ["atob('aGk=')", "'hi'"],
     ["window.atob('aGk=')", "'hi'"],
     ["self.atob('aGk=')", "'hi'"],
@@ -420,6 +420,10 @@ test('strings: decodes every literal-built decoder idiom', () => {
     "[104].map((a, b) => String.fromCharCode(a)).join('')",
     "[104].map((c) => String.fromCharCode(c)).join('x')",
     "[104].map((c) => String.fromCharCode(c)).join('', 1)",
+    // `join()` defaults to ',' and `join(',')` keeps that separator, so
+    // neither may be folded to the empty-separator result.
+    '[104, 105].map((c) => String.fromCharCode(c)).join()',
+    "[104, 105].map((c) => String.fromCharCode(c)).join(',')",
     '[dynamic].map((c) => String.fromCharCode(c)).join()',
     "atob('aGk=', 'extra')",
     'atob(dynamicBase64)',

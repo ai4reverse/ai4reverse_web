@@ -307,8 +307,10 @@ function decodeCharCodeMap(mapCall, joinArgs, path, t) {
   if (!t.isArrayExpression(source)) return null
   const units = readNumberList(source.elements, t)
   if (!units) return null
-  if (joinArgs.length > 1) return null
-  if (joinArgs.length === 1 && !(t.isStringLiteral(joinArgs[0]) && joinArgs[0].value === '')) return null
+  // `Array.prototype.join()` defaults to ',' — only an explicit empty
+  // separator reproduces the folded string.
+  if (joinArgs.length !== 1) return null
+  if (!(t.isStringLiteral(joinArgs[0]) && joinArgs[0].value === '')) return null
   const [callback] = mapCall.arguments
   if (!callback) return null
   const param = firstParameterName(callback, t)
