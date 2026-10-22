@@ -679,3 +679,57 @@ verify, plus the conditions in §11. It is not a second open-P0 list.
 - **Probe provenance.** `tests/fixtures/acceptance/` is committed evidence, not a
   test gate. It must be run with `node`, not `pnpm test`, and
   `disposal-leak.mjs` intentionally prints one engine `Aborted(…)` line.
+
+## 13. 2026-10-22 independent wave
+
+This addendum is a later, independent wave. It leaves §§1–12 untouched as the
+historical record; it does not re-litigate the `f0255dc` audit or the 2026-10-21
+decision. It records what this wave confirmed at base commit `c341f28` (pre-fix
+working tree, Node.js v24.19.0).
+
+**Verdict at `c341f28` before fixes: REJECT.** Eight P0 classes were reproduced
+by the integrator. A parallel fix wave is in progress; Phase 2 independent
+verification and the full-suite integration gate have not completed. **No class
+is verified fixed as of 2026-10-22**, so no closure is claimed; the status
+column means exactly "fix in progress — verification pending".
+
+| Class | Confirmed defect at `c341f28` | Status |
+| --- | --- | --- |
+| C1 | Constraint solver produced unsound proofs: `&&`/`||`/`?:` were consumed as values, yielding wrong `always-true`/`always-false` and `proveEquivalent` with `exact:true`, while `analyzeConstraints` marked reachable branches unreachable (`tools/constraint/translate.js`). | fix in progress — verification pending |
+| C2 | Guest sabotage of integrity: `JSON.stringify = () => 1` made `run()` reject and `analyzeSample` drop all dynamic events (`tools/sandbox/integrity.js`). | fix in progress — verification pending |
+| C3 | A thrown Promise crashed the run: `throw Promise.resolve(1)` produced a `SandboxError` "Lifetime not alive" (`tools/invocation/invoke.js`). | fix in progress — verification pending |
+| C4 | Descriptor-trap channel theft: a `Proxy(document)` `getOwnPropertyDescriptor` trap plus `Object.getOwnPropertyDescriptors` stole the instrumentation channel and forged `code:step` events (`tools/instrumentation/code.js`). The historical P0-1 closure is incomplete. | fix in progress — verification pending |
+| C5 | Anchor/form egress was untraced: `a.href` + `a.click()` and `form.submit()` produced no `net`/`ioc`, and `form.submit`/`requestSubmit` were undefined (`tools/sandbox/env/dom.js`). | fix in progress — verification pending |
+| C6 | Large-string encoding failed: `TextEncoder`/`btoa` above ~124k units threw a host `RangeError`, misreported as `limitsHit:["stack"]`, `stackExhaustion:true` and `disposal leaked`; `atob`/`TextDecoder` failed at 65,534 (`tools/sandbox/env/encoding.js`). | fix in progress — verification pending |
+| C7 | `DOMAIN_RE` was quadratic: 4/8/16/32 KB of zero-match domain-shaped input took 15.4/54.6/216.2/876.5 ms (`tools/analysis/ioc.js:193`). | fix in progress — verification pending |
+| C8 | `string-array` deleted dynamically-referenced arrays through an `eval` alias and `this.<name>`; `join()` was folded with an empty separator (`tools/restore/passes/string-array.js`, `tools/restore/passes/strings.js`). | fix in progress — verification pending |
+
+Also confirmed at `c341f28`:
+
+- `REPORT-SCHEMA.md` omitted five reason codes emitted by `scoreVerdict`:
+  `DYNAMIC_ENV_TAMPER` 8, `DYNAMIC_WORKER_OFFLOAD` 5,
+  `DYNAMIC_OFFLINE_PERSISTENCE` 4, `DYNAMIC_MESSENGER_C2` 6 and
+  `DYNAMIC_INPUT_CAPTURE` 4. The table now lists them.
+- `meta.profile.locale` was always `""` (the sandbox profile exposes `language`,
+  while the report normalizes `locale`), and `sample.size` was UTF-16 code units,
+  not bytes (the wave probe measured 22 units vs 30 UTF-8 bytes). Both are
+  documented as current behavior in `REPORT-SCHEMA.md`.
+- `REPORT-SCHEMA.md` also omitted `dynamic.provisional`, `dynamic.eventsTruncated`
+  and the 5,000-event retention cap; the `run.disposal` stage list omitted
+  `stack-guard`; the integrity drift-kind list omitted `unavailable`,
+  `not-captured` and `no-dynamic-run`; and it located `restoration.rounds`/
+  `restoration.stats` at `static.restoration`, although the composed report drops
+  them (they are on the raw `result.restoration`, and each per-pass record there
+  carries a `rounds` array). These are documentation corrections only and do not
+  change any P0 status.
+- `CONSTRAINT.md`'s examples gave wrong counterexamples (`{x: 0}` for `x > 5`;
+  `{x: 0, y: 1}` for `x + 1` vs `x + 2`) and said `solveConstraints` defaults to
+  `assumeInt32`, while it defaults to the automatic bitwise rule. Corrected;
+  the `&&`/`||`/`?:` exactness text now matches the post-fix translator. This is
+  a documentation correction; C1's fix remains unverified.
+- The determinism claim is false as written: two `analyzeSample` runs with
+  identical options (`seed: 7`, `limits: {timeoutMs: 80}`) produced
+  `counts.byKind.code` 1142 vs 14476 after stripping host-time fields, and the
+  Markdown pass table differed on `durationMs`. This wave classifies that as P1,
+  not a new P0; it is consistent with the §11 admission that P0-12's gate checks
+  only the provisional marker.
