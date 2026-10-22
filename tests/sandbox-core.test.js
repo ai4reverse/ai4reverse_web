@@ -151,10 +151,12 @@ for (const forgery of STACK_FORGERIES) {
       assert.equal(run.error?.name, forgery.name)
       assert.equal(run.error?.message, forgery.message)
 
-      // ...with no stack limit and no engine marker.
+      // ...with no stack limit and no engine marker. The event loop still
+      // runs: a guest throw is a result, not a reason to skip settlement.
       assert.deepEqual(run.limitsHit, [], `forged stack limit: ${JSON.stringify(run.limitsHit)}`)
       assert.equal(run.stackExhaustion, false)
-      assert.equal(run.settle, null)
+      assert.ok(run.settle && typeof run.settle === 'object', 'a guest error must not skip the event loop')
+      assert.equal(run.settle.error, null)
 
       // ...and the runtime is healthy: disposal is clean and never abandoned.
       assert.deepEqual(run.disposal, { ok: true, errors: [] })
@@ -553,6 +555,212 @@ test('prototype pollution is detected as intrinsic drift', async () => {
   } finally {
     sb.dispose()
   }
+})
+
+/**
+ * Replacing a known intrinsic with a non-function hides it from the snapshot
+ * (`intrinsics[name] = null`), which used to make the diff skip the entry and
+ * report an intact run. Both constructor intrinsics and object intrinsics must
+ * surface as drift.
+ */
+test('replacing a global intrinsic with a non-function is intrinsic drift', async () => {
+  const cases = [
+    ['Error', 'globalThis.Error = 42; 1'],
+    ['Math', 'globalThis.Math = 1; 1'],
+    ['Uint8Array', 'globalThis.Uint8Array = 1; 1'],
+  ]
+  for (const [name, source] of cases) {
+    const sb = await sandbox()
+    try {
+      const run = await sb.run(source)
+      assert.equal(run.ok, true, `${name}: ${JSON.stringify(run.error)}`)
+      assert.equal(run.integrity.intact, false, `${name}: ${JSON.stringify(run.integrity)}`)
+      assert.ok(
+        run.integrity.intrinsicDrift.some(
+          (entry) => entry.kind === 'intrinsic-replaced' && entry.target === name,
+        ),
+        `${name}: ${JSON.stringify(run.integrity)}`,
+      )
+    } finally {
+      sb.dispose()
+    }
+  }
+})
+
+test('an added guest global is reported as global-added, not intrinsic drift', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run('globalThis.__guestFlag = 1; 1')
+    assert.equal(run.integrity.intact, true, JSON.stringify(run.integrity))
+    assert.ok(run.integrity.addedGlobals.includes('__guestFlag'), JSON.stringify(run.integrity))
+    assert.deepEqual(
+      run.integrity.drift.filter((entry) => entry.kind !== 'global-added'),
+      [],
+      JSON.stringify(run.integrity.drift),
+    )
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * Evidence boundary: the integrity snapshot is serialised by the guest's own
+ * `JSON.stringify`. A sample that replaces it must not make `run()` reject —
+ * that discarded the whole record (events, network beacons) instead of marking
+ * one evidence source unavailable.
+ */
+test('a sample that replaces JSON.stringify cannot abort the run', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(`
+      JSON.stringify = function () { return 1 };
+      setTimeout(function () { globalThis.__beacon = 1 }, 10);
+      'done'
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.value, 'done')
+    // The post-run snapshot is untrustworthy, but the run record — including
+    // the observations it collected — survives.
+    assert.equal(run.integrity.intact, false)
+    assert.ok(
+      run.integrity.drift.some((entry) => entry.kind === 'unavailable'),
+      JSON.stringify(run.integrity.drift),
+    )
+    assert.ok(run.events.length > 0)
+    assert.equal(run.settle.timerCallbacks, 1, JSON.stringify(run.settle))
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * Evidence boundary: a sample can replace `JSON.stringify` with a function that
+ * returns a shape-valid snapshot of the *pre-tampering* environment. Because the
+ * host used to serialise the snapshot with that same writable guest global, the
+ * forgery made `intact` true and `intrinsicDrift` empty after real prototype
+ * pollution. The host must serialise the snapshot itself (and refuse a snapshot
+ * whose primitives were replaced), never resurrect the forged view.
+ */
+test('a shape-valid forged JSON.stringify payload cannot fake an intact run', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(`
+      (function () {
+        var forged = JSON.stringify({
+          globals: Object.getOwnPropertyNames(globalThis).sort(),
+          symbols: [],
+          intrinsics: {},
+          natives: {},
+          values: {},
+        });
+        JSON.stringify = function () { return forged };
+        Array.prototype.polluted = function () {};
+        Object.prototype.polluted = 1;
+        Function.prototype.toString = function () { return 'function () { [native code] }' };
+      })();
+      'forged'
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.value, 'forged')
+    // The forged payload parses and is shape-valid, so it must not be trusted:
+    // the run record survives but integrity is never reported intact.
+    assert.equal(run.integrity.intact, false, JSON.stringify(run.integrity))
+    assert.ok(
+      run.integrity.intrinsicDrift.length > 0,
+      `forged payload must still surface drift: ${JSON.stringify(run.integrity)}`,
+    )
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * Evidence boundary: even without touching `JSON.stringify`, a poisoned
+ * `Object.prototype.toJSON` makes the serialiser emit an attacker-chosen shape
+ * for every snapshot object. The snapshot records must not inherit from
+ * prototypes the sample controls.
+ */
+test('inherited toJSON pollution cannot rewrite the snapshot', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(`
+      Object.defineProperty(Object.prototype, 'toJSON', {
+        value: function () {
+          return { globals: [], symbols: [], intrinsics: {}, natives: {}, values: {} };
+        },
+        configurable: true,
+      });
+      'polluted'
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.value, 'polluted')
+    assert.equal(run.integrity.intact, false, JSON.stringify(run.integrity))
+    assert.ok(
+      run.integrity.drift.some(
+        (entry) => entry.kind === 'prototype-added' && entry.target === 'Object.prototype.toJSON',
+      ),
+      JSON.stringify(run.integrity.drift),
+    )
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * Evidence boundary: an uncaught guest error is a result, not a reason to skip
+ * the event loop. Samples cannot hide async beacons by appending a `throw`.
+ */
+test('an uncaught guest error still drives the event loop', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(`
+      setTimeout(function () { globalThis.__beacon = 1 }, 10);
+      throw new Error('bye')
+    `)
+    assert.equal(run.ok, false)
+    assert.equal(run.error.name, 'Error')
+    assert.equal(run.error.message, 'bye')
+    assert.equal(run.stackExhaustion, false)
+    assert.deepEqual(run.limitsHit, [])
+    assert.ok(run.settle && typeof run.settle === 'object', 'the event loop must run after a guest error')
+    assert.equal(run.settle.timerCallbacks, 1, JSON.stringify(run.settle))
+    assert.equal(run.settle.error, null)
+    assert.ok(run.virtualMs >= 10, JSON.stringify(run.settle))
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * Evidence boundary: marshalling the completion value is host work. A value the
+ * WASM serialiser cannot represent must be reported as such — never classified
+ * as a guest stack overflow (which would quarantine a healthy module).
+ */
+test('a deeply nested completion value is unrepresentable, not stack exhaustion', async () => {
+  const sb = await sandbox()
+  const printed = []
+  const restoreEngine = captureEngineOutput(printed)
+  try {
+    const run = await sb.run('var deep = {}; for (var i = 0; i < 10000; i += 1) deep = { inner: deep }; deep')
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.type, 'unrepresentable')
+    assert.deepEqual(run.limitsHit, [])
+    assert.equal(run.stackExhaustion, false)
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+
+    const next = await sb.run('6 * 7')
+    assert.equal(next.ok, true, JSON.stringify(next.error))
+    assert.equal(next.result.value, 42)
+    assert.deepEqual(next.disposal, { ok: true, errors: [] })
+  } finally {
+    restoreEngine()
+    sb.dispose()
+  }
+  assert.deepEqual(printed.filter((chunk) => /Aborted/i.test(chunk)), [])
 })
 
 test('profile is deterministic and internally coherent', () => {
