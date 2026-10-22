@@ -33,13 +33,17 @@ same object.
 | `durationMs` | number | total analysis duration |
 | `seed` | number \| string \| null | determinism seed |
 | `profile` | object | `{browser, platform, userAgent, timezone, locale, screen}` |
-| `profile.screen` | object \| null | `{width, height, ...}` when known |
+| `profile.locale` | string | Always `""` in reports produced by `analyzeSample()`/the CLI: the sandbox names the field `language`, while `normalizeProfile()` copies the `locale` key. The report does not expose the language tag |
+| `profile.screen` | object \| null | `normalizeScreen()` copies only `width`, `height`, `availWidth`, `availHeight`, `colorDepth` and `pixelRatio`, so the sandbox profile's `devicePixelRatio` and `pixelDepth` are dropped; `null` when none of those keys is numeric |
 | `limits` | object | limits applied by the run (timeouts, event caps) |
 
 ### `sample`
 
-`{name, size, sha256, sourceUrl, sourceType, truncated}` — `size` is bytes,
-`truncated` records whether the analysed source was clipped.
+`{name, size, sha256, sourceUrl, sourceType, truncated}` — `size` is the
+analysed source length in UTF-16 code units (`String#length`), **not** bytes, so
+a CJK source reports fewer units than its UTF-8 byte size. `truncated` is `true`
+when the IOC scan hit its candidate/size cap or the source exceeds the 5 MiB
+scan limit.
 
 ### `verdict`
 
@@ -102,6 +106,11 @@ point is attributable to a reason.
 | `DYNAMIC_DOM` | `min(10, 4 + domEvents)` |
 | `DYNAMIC_EVAL` | `min(10, 4 + evalEvents)` |
 | `DYNAMIC_API_MISUSE` | `8` |
+| `DYNAMIC_WORKER_OFFLOAD` | `5` |
+| `DYNAMIC_OFFLINE_PERSISTENCE` | `4` |
+| `DYNAMIC_ENV_TAMPER` | `8` |
+| `DYNAMIC_MESSENGER_C2` | `6` |
+| `DYNAMIC_INPUT_CAPTURE` | `4` |
 | `DYNAMIC_LIMITS` | `10` |
 | `DYNAMIC_UNCAUGHT` | `2` |
 | `TRACING_JSVMP` | `12` |
@@ -192,11 +201,19 @@ stage adds a recommendation. See
 
 ### `dynamic`
 
-`{ok, error, limitsHit, result, events, counts, behavior, exceptions,
-environment}`
+`{ok, error, limitsHit, provisional, result, events, eventsTruncated, counts,
+behavior, exceptions, environment}`
 
+- `provisional`: `true` when the host wall-clock deadline (not the guest clock)
+  ended the run. Such a run does not raise `DYNAMIC_LIMITS`, and the limit and
+  spin-loop recommendations are suppressed; `eventsTruncated` is also true.
 - `result`: `{type, preview}` of the guest's return value.
-- `events`: trace events (see `docs/CONTRACTS.md`).
+- `events`: the retained trace window (see `docs/CONTRACTS.md`), not necessarily
+  the whole observed trace. The orchestrator keeps at most `maxRetainedEvents`
+  events (default **5,000**); `keepTrace:false` retains none.
+- `eventsTruncated`: `true` when `events` is smaller than the observed trace —
+  the 5,000-event retention cap, `keepTrace:false`, recorder ring-buffer drops,
+  or a provisional run.
 - `counts`: `{byKind}` map of trace kind to count (raw totals, platform events
   included).
 - `behavior`: `{apis, network, storage, dom, timers}` plus the additive
@@ -305,7 +322,7 @@ Evidence lines that are printed only when they say something:
       "platform": "Win32",
       "userAgent": "Mozilla/5.0",
       "timezone": "UTC",
-      "locale": "en-US",
+      "locale": "",
       "screen": { "width": 1920, "height": 1080 }
     },
     "limits": { "timeoutMs": 5000, "maxEvents": 1000 }
@@ -382,8 +399,10 @@ Evidence lines that are printed only when they say something:
     "ok": true,
     "error": null,
     "limitsHit": [],
+    "provisional": false,
     "result": { "type": "string", "preview": "ok" },
     "events": [],
+    "eventsTruncated": false,
     "counts": { "byKind": { "net": 3 } },
     "behavior": {
       "apis": [{ "name": "eval", "count": 2 }],
@@ -417,7 +436,7 @@ The schema is append-only. The following optional fields are emitted by
 
 | Field | Meaning |
 | --- | --- |
-| `static.restoration.rounds`, `static.restoration.stats` | Pipeline rounds and hashes/timings. |
+| `result.restoration.rounds`, `result.restoration.stats` | Raw `restore()` pipeline rounds (scalar) and hashes/timings. These are returned alongside the report, **not** at `report.static.restoration`; the report normalizes each pass to `{id, changed, durationMs, notes}` and drops the per-pass `rounds` array, `failed` and `error` fields. |
 | `static.restoration.size`, `reducedBy` | Output size and bytes removed (not a fraction). |
 | `static.iocs.<category>[].sources` | Present only when a value was observed by ≥2 sources (`static`, `decoded`, `restored`, `dynamic`). |
 | `static.iocs.meta.truncated` | True when the IOC scan hit its candidate/size cap; also reflected in `sample.truncated`. |
@@ -465,7 +484,9 @@ The run's teardown record, verbatim:
 }
 ```
 
-Stages: `instrumentation`, `bridge`, `stealth`, `context`, `runtime`, `clock`.
+Stages (in disposal order): `stack-guard`, `instrumentation`, `bridge`,
+`stealth`, `context`, `runtime`, `clock`. The first `stack-guard` stage releases
+the invocation stack guard; a failure there is recorded like any other stage.
 `skipped: true` means the runtime was **abandoned** after a stack-limit breach
 (it was never disposed, and the WASM module was quarantined), so `leaked:true`
 here is a statement about the engine heap, not about the sample's intent.
@@ -494,5 +515,10 @@ explicit engine marker (`docs/API.md`); the report keeps the observable outcome.
 `report.integrity.drift` entries have `{kind, target, detail?}` where `kind` is
 one of `global-added`, `global-removed`, `prototype-added`, `prototype-removed`,
 `constructor-added`, `constructor-removed`, `native-changed`, `value-changed`,
-`symbol-added`, `symbol-removed`. Script-defined globals are recorded but do not
-make `intact` false; intrinsic/prototype changes do.
+`symbol-added`, `symbol-removed`. Three additional kinds state why verification
+could not run rather than evidence against the sample: `unavailable` (the
+before/after snapshot could not be captured), `not-captured` (the run failed
+before the integrity check) and `no-dynamic-run` (dynamic execution was disabled
+or failed). Only the first ten kinds can raise `DYNAMIC_ENV_TAMPER`.
+Script-defined globals are recorded but do not make `intact` false;
+intrinsic/prototype changes do.
