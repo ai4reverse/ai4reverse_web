@@ -4,7 +4,8 @@ A complete platform for **auditing, analysing, forensically restoring and
 tracing** malicious JavaScript. It runs samples inside a QuickJS
 (`quickjs-emscripten`) sandbox that is built to be *traceless*: the sample must
 not be able to tell it is being analysed, and the analyst must be able to
-reproduce every observation.
+reproduce every observation of a run that finishes inside the host wall
+deadline.
 
 ```
 sample ──► static analysis ──► Babel restoration ──► traceless dynamic run ──► report
@@ -32,28 +33,32 @@ sample ──► static analysis ──► Babel restoration ──► traceless
 | Browser-grade environment, 28 modules (documented limits, no WASM execution) | `tools/sandbox/env/` | `tests/env-*.test.js`, `tests/env-surface.test.js`, `tests/env-fidelity.test.js` |
 | Hardened national JS-SDK (SM2/SM3/SM4 signing, device fingerprint, white-box crypto, JSVMP, zero-trust guard) | `examples/national-sdk/` | `tests/national-sdk.test.js`, `examples/national-sdk/verify.mjs` |
 
-**612 tests across 42 test files, 0 failures** on commit `7c1df9c`, the
-`tools/` alignment commit these counts are pinned to:
+**Historical measurement: 612 tests across 42 test files, 0 failures**,
+recorded on the `tools/` alignment commit `7c1df9c` (2026-10-20). These counts
+describe that pinned commit, not the current working tree:
 
 ```bash
 node --test --test-concurrency=1 $(git ls-files 'tests/*.test.js')
 ℹ tests 612   ℹ pass 612   ℹ fail 0
 ```
 
-Coverage is recorded on two scopes (`--experimental-test-coverage`): **90.32 %
-lines / 78.88 % branches / 86.92 % functions** over the whole committed tree,
-and **92.99 / 82.68 / 90.62** over `tools/` only
-(`--test-coverage-exclude='examples/**'`). The review baseline
-(88.08 / 75.26 / 80.33) was measured on the `tools/` scope; that scope clears it
-on all three metrics, and the whole-tree scope is above it as well. The suite
+Coverage was recorded on that pinned commit for two scopes
+(`--experimental-test-coverage`): **90.32 % lines / 78.88 % branches / 86.92 %
+functions** over the whole committed tree, and **92.99 / 82.68 / 90.62** over
+`tools/` only (`--test-coverage-exclude='examples/**'`). These are historical
+values for `7c1df9c`, not a measurement of the current tree. The review baseline
+(88.08 / 75.26 / 80.33) was measured on the `tools/` scope; at that commit the
+scope cleared it on all three metrics, and the whole-tree scope was above it as
+well. The suite
 also asserts that no engine `Aborted(` assertion line reaches stderr: one line of
 hostile recursion cannot disable the process, and the record says what happened.
 The hardened SDK example contributes 13 end-to-end tests and a 37-check
 revalidation matrix.
 
-Every number in this README is produced by a command named in
-`docs/VERIFICATION.md` and pinned to that commit, so it stays reproducible after
-later commits land. Example corpora that are not tracked at `7c1df9c`
+Every pinned number in this README is produced by a command named in
+`docs/VERIFICATION.md` and belongs to the commit it names, so it stays
+reproducible as history; it is not a claim about the current working tree.
+Example corpora that are not tracked at `7c1df9c`
 (`examples/products`, `examples/works`, `examples/suite`, `examples/mega`) are
 outside that measurement: they are not described here and are excluded from
 every historical count in this file. Current contract corrections from the
@@ -187,17 +192,32 @@ the probe, not the implementation, so regressions are caught as detection.
    `Intl`, `Storage`, `MessageChannel`, …) are registered with native-looking
    source so they cannot be fingerprinted.
 
-5. **Hidden trace channel.** The trace sink is a host function reached through a
-   run-unique `Symbol.for('ai4r.channel.*')` stored on `document`. It is not a
-   named global; symbol/name enumeration is filtered by
-   `tools/sandbox/env/anti-fingerprint.js`, so `Object.getOwnPropertyNames`,
+5. **Hidden trace channel.** The trace sink is a host function that is never
+   published directly. Instrumented code resolves it through a non-enumerable,
+   run-unique binder property on `document` (or on the global object when there
+   is no document). The property is a string key
+   (`"​ai4r.channel.<nonce>"` — the leading zero-width space is part of
+   the key), not a registered `Symbol.for(...)`, so
+   `Symbol.for`/`Symbol.keyFor` cannot reconstruct or enumerate it. The binder
+   returns the channel only when called with the per-run capability token
+   spliced into the instrumented source inside a marker span; any other call
+   returns `undefined`, so a binder stolen through an unfiltered enumeration is
+   inert and forges no event. The token and probe spans are stripped from
+   `Function.prototype.toString`, and `tools/sandbox/env/anti-fingerprint.js`
+   filters the binder key from `Object.getOwnPropertyNames`,
    `Object.getOwnPropertySymbols`, `Reflect.ownKeys` and
-   `Object.getOwnPropertyDescriptors` show nothing unusual.
+   `Object.getOwnPropertyDescriptors`. Residual detection risk: an enumeration
+   API the filter does not wrap (or a way to read the raw instrumented bytes)
+   can still reveal the property or the token; the capability closes usability,
+   not observability.
 
 6. **Virtual time and entropy.** `Date`, `performance.now()`, timers,
    `Math.random`, `crypto.getRandomValues`/`randomUUID` and `AbortSignal.timeout`
-   are driven by a seeded virtual clock and PRNG. Runs are reproducible;
-   instrumentation overhead is invisible in guest-observed time.
+   are driven by a seeded virtual clock and PRNG. Runs are reproducible while
+   they finish inside the host wall deadline; if `limits.timeoutMs` expires
+   first, the run is marked `dynamic.provisional` and its observed events can
+   vary with host speed (see `docs/ARCHITECTURE.md` §9). Instrumentation
+   overhead is invisible in guest-observed time.
 
 7. **Sanitised stacks.** QuickJS's `<eval>` top-level frame and host paths are
    stripped from constructors, caught errors (rewritten in place by the AST
@@ -276,6 +296,15 @@ not `instanceof` it).
 Network is **fully mocked**: policies `deny` (realistic `net::ERR_*` failure),
 `empty` (204) or `echo`; handler/routing hooks can return synthetic responses.
 No socket, file or process access exists inside the sandbox.
+
+URL-bearing browser default actions are captured, not performed: clicking an
+`<a href>`/`<area href>` and calling `HTMLFormElement.submit()`/`requestSubmit()`
+resolve the target against the live document URL, emit one `net` request and an
+IOC, but never navigate — `document.URL`/`location.href` do not change. An empty
+form action uses the document URL, relative targets resolve against it,
+non-http(s) schemes (for example `blob:`) are recorded as blocked and produce no
+request (an anchor with no `href` sends nothing), and `preventDefault()` cancels
+the click action.
 
 ## Restoration passes
 
@@ -374,8 +403,15 @@ unwritable `--out` is a usage error — exit **2**, message on **stderr**, nothi
 on stdout. `--json` stdout stays pure JSON (logs go to fd 2), `--out -` writes the
 result to stdout, and `--arg` parses JSON when the value is valid JSON and passes
 it as a string otherwise (`--arg 42` is a number, `--arg hello` is `"hello"`).
+On success, `--out <file>` reports `wrote N bytes to <file>` on **stderr** and
+leaves stdout empty.
 
-Exit codes: `0` success, `1` analysis/run failure, `2` usage error.
+Exit codes: `0` success, `1` analysis/run failure, `2` usage error. For
+`analyze`, exit `1` means the dynamic stage was requested and
+`report.dynamic.ok === false` (guest throw, engine failure or interruption); the
+report is still printed. With `--no-dynamic` the CLI exits `0` even though the
+report's `dynamic.ok` is `false`, so API callers should read that field instead
+of inferring failure from the exit code.
 
 Packaging (`package.json`): `type: module`, `engines.node >= 24.18`,
 `bin: ai4reverse → tools/cli.js` (mode `100755` in git), `files: [tools, docs,
@@ -406,6 +442,12 @@ Evidence the report keeps:
 - **Truncation.** `tracing.truncated` / `tracing.truncatedBy` (`code-budget`,
   `event-limit`) stay true even when the `code:trace-truncated` marker fell out
   of the retained window, and Markdown prints a `**Trace truncated:**` line.
+- **Observation loss.** `dynamic.provisional` marks a run stopped by the host
+  wall deadline (`limits.timeoutMs`), where observed events depend on host speed
+  and `DYNAMIC_LIMITS` is not scored. `dynamic.eventsTruncated` marks a retained
+  `dynamic.events` slice smaller than the observed trace (`maxRetainedEvents`,
+  `keepTrace:false`, or recorder drops) and is also set for provisional runs;
+  `dynamic.counts.total` still reports the observed total.
 - **Restoration failure.** `static.restoration.error` records that the pipeline
   threw (with the message), so a bail-out is no longer indistinguishable from
   "nothing to restore"; Markdown prints `**Restoration error:**`.
@@ -416,13 +458,16 @@ Evidence the report keeps:
   assumptions; `truncated` says a candidate or time bound was hit. Markdown
   prints a `## Constraint solving` section.
 
-All five are Markdown-visible: `Platform events (not sample behaviour)`,
-`Trace truncated`, `Restoration error`, `Hook errors`, `Constraint solving`.
+Markdown prints `Platform events (not sample behaviour)`, `Trace truncated`,
+`Restoration error`, `Hook errors` and `Constraint solving`. The observation-loss
+markers above (`dynamic.provisional`, `dynamic.eventsTruncated`) are JSON-only so
+tooling can act on them without parsing prose.
 
 ## Known limitations (honest list)
 
-Every item below is measured on this tree; `docs/VERIFICATION.md` records the
-command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
+Every item below is a historical measurement pinned in
+`docs/VERIFICATION.md` with the command that produced it;
+`docs/SECURITY-MODEL.md` records the security reasoning.
 
 **Engine and stack**
 
@@ -536,6 +581,12 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
 - `EventSource` reconnects on the virtual clock for as long as the run's
   virtual-time budget allows (the mock body ends immediately), bounded by
   `maxVirtualMs`/`maxTimerCallbacks` rather than by `EventSource` itself.
+- **Large codec payloads.** `atob`/`btoa`/`TextEncoder`/`TextDecoder` and
+  `Blob.text()` move text as UTF-16 code units and join it in 4 096-unit chunks,
+  so payloads past QuickJS's 65 534-argument limit and V8's spread limit —
+  200 000 code units is covered by tests — survive in full, including embedded
+  NULs, without abandoning the runtime. Guest string size is still bounded by
+  `limits.memoryBytes`.
 - Hook failures are evidence with a budget: the bus keeps the newest 200
   failures, capped at 64 KiB of message text (2 KiB per message) and sets
   `errorsTruncated` when it drops anything; the report keeps the newest 50 and
@@ -547,12 +598,14 @@ command and the numbers, `docs/SECURITY-MODEL.md` the security reasoning.
 
 **Documentation and coverage**
 
-- Coverage is recorded on two scopes. On the `tools/` scope
+- Coverage was recorded on two scopes at the pinned commit `7c1df9c`
+  (2026-10-20). On the `tools/` scope
   (`--test-coverage-exclude='examples/**'`, the scope the review baseline
-  88.08 / 75.26 / 80.33 was measured on) this tree measures **92.99 % lines /
+  88.08 / 75.26 / 80.33 was measured on) that tree measured **92.99 % lines /
   82.68 % branches / 90.62 % functions** — above the baseline on all three
-  metrics. The whole committed tree measures 90.32 / 78.88 / 86.92, also above
-  it. Both commands are recorded in `docs/VERIFICATION.md`.
+  metrics. The whole committed tree measured 90.32 / 78.88 / 86.92, also above
+  it. These are historical values, not a current-tree claim. Both commands are
+  recorded in `docs/VERIFICATION.md`.
 
 ## Safety
 
