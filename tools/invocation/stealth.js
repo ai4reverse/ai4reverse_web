@@ -376,15 +376,38 @@ export function createStealth(ctx, options = {}) {
      */
     sanitizeStack(stack) {
       if (typeof stack !== 'string') return stack
-      return stack
+      const cleaned = stack
         .replace(/at <eval> \(([^)]*)\)/g, 'at $1')
         .replace(/at <anonymous> \(([^)]*)\)/g, 'at $1')
+        // Host-owned frames. The error constructors are a guest-side shim built
+        // with `eval`, and subclass construction routes through
+        // `Reflect.construct`; neither leaves a frame in a real engine trace:
+        //     at construct (native)
+        //     at Error (<input>:1:127)
+        // Drop the whole line so only guest frames remain.
+        .replace(/^\s*at (?:new )?(?:Reflect\.)?construct \(native\)\s*$/gm, '')
+        .replace(/^\s*at [^\n]*\(<input>(?::\d+:\d+)?\)\s*$/gm, '')
+        .replace(/^\s*at <input>(?::\d+:\d+)?\s*$/gm, '')
         .replace(/^.*\bai4r-internal:[^\n]*$/gm, '')
         .replace(/^\s*at [^\n]*\(?ai4r-internal:[^\n]*\)?$/gm, '')
+        // A guest frame never points at a host absolute path, a file URL or a
+        // dependency directory. Drop the frame rather than rewriting it to a
+        // basename — even `stealth.js` names host implementation.
+        .replace(
+          /^\s*at [^\n]*(?:file:\/\/|[\s(]\/(?:Users|home|private|var|tmp)\/|node_modules\/)[^\n]*$/gm,
+          '',
+        )
+        // Residual (non-frame) host paths in a trace header or message.
         .replace(/\(?\/(?:Users|home|private|var|tmp)\/[^\s():]+?([\w.-]+\.(?:js|mjs|cjs))(?::\d+:\d+)?\)?/g, '$1')
         .replace(/file:\/\/[^\s)]+/g, '')
         .replace(/node_modules\/[^\s():]+/g, '')
         .replace(/[ \t]+$/gm, '')
+      // Removing whole frames must not leave blank trace lines: a real engine
+      // never emits them and they would themselves be a fingerprint.
+      return cleaned
+        .split('\n')
+        .filter((line) => line.trim() !== '')
+        .join('\n')
     },
 
     /** Sanitise a dumped guest error object. */

@@ -1310,6 +1310,175 @@ test('EventSource retries a refused stream and validates its arguments', async (
   }
 })
 
+test('each error constructor reports its own native identity and V8 prototype descriptor', async () => {
+  const sb = await sandbox()
+  try {
+    const names = ['Error', 'TypeError', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError']
+    const { value } = await probe(
+      sb,
+      `(function () {
+        var names = ${JSON.stringify(names)};
+        var out = { sources: {}, prototypes: {} };
+        for (var i = 0; i < names.length; i++) {
+          var name = names[i];
+          out.sources[name] = String(globalThis[name]);
+          var descriptor = Object.getOwnPropertyDescriptor(globalThis[name], 'prototype');
+          out.prototypes[name] = {
+            writable: descriptor.writable,
+            enumerable: descriptor.enumerable,
+            configurable: descriptor.configurable
+          };
+        }
+        return JSON.stringify(out);
+      })()`,
+    )
+    for (const name of names) {
+      // Sharing one wrapper body made every adoption key identical, so the last
+      // constructor to install won the mask and every name reported URIError.
+      assert.equal(value.sources[name], `function ${name}() { [native code] }`)
+      // V8 defines the prototype property as non-writable and non-configurable.
+      assert.deepEqual(value.prototypes[name], {
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      })
+    }
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('an error subclass keeps its own prototype, as V8 does', async () => {
+  const sb = await sandbox()
+  try {
+    const { value } = await probe(
+      sb,
+      `(function () {
+        class MyError extends Error {
+          constructor(message) { super(message); this.name = 'MyError' }
+        }
+        class MyType extends TypeError {}
+        class MyAggregate extends AggregateError {}
+        function FnErr() {}
+
+        var direct = new MyError('boom');
+        var viaReflect = Reflect.construct(Error, ['made'], MyError);
+        var viaFnTarget = Reflect.construct(Error, ['made'], FnErr);
+        var plain = new Error('plain');
+        var called = Error('called');
+        var typeError = new MyType('kind');
+        var aggregate = new MyAggregate([], 'many');
+
+        return JSON.stringify({
+          instanceOfSubclass: direct instanceof MyError,
+          instanceOfError: direct instanceof Error,
+          prototypeIsSubclass: Object.getPrototypeOf(direct) === MyError.prototype,
+          constructorIsSubclass: direct.constructor === MyError,
+          message: direct.message,
+          name: direct.name,
+          stackIsString: typeof direct.stack === 'string',
+          reflectInstanceOf: viaReflect instanceof MyError,
+          reflectPrototype: Object.getPrototypeOf(viaReflect) === MyError.prototype,
+          reflectMessage: viaReflect.message,
+          fnTargetInstanceOf: viaFnTarget instanceof FnErr,
+          fnTargetPrototype: Object.getPrototypeOf(viaFnTarget) === FnErr.prototype,
+          typeIsSubclass: typeError instanceof MyType,
+          typePrototype: Object.getPrototypeOf(typeError) === MyType.prototype,
+          typeIsTypeError: typeError instanceof TypeError,
+          aggregateIsSubclass: aggregate instanceof MyAggregate,
+          aggregateIsAggregate: aggregate instanceof AggregateError,
+          aggregatePrototype: Object.getPrototypeOf(aggregate) === MyAggregate.prototype,
+          plainPrototype: Object.getPrototypeOf(plain) === Error.prototype,
+          calledWithoutNewPrototype: Object.getPrototypeOf(called) === Error.prototype
+        });
+      })()`,
+    )
+    assert.equal(value.instanceOfSubclass, true, 'the instance must pass instanceof its subclass')
+    assert.equal(value.instanceOfError, true)
+    assert.equal(value.prototypeIsSubclass, true, 'the instance prototype must be the subclass prototype')
+    assert.equal(value.constructorIsSubclass, true, 'constructor must resolve to the subclass')
+    assert.equal(value.message, 'boom', 'the message must survive the subclass path')
+    assert.equal(value.name, 'MyError')
+    assert.equal(value.stackIsString, true)
+    assert.equal(value.reflectInstanceOf, true, 'Reflect.construct must honour newTarget')
+    assert.equal(value.reflectPrototype, true)
+    assert.equal(value.reflectMessage, 'made')
+    assert.equal(value.fnTargetInstanceOf, true)
+    assert.equal(value.fnTargetPrototype, true)
+    assert.equal(value.typeIsSubclass, true, 'every NativeError must honour subclassing')
+    assert.equal(value.typePrototype, true)
+    assert.equal(value.typeIsTypeError, true)
+    assert.equal(value.aggregateIsSubclass, true, 'AggregateError must honour subclassing')
+    assert.equal(value.aggregateIsAggregate, true)
+    assert.equal(value.aggregatePrototype, true)
+    assert.equal(value.plainPrototype, true, 'plain construction must keep Error.prototype')
+    assert.equal(value.calledWithoutNewPrototype, true, 'calling without new must keep Error.prototype')
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('guest stacks carry no wrapper, native trampoline or host frame', async () => {
+  const sb = await sandbox()
+  try {
+    const { value } = await probe(
+      sb,
+      `(function () {
+        class MyError extends Error {
+          constructor(message) { super(message); this.name = 'MyError' }
+        }
+        var plain = new Error('plain');
+        var typeError = new TypeError('kind');
+        var called = Error('called');
+        var sub = new MyError('boom');
+        var reflected = Reflect.construct(Error, ['made'], MyError);
+        return JSON.stringify({
+          plain: plain.stack,
+          typeError: typeError.stack,
+          called: called.stack,
+          sub: sub.stack,
+          reflected: reflected.stack,
+          names: { plain: plain.name, typeError: typeError.name, sub: sub.name },
+          subclass: sub instanceof MyError && sub instanceof Error,
+          reflectedSubclass: reflected instanceof MyError && reflected instanceof Error
+        });
+      })()`,
+    )
+    // The subclass fix routes construction through Reflect.construct inside an
+    // eval-generated wrapper. Neither the wrapper frame (`at Error (<input>...)`)
+    // nor the `construct (native)` trampoline exists in a real V8 stack, so a
+    // sample reading `.stack` could fingerprint the sandbox.
+    for (const [label, stack] of Object.entries({
+      plain: value.plain,
+      typeError: value.typeError,
+      called: value.called,
+      sub: value.sub,
+      reflected: value.reflected,
+    })) {
+      assert.doesNotMatch(stack, /construct \(native\)/, `${label}: native trampoline frame leaked`)
+      assert.doesNotMatch(stack, /<input>/, `${label}: eval-generated wrapper frame leaked`)
+      assert.doesNotMatch(stack, /ai4r-internal/, `${label}: internal frame leaked`)
+      assert.doesNotMatch(stack, /\/Users\/|file:\/\/|node_modules/, `${label}: host path leaked`)
+      assert.doesNotMatch(
+        stack,
+        /at (?:Error|TypeError|MyError) \((?:native|<input>)/,
+        `${label}: error-constructor host frame leaked`,
+      )
+      // Legitimate guest frames and their file:line:column survive.
+      assert.match(stack, /https:\/\/[^\s()]+:\d+:\d+/, `${label}: guest frames were dropped`)
+    }
+    // A plain error starts at the guest call site, not at a wrapper frame.
+    assert.match(value.plain.trim().split('\n')[0], /^\s*at https:\/\/[^\s()]+:\d+:\d+$/)
+    assert.equal(value.names.plain, 'Error')
+    assert.equal(value.names.typeError, 'TypeError')
+    assert.equal(value.names.sub, 'MyError')
+    assert.equal(value.subclass, true)
+    assert.equal(value.reflectedSubclass, true)
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('an injected overlay is real mutation evidence, not payload text', async () => {
   const sb = await sandbox()
   try {

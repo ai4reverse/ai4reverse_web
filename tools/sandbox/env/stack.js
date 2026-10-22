@@ -44,24 +44,52 @@ export function install(bridge) {
       var ownDescriptor = Object.getOwnPropertyDescriptor;
       var define = Object.defineProperty;
       var create = Object.create;
+      var reflectConstruct = Reflect.construct;
 
       function wrap(name, Orig, arity, reown) {
         if (typeof Orig !== 'function') return null;
-        function Wrapped(message, options) {
-          var error = arguments.length > 0 ? new Orig(message, options) : new Orig();
-          // The engine constructor always stamps its own prototype, so a
-          // re-owned wrapper has to move the instance onto the fresh one — that
-          // is what keeps the intrinsic prototype out of guest reach. setProto
+        // Every wrapper used to share one function body, and the stealth
+        // adoption table is keyed by normalised source text, so each
+        // registration overwrote the previous one: every constructor then
+        // reported the last-installed name (function URIError() ...).
+        // Interpolating the name gives each wrapper distinct source, hence its
+        // own adoption key. The body still closes over the wrapper's scope.
+        var Wrapped = eval(
+          '(function ' + name + '(message, options) {' +
+          'var newTarget = new.target;' +
+          'var error;' +
+          // V8 constructs through new.target, so a subclass (including
+          // Reflect.construct) gets an instance whose prototype is the
+          // subclass's prototype. Constructing with new Orig() instead would
+          // hand back Error.prototype and break instanceof MyError. Reflect
           // is captured now, before guest code can replace it.
-          if (reown) {
-            try { setProto(error, Wrapped.prototype); } catch (e) {}
-          }
-          try {
-            if (error && typeof error.stack === 'string') error.stack = sanitize(error.stack);
-          } catch (e) {}
-          return error;
-        }
-        Wrapped.prototype = reown ? reownPrototype(Orig, Wrapped) : Orig.prototype;
+          'if (newTarget !== undefined) {' +
+          'error = reflectConstruct(Orig, arguments.length > 0 ? [message, options] : [], newTarget);' +
+          '} else {' +
+          'error = arguments.length > 0 ? new Orig(message, options) : new Orig();' +
+          '}' +
+          // The engine constructor always stamps a prototype, so a re-owned
+          // wrapper has to move a plain (or intrinsic-fallback) instance onto
+          // the fresh one — that is what keeps the intrinsic prototype out of
+          // guest reach. A subclass target keeps its own prototype. setProto
+          // and getProto are captured before guest code can replace them.
+          'if (reown && getProto(error) === Orig.prototype) {' +
+          'try { setProto(error, Wrapped.prototype); } catch (e) {}' +
+          '}' +
+          'try {' +
+          'if (error && typeof error.stack === "string") error.stack = sanitize(error.stack);' +
+          '} catch (e) {}' +
+          'return error;' +
+          '})'
+        );
+        // V8 defines every error constructor's prototype as a non-writable,
+        // non-configurable own property.
+        define(Wrapped, 'prototype', {
+          value: reown ? reownPrototype(Orig, Wrapped) : Orig.prototype,
+          writable: false,
+          enumerable: false,
+          configurable: false
+        });
         try {
           define(Wrapped.prototype, 'constructor', {
             value: Wrapped, writable: true, enumerable: false, configurable: true
@@ -115,13 +143,23 @@ export function install(bridge) {
       function wrapAggregate(Orig) {
         if (typeof Orig !== 'function') return null;
         function AggregateError(errors, message, options) {
-          var error = new Orig(errors, message, options);
+          // Like the Error wrappers, construct through new.target so a
+          // subclass keeps its own prototype.
+          var error = new.target !== undefined
+            ? reflectConstruct(Orig, [errors, message, options], new.target)
+            : new Orig(errors, message, options);
           try {
             if (error && typeof error.stack === 'string') error.stack = sanitize(error.stack);
           } catch (e) {}
           return error;
         }
-        AggregateError.prototype = Orig.prototype;
+        // Match V8's non-writable, non-configurable prototype descriptor.
+        define(AggregateError, 'prototype', {
+          value: Orig.prototype,
+          writable: false,
+          enumerable: false,
+          configurable: false
+        });
         try {
           Object.defineProperty(Orig.prototype, 'constructor', {
             value: AggregateError, writable: true, enumerable: false, configurable: true
