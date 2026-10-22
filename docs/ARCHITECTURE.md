@@ -108,6 +108,17 @@ connection/battery/mediaDevices/plugins/storage, `dom-parser` owns `DOMParser`/
 (`AbortController`, Notification, Worker, BroadcastChannel,
 `RTCPeerConnection`, `structuredClone`, the `indexedDB`/`caches` stubs, …).
 
+URL-bearing browser default actions are captured, never performed: an
+`<a href>`/`<area href>` click and `HTMLFormElement.submit()`/`requestSubmit()`
+resolve the target against the live document URL, emit one `net` request and an
+IOC, and leave `document.URL`/`location.href` unchanged. An empty form action
+submits to the document URL, relative targets resolve against it, non-http(s)
+schemes are recorded as blocked (an anchor with no `href` sends nothing), and
+`preventDefault()` cancels the click action. The
+`encoding` module and `Blob.text()` move text as UTF-16 code units joined in
+4,096-unit chunks, so codec payloads are not capped by QuickJS's call-argument
+limit and embedded NULs survive.
+
 ## 1.2 Guest runs are serialized; a poisoned module is quarantined
 
 All sandboxes in a process share one QuickJS WASM module (memoised in
@@ -384,7 +395,37 @@ See [TAINT.md](TAINT.md) for precision and resource-boundary limitations.
 
 ## 9. Determinism
 
-Given the same seed, source and options, these are byte-identical across runs:
-profile values, virtual timestamps, `Math.random`/crypto outputs, timer
-durations, trace event order and payloads, report JSON (except `wall`,
-`startedAt`, `durationMs`). Tests assert the observable subset.
+Given the same seed, source and options, and a run that finishes inside the host
+wall deadline, these are byte-identical across runs: profile values, virtual
+timestamps, `Math.random`/crypto outputs, timer durations, trace event order and
+payloads, and report JSON once the host measurements listed below are removed.
+The rendered Markdown contains no host measurements, so two completed runs can
+be compared directly. Tests assert the observable subset.
+
+Host time is recorded, not simulated. Normalise it before comparing two reports:
+
+- every trace event's `wall`;
+- `meta.startedAt` and `meta.durationMs`;
+- `dynamic.durationMs`;
+- every `static.restoration.passes[].durationMs`.
+
+The host wall deadline (`limits.timeoutMs`, default 5000 ms) is a safety
+backstop, not a deterministic budget. The virtual-time budget is the primary
+bound and is a function of executed statements; if it alone ends the run, the
+outcome stays deterministic. If the host wall clock expires first, `runtime.js`
+sets `provisional: true` on the run. The report exposes that as
+`dynamic.provisional` and sets `dynamic.eventsTruncated: true`: the events
+observed up to an interruption depend on host speed and JIT warmth, so a
+provisional run is not expected to match another run. Provisional runs are also
+excluded from `DYNAMIC_LIMITS` scoring, so host speed cannot move the verdict.
+Treat the pair as "not comparable", not as a defect.
+
+`dynamic.eventsTruncated` also reports retention loss, independently of
+`provisional`: the retained `dynamic.events` slice is smaller than the observed
+trace when `maxRetainedEvents` (default 5000) cuts it, when `keepTrace:false`
+discards a non-empty trace, or when the recorder reached its own
+`limits.maxEvents` cap and counted drops. `dynamic.counts.total` and `byKind` still describe the observed
+trace. `tracing.truncated`/`tracing.truncatedBy` state the separate code-step
+and recorder budgets even when the `code:trace-truncated` marker itself was
+evicted. Strip the timing fields above; everything else must reproduce
+byte-for-byte.
