@@ -15,7 +15,15 @@ import { parse as babelParse } from '@babel/parser'
 import { generate } from '../restore/generate.js'
 import { BASE_PLUGINS, parse } from '../restore/parse.js'
 import { traverse } from '../util/babel.js'
-import { OPCODE_BY_CODE } from './spec.js'
+
+/** Names that plausibly denote a VM program counter / instruction pointer. */
+const PC_NAME_PATTERN = /^(?:_|\$)?(?:pc|ip|sp|idx|ptr|pointer|programcounter)$/i
+
+/** Declared arrays that can hold bytecode or the constant pool. */
+const BYTECODE_ARRAY_PATTERN = /bytecode|program|ops|instructions|pool|const|table/i
+
+/** Parameter names that denote a program even without seeing the call site. */
+const BYTECODE_PARAMETER_PATTERN = /bytecode|program|instructions|(?:^|_)(?:inst|instr|ops)(?:$|_)/i
 
 const SKIP_KEYS = new Set([
   'loc',
@@ -58,11 +66,11 @@ function isNode(node) {
  * from overflowing the stack before the outer try/catch can report it.
  *
  * @param {object} root
- * @param {(node: object, context: {inLoop: number, loopNode: object|null, scope: object}) => void} visit
+ * @param {(node: object, context: {inLoop: number, loopNode: object|null, loopChain: object[], scope: object}) => void} visit
  */
 function walk(root, visit) {
-  /** @type {Array<{node: object, context: {inLoop: number, loopNode: object|null, scope: object}}>} */
-  const pending = [{ node: root, context: { inLoop: 0, loopNode: null, scope: root } }]
+  /** @type {Array<{node: object, context: {inLoop: number, loopNode: object|null, loopChain: object[], scope: object}}>} */
+  const pending = [{ node: root, context: { inLoop: 0, loopNode: null, loopChain: [], scope: root } }]
   while (pending.length > 0) {
     const { node, context } = pending.pop()
     if (!isNode(node)) continue
@@ -70,9 +78,14 @@ function walk(root, visit) {
 
     let childContext = context
     if (FUNCTION_TYPES.has(node.type) || node.type === 'Program') {
-      childContext = { inLoop: 0, loopNode: null, scope: node }
+      childContext = { inLoop: 0, loopNode: null, loopChain: [], scope: node }
     } else if (LOOP_TYPES.has(node.type)) {
-      childContext = { ...context, inLoop: context.inLoop + 1, loopNode: node }
+      childContext = {
+        ...context,
+        inLoop: context.inLoop + 1,
+        loopNode: node,
+        loopChain: [...context.loopChain, node],
+      }
     }
 
     for (const key of Object.keys(node)) {
@@ -91,13 +104,18 @@ function walk(root, visit) {
 
 /**
  * @typedef {object} Signals
- * @property {Array<{node: object, inLoop: boolean, loopNode: object|null}>} switches
+ * @property {Array<{node: object, inLoop: boolean, loopNode: object|null, advancesPc: boolean}>} switches
  * @property {Map<string, object|null>} declarations
  * @property {Set<string>} updates
  * @property {Set<string>} assignments
  * @property {Set<string>} pushPopVars
+ * @property {Map<string, Set<object>>} pushPopLoops Stack-shaped names ->
+ *   loops in which they receive a push/pop call.
  * @property {object[]} loops
  * @property {Map<string, object>} referencedPools
+ * @property {Map<string, Set<string>>} pcIndexedArrays pc-like name ->
+ *   declared bytecode/pool arrays it is used to index.
+ * @property {Array<{pcName: string, arrayName: string, loopNode: object|null, assignedTo: string|null}>} pcIndexEvents
  */
 
 /** @returns {Signals} */
@@ -108,8 +126,11 @@ function createSignals() {
     updates: new Set(),
     assignments: new Set(),
     pushPopVars: new Set(),
+    pushPopLoops: new Map(),
     loops: [],
     referencedPools: new Map(),
+    pcIndexedArrays: new Map(),
+    pcIndexEvents: [],
   }
 }
 
@@ -140,6 +161,190 @@ function collectReferencedPools(ast) {
 }
 
 /**
+ * A declared array that can plausibly hold bytecode or a constant pool.
+ * @param {string} name
+ * @param {object|null|undefined} init
+ */
+function looksLikeBytecodeArray(name, init) {
+  // A bytecode-like name is evidence on its own: real samples often build the
+  // program with a call (`var BYTECODE = decode()`) rather than an array
+  // literal, so the name check must precede the initializer shape check.
+  if (BYTECODE_ARRAY_PATTERN.test(name)) return true
+  if (init?.type !== 'ArrayExpression') return false
+  return init.elements.some((element) => element?.type === 'ArrayExpression')
+}
+
+/**
+ * The parameter position a binding occupies, when the binding is a parameter.
+ * Handles both plain identifiers and default-valued patterns.
+ * @param {object} bindingPath
+ * @returns {number} -1 when the binding is not a parameter.
+ */
+function parameterIndex(bindingPath) {
+  if (bindingPath.listKey === 'params') return bindingPath.key
+  if (bindingPath.parentPath?.listKey === 'params') return bindingPath.parentPath.key
+  return -1
+}
+
+/**
+ * Whether a parameter's value is visibly an array: a default parameter literal
+ * or an array literal argument at a directly invoked call site (an IIFE or an
+ * immediately invoked function expression).
+ * @param {object} bindingPath
+ * @returns {boolean}
+ */
+function parameterTakesArray(bindingPath) {
+  const parent = bindingPath.parentPath
+  if (parent?.isAssignmentPattern?.() && parent.node.right?.type === 'ArrayExpression') return true
+
+  const functionPath = bindingPath.getFunctionParent?.()
+  const callPath = functionPath?.parentPath
+  if (!callPath?.isCallExpression?.() || callPath.node.callee !== functionPath.node) return false
+  const index = parameterIndex(bindingPath)
+  if (index < 0) return false
+  return callPath.node.arguments[index]?.type === 'ArrayExpression'
+}
+
+/**
+ * Whether a binding can hold bytecode. Variable declarators are checked through
+ * their initializer; function parameters are checked through their name or
+ * through the array value supplied by the caller (ACCEPTANCE H5).
+ * @param {object|null|undefined} binding
+ * @param {string} name
+ * @returns {boolean}
+ */
+function bindingHoldsBytecode(binding, name) {
+  const bindingPath = binding?.path
+  if (!bindingPath) return false
+  if (bindingPath.isVariableDeclarator()) {
+    return looksLikeBytecodeArray(name, bindingPath.node.init)
+  }
+  if (binding.kind !== 'param') return false
+  if (BYTECODE_PARAMETER_PATTERN.test(name)) return true
+  return parameterTakesArray(bindingPath)
+}
+
+/**
+ * pc-like identifiers appearing inside an index expression (`pc`, `pc++`,
+ * `pc = pc + 1`).
+ * @param {object|null|undefined} node
+ * @returns {string[]}
+ */
+function pcNamesIn(node) {
+  if (!isNode(node)) return []
+  if (node.type === 'Identifier') return PC_NAME_PATTERN.test(node.name) ? [node.name] : []
+  if (node.type === 'UpdateExpression' && node.argument?.type === 'Identifier') {
+    return PC_NAME_PATTERN.test(node.argument.name) ? [node.argument.name] : []
+  }
+  if (node.type === 'AssignmentExpression' && node.left?.type === 'Identifier') {
+    return PC_NAME_PATTERN.test(node.left.name) ? [node.left.name] : []
+  }
+  return []
+}
+
+/**
+ * Whether a subtree updates a pc-like variable (`pc++`, `pc += 1`). A dispatch
+ * loop that advances its own program counter is interpreter evidence even when
+ * it has no value stack. Iterative to stay safe on deeply nested input.
+ * @param {object|null|undefined} node
+ * @returns {boolean}
+ */
+function updatesPcIn(node) {
+  if (!isNode(node)) return false
+  const pending = [node]
+  while (pending.length > 0) {
+    const current = pending.pop()
+    if (!isNode(current)) continue
+    if (current.type === 'UpdateExpression' && current.argument?.type === 'Identifier') {
+      if (PC_NAME_PATTERN.test(current.argument.name)) return true
+    }
+    if (current.type === 'AssignmentExpression' && current.left?.type === 'Identifier') {
+      if (PC_NAME_PATTERN.test(current.left.name)) return true
+    }
+    for (const key of Object.keys(current)) {
+      if (SKIP_KEYS.has(key)) continue
+      const value = current[key]
+      if (Array.isArray(value)) {
+        for (const child of value) if (isNode(child)) pending.push(child)
+      } else if (isNode(value)) {
+        pending.push(value)
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Whether a switch advances a program counter, either in its discriminant
+ * (`switch (inst[pc++])`) or in one of its case bodies (`case 1: pc += 1`).
+ * @param {object} node
+ * @returns {boolean}
+ */
+function switchAdvancesPc(node) {
+  if (updatesPcIn(node.discriminant)) return true
+  return (node.cases ?? []).some((switchCase) =>
+    (switchCase.consequent ?? []).some((statement) => updatesPcIn(statement)),
+  )
+}
+
+/**
+ * The variable that receives an indexed read, when the read is an initializer
+ * or assignment (`var inst = BYTECODE[pc++]`).
+ * @param {object|null|undefined} node
+ */
+function assignedTarget(node) {
+  if (!isNode(node)) return null
+  if (node.type === 'VariableDeclarator') return node.id?.type === 'Identifier' ? node.id.name : null
+  if (node.type === 'AssignmentExpression' && node.left?.type === 'Identifier') return node.left.name
+  return null
+}
+
+/**
+ * Positive program-counter evidence: a pc-like variable used to index a
+ * bytecode/pool array. The array may be declared locally, declared by an
+ * enclosing IIFE, or supplied as a function parameter (name-shaped or backed
+ * by an array literal argument). An ordinary `rows[idx]` whose binding carries
+ * no array evidence produces none. Scope resolution follows bindings, so an
+ * inner interpreter function may index a `BYTECODE` array declared by its
+ * enclosing IIFE.
+ *
+ * @param {object} ast
+ * @returns {Map<object, {pcIndexedArrays: Map<string, Set<string>>, pcIndexEvents: Array<{pcName: string, arrayName: string, loopNode: object|null, assignedTo: string|null}>}>}
+ */
+function collectPcIndexEvidence(ast) {
+  const evidenceByScope = new Map()
+  if (!isNode(ast)) return evidenceByScope
+  const file = ast.type === 'Program' ? { type: 'File', program: ast } : ast
+  traverse(file, {
+    MemberExpression(path) {
+      const node = path.node
+      if (!node.computed || node.object?.type !== 'Identifier') return
+      const binding = path.scope.getBinding(node.object.name)
+      if (!bindingHoldsBytecode(binding, node.object.name)) return
+      const pcNames = pcNamesIn(node.property)
+      if (pcNames.length === 0) return
+
+      const owner = path.getFunctionParent()?.node ?? path.scope.getProgramParent().path.node
+      const loopPath = path.findParent((parent) => parent.isLoop && parent.isLoop())
+      const loopNode = loopPath?.node ?? null
+      const assignedTo = assignedTarget(path.parent)
+      const previous = evidenceByScope.get(owner) ?? { pcIndexedArrays: new Map(), pcIndexEvents: [] }
+      const pcIndexedArrays = new Map(previous.pcIndexedArrays)
+      const pcIndexEvents = [...previous.pcIndexEvents]
+      for (const pcName of pcNames) {
+        pcIndexedArrays.set(
+          pcName,
+          new Set([...(pcIndexedArrays.get(pcName) ?? []), node.object.name]),
+        )
+        pcIndexEvents.push({ pcName, arrayName: node.object.name, loopNode, assignedTo })
+      }
+      evidenceByScope.set(owner, { pcIndexedArrays, pcIndexEvents })
+    },
+  })
+  return evidenceByScope
+}
+
+/**
  * Collect evidence separately for each program/function scope. An unrelated
  * interpreter must not lend its stack or program counter to an ordinary loop.
  * @param {object} ast
@@ -155,6 +360,7 @@ function collectSignals(ast) {
         node,
         inLoop: context.inLoop > 0,
         loopNode: context.loopNode,
+        advancesPc: switchAdvancesPc(node),
       })
     }
     if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier' && !signals.declarations.has(node.id.name)) {
@@ -174,16 +380,24 @@ function collectSignals(ast) {
         (property.name === 'push' || property.name === 'pop')
       ) {
         signals.pushPopVars.add(object.name)
+        const previous = signals.pushPopLoops.get(object.name) ?? new Set()
+        signals.pushPopLoops.set(object.name, new Set([...previous, ...context.loopChain]))
       }
     }
     if (LOOP_TYPES.has(node.type)) signals.loops.push(node)
   })
 
   const referencedPools = collectReferencedPools(ast)
-  return [...scopes.entries()].map(([scope, signals]) => ({
-    ...signals,
-    referencedPools: referencedPools.get(scope) ?? new Map(),
-  }))
+  const pcEvidence = collectPcIndexEvidence(ast)
+  return [...scopes.entries()].map(([scope, signals]) => {
+    const evidence = pcEvidence.get(scope)
+    return {
+      ...signals,
+      referencedPools: referencedPools.get(scope) ?? new Map(),
+      pcIndexedArrays: evidence?.pcIndexedArrays ?? new Map(),
+      pcIndexEvents: evidence?.pcIndexEvents ?? [],
+    }
+  })
 }
 
 /** @param {object|null|undefined} node */
@@ -197,6 +411,55 @@ function isIndexedDiscriminant(node) {
 }
 
 /**
+ * The base identifier of a switch discriminant (`inst` for `inst[0]`).
+ * @param {object|null|undefined} node
+ */
+function discriminantRootName(node) {
+  if (!isNode(node)) return null
+  if (node.type === 'Identifier') return node.name
+  if (node.type === 'MemberExpression' && node.object?.type === 'Identifier') return node.object.name
+  return null
+}
+
+/** @param {object|null|undefined} node @param {Signals} signals */
+function discriminantIndexesDeclaredArray(node, signals) {
+  if (!isNode(node) || node.type !== 'MemberExpression' || !node.computed) return false
+  if (node.object?.type !== 'Identifier') return false
+  return [...signals.pcIndexedArrays.values()].some((arrays) => arrays.has(node.object.name))
+}
+
+/**
+ * Evidence that a switch is the dispatcher the pc/bytecode variables belong
+ * to. Two switches in one function can tie on shape; linkage breaks the tie.
+ * @param {{node: object, inLoop: boolean, loopNode: object|null}} candidate
+ * @param {Signals} signals
+ */
+function dispatchLinkage(candidate, signals) {
+  let linkage = 0
+  const discriminant = candidate.node.discriminant
+  if (discriminantIndexesDeclaredArray(discriminant, signals)) linkage += 4
+  if (!candidate.loopNode) return linkage
+
+  const loopPcNames = signals.pcIndexEvents
+    .filter((event) => event.loopNode === candidate.loopNode)
+    .map((event) => event.pcName)
+  if (loopPcNames.length > 0) linkage += 3
+
+  // `var inst = BYTECODE[pc++]; switch (inst[0])`: the discriminant is fed by
+  // the loop's pc-indexed bytecode read.
+  const root = discriminantRootName(discriminant)
+  if (
+    root &&
+    signals.pcIndexEvents.some(
+      (event) => event.assignedTo === root && (event.loopNode === candidate.loopNode || event.loopNode === null),
+    )
+  ) {
+    linkage += 2
+  }
+  return linkage
+}
+
+/**
  * Pick the switch that most looks like a bytecode dispatcher.
  * @param {Signals} signals
  */
@@ -204,12 +467,15 @@ function pickDispatch(signals) {
   if (signals.switches.length === 0) return null
   let best = null
   let bestWeight = -1
+  let bestLinkage = -1
   for (const candidate of signals.switches) {
     const indexed = isIndexedDiscriminant(candidate.node.discriminant)
-    const weight = (candidate.inLoop ? 3 : 0) + (indexed ? 2 : 0)
-    if (weight > bestWeight) {
+    const linkage = dispatchLinkage(candidate, signals)
+    const weight = (candidate.inLoop ? 3 : 0) + (indexed ? 2 : 0) + linkage
+    if (weight > bestWeight || (weight === bestWeight && linkage > bestLinkage)) {
       best = candidate
       bestWeight = weight
+      bestLinkage = linkage
     }
   }
   return best
@@ -335,22 +601,29 @@ function collectPcVariables(signals) {
   // Keep names that look like a VM program counter. Broad tokens like `index`,
   // `offset`, `step`, and `cursor` are ordinary loop counters and caused
   // false-positive JSVMP detections (ACCEPTANCE H5).
-  const pattern = /^(?:_|\$)?(?:pc|ip|sp|idx|ptr|pointer|programcounter)$/i
   const names = new Set([
     ...signals.updates,
     ...signals.assignments,
     ...signals.declarations.keys(),
   ])
-  return [...names].filter((name) => pattern.test(name)).sort()
+  return [...names].filter((name) => PC_NAME_PATTERN.test(name)).sort()
 }
 
 /**
+ * A stack-shaped variable only counts when it actually receives push/pop
+ * inside the dispatch loop; `var stack = []` that is never used is not
+ * interpreter evidence (ACCEPTANCE H5).
  * @param {Signals} signals
+ * @param {object|null} dispatchLoop
  */
-function findStackVariables(signals) {
-  // A `.push`/`.pop` on an arbitrary array is not VM evidence; require a
-  // stack-shaped name (ACCEPTANCE H5 ordinary loop+switch+array).
-  return [...signals.declarations.keys()].filter((name) => /stack|stk/i.test(name))
+function findStackVariables(signals, dispatchLoop) {
+  if (!isNode(dispatchLoop)) return []
+  return [...signals.declarations.keys()].filter(
+    (name) =>
+      /stack|stk/i.test(name) &&
+      signals.pushPopVars.has(name) &&
+      signals.pushPopLoops.get(name)?.has(dispatchLoop) === true,
+  )
 }
 
 /**
@@ -452,17 +725,22 @@ function inferOpcode(body) {
  * @param {Record<string, {name?: string, code?: number}>|null} dispatchTable
  * @param {Map<number, string>} opcodeMap
  * @param {string} body
+ * @param {number} caseIndex
+ * @param {boolean} isDefault
  */
-function resolveOpcode(code, dispatchTable, opcodeMap, body) {
-  if (code === null) return 'default'
+function resolveOpcode(code, dispatchTable, opcodeMap, body, caseIndex, isDefault) {
+  if (isDefault) return 'default'
   const key = String(code)
   const entry = dispatchTable && typeof dispatchTable === 'object' ? dispatchTable[key] : null
   if (entry && typeof entry.name === 'string') return entry.name
   if (typeof code === 'number' && opcodeMap.has(code)) return opcodeMap.get(code)
   const inferred = inferOpcode(body)
   if (inferred) return inferred
-  if (typeof code === 'number' && OPCODE_BY_CODE.has(code)) return OPCODE_BY_CODE.get(code).name
-  return `op_${key}`
+  // Without a dispatch-table hint, an opcode hint, or a recognised handler
+  // shape there is no evidence this body implements this project's ISA. A
+  // canonical numeric code would fabricate a mnemonic and collapse distinct
+  // foreign handlers, so fall back to a positionally unique case label.
+  return `case_${caseIndex}`
 }
 
 /**
@@ -500,12 +778,13 @@ function extractCases(switchNode, options) {
   const dispatchTable = options.dispatchTable && typeof options.dispatchTable === 'object' ? options.dispatchTable : null
   /** @type {Array<{opcode:string,test:string|null,body:string,start:number|null,end:number|null,ast:object|null}>} */
   const cases = []
-  for (const caseNode of switchNode.cases ?? []) {
+  const switchCases = switchNode.cases ?? []
+  for (const [caseIndex, caseNode] of switchCases.entries()) {
     const test = caseNode.test ? renderNode(caseNode.test) : null
     const code = caseValue(caseNode.test)
     const body = renderStatements(caseNode.consequent)
     cases.push({
-      opcode: resolveOpcode(code, dispatchTable, opcodeMap, body),
+      opcode: resolveOpcode(code, dispatchTable, opcodeMap, body, caseIndex, caseNode.test == null),
       test,
       body,
       start: typeof caseNode.start === 'number' ? caseNode.start : null,
@@ -552,8 +831,13 @@ function analyzeScope(signals) {
   const hasWhile = signals.loops.some(
     (loop) => loop.type === 'WhileStatement' || loop.type === 'DoWhileStatement',
   )
-  const stackVariables = findStackVariables(signals)
+  const stackVariables = findStackVariables(signals, dispatchInfo?.loopNode)
   const pcVariables = collectPcVariables(signals)
+  // A pc-like name is only a program counter when it indexes something that
+  // looks like bytecode; `idx` over ordinary caller data is not (ACCEPTANCE H5).
+  const linkedPcVariables = pcVariables.filter(
+    (name) => (signals.pcIndexedArrays.get(name)?.size ?? 0) > 0,
+  )
   const bytecodeVariable = findBytecodeVariable(signals)
   const consts = findConsts(signals)
   const indexed = Boolean(dispatchInfo && isIndexedDiscriminant(dispatchInfo.node.discriminant))
@@ -564,23 +848,28 @@ function analyzeScope(signals) {
   if (inLoop) score += 25
   if (indexed) score += 20
   if (stackVariables.length > 0) score += 15
-  if (pcVariables.length > 0) score += 10
+  if (linkedPcVariables.length > 0) score += 10
   if (bytecodeVariable) score += 15
   if (consts.length > 0) score += 5
   score = Math.min(100, score)
 
-  // A loop switch needs both an indexed discriminant and interpreter evidence.
-  // Ordinary `while` + `switch(rows[0])` + `out.push` must not qualify (H5):
-  // require a named stack/bytecode/consts pool, or a pc plus enough cases.
-  const caseCount = Array.isArray(dispatchInfo?.node?.cases)
-    ? dispatchInfo.node.cases.length
-    : 0
-  const interpreterEvidence =
-    Boolean(bytecodeVariable) ||
-    (stackVariables.length > 0 && (pcVariables.length > 0 || consts.length > 0)) ||
-    (pcVariables.length > 0 && consts.length > 0) ||
-    (pcVariables.length > 0 && indexed && caseCount >= 4)
-  const detected = hasSwitch && inLoop && indexed && interpreterEvidence && score >= 50
+  // Detection needs pc/bytecode linkage plus either a value stack that is
+  // actually pushed/popped inside the dispatch loop or a self-advancing program
+  // counter. An ordinary `while` + `switch(rows[idx])` over a local
+  // array-of-arrays has neither (ACCEPTANCE H5).
+  const hasPcEvidence = linkedPcVariables.length > 0
+  const hasStackEvidence = stackVariables.length > 0
+  // A stackless interpreter is still a dispatcher when it advances its program
+  // counter itself (`switch (inst[pc++])`, `case: pc += 1`). An ordinary table
+  // walk has pc/array linkage but neither a used stack nor a self-advancing
+  // counter, so it stays undetected (ACCEPTANCE H5).
+  const advancesPc = Boolean(dispatchInfo?.advancesPc)
+  const detected =
+    hasSwitch &&
+    inLoop &&
+    indexed &&
+    score >= 50 &&
+    ((hasPcEvidence && hasStackEvidence) || (hasPcEvidence && advancesPc))
   return {
     detected,
     score,
