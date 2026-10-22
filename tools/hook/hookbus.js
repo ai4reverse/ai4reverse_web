@@ -53,6 +53,20 @@ export const HOOK_PHASES = Object.freeze([
 const MUTATING_PHASES = new Set(['code:before', 'ast:transform', 'api:before', 'ast:node'])
 
 /**
+ * Whether a handler returned something promise-like. Async hooks are
+ * observe-only: their eventual value is never used as a transform result or a
+ * dispatch decision, and their rejection is recorded in `stats().errors`
+ * instead of surfacing as an unhandled rejection.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isThenable(value) {
+  return Boolean(value)
+    && (typeof value === 'object' || typeof value === 'function')
+    && typeof value.then === 'function'
+}
+
+/**
  * Hook phases that never produce their own `hook` trace event.
  *
  * `code:step` fires once per instrumented statement/loop iteration, so a tight
@@ -137,7 +151,7 @@ export function createHookBus(options = {}) {
     return phase
   }
 
-  function matching(phase) {
+  function matching(phase, { includeGlobal = true } = {}) {
     const [domain] = phase.split(':')
     // Exact phase first. Domain wildcards (`code:*`) and global `*` are added
     // only when the requested phase is more specific — otherwise
@@ -147,7 +161,10 @@ export function createHookBus(options = {}) {
     const domainWild = phase.endsWith(':*') || phase === '*'
       ? []
       : (registry.get(`${domain}:*`) ?? [])
-    const globalWild = phase === '*' ? [] : (registry.get('*') ?? [])
+    // `pipeline()` opts out of the global bucket: a global hook is written as
+    // an observer (`seen.push(phase)` returns a number), and feeding its return
+    // value back as transformed source corrupts the program.
+    const globalWild = !includeGlobal || phase === '*' ? [] : (registry.get('*') ?? [])
     const seen = new Set()
     const out = []
     for (const registration of [...exact, ...domainWild, ...globalWild]) {
@@ -163,16 +180,35 @@ export function createHookBus(options = {}) {
    * Callers use the length to skip the bookkeeping (trace event, dispatch
    * counter) when nothing is listening. `code:step` fires thousands of times
    * per run, so an unlistened phase must cost no more than one Map lookup.
+   * @param {string} phase
+   * @param {{includeGlobal?: boolean}} [options]
    */
-  function enabledFor(phase) {
-    const candidates = matching(phase)
+  function enabledFor(phase, options) {
+    const candidates = matching(phase, options)
     if (candidates.length === 0) return candidates
     return candidates.filter((registration) => registration.enabled)
+  }
+
+  /**
+   * Handler context: per-registration options first, then the standard
+   * dispatch context, then the registration itself. Standard fields such as
+   * `phase` stay authoritative so a hook cannot shadow them by accident.
+   * @param {HookRegistration} registration
+   * @param {object} runContext
+   */
+  function handlerContext(registration, runContext) {
+    return { ...(context.get(registration.id) ?? {}), ...runContext, hook: registration }
   }
 
   const bus = {
     /**
      * Register a hook.
+     *
+     * Async handlers are observe-only: a returned promise is watched so its
+     * rejection is recorded in `stats().errors` instead of becoming an
+     * unhandled rejection, but its resolved value is never used as a transform
+     * result or dispatch decision. Mutating phases must be synchronous.
+     *
      * @param {string} phase
      * @param {(payload: any, context: any) => any} handler
      * @param {object} [opts]
@@ -180,6 +216,7 @@ export function createHookBus(options = {}) {
      * @param {string} [opts.id]
      * @param {boolean} [opts.once]
      * @param {string} [opts.owner]
+     * @param {object} [opts.context] per-registration data merged into the handler context
      * @param {object} [opts.traceless] declared footprint guarantees
      * @returns {() => void} unsubscribe
      */
@@ -206,7 +243,8 @@ export function createHookBus(options = {}) {
       const list = registry.get(normalized) ?? []
       list.push(registration)
       registry.set(normalized, list)
-      context.set(registration.id, opts.context ?? {})
+      const hookContext = opts.context
+      context.set(registration.id, hookContext && typeof hookContext === 'object' ? hookContext : {})
       return () => bus.off(registration.id)
     },
 
@@ -228,6 +266,9 @@ export function createHookBus(options = {}) {
     clear(owner) {
       for (const [phase, list] of registry) {
         const kept = owner ? list.filter((registration) => registration.owner !== owner) : []
+        for (const registration of list) {
+          if (!kept.includes(registration)) context.delete(registration.id)
+        }
         if (kept.length > 0) registry.set(phase, kept)
         else registry.delete(phase)
       }
@@ -267,7 +308,14 @@ export function createHookBus(options = {}) {
       const results = []
       for (const registration of registrations) {
         try {
-          const result = registration.handler(payload, { ...runContext, hook: registration })
+          const result = registration.handler(payload, handlerContext(registration, runContext))
+          if (isThenable(result)) {
+            // Observe-only: watch the rejection, ignore the resolution.
+            observeThenable(registration, result)
+            results.push({ id: registration.id, result: undefined, async: true })
+            if (registration.once) bus.off(registration.id)
+            continue
+          }
           results.push({ id: registration.id, result })
           if (result && result.stop === true) {
             if (registration.once) bus.off(registration.id)
@@ -322,7 +370,14 @@ export function createHookBus(options = {}) {
 
       for (const registration of registrations) {
         try {
-          const result = registration.handler(payload, { ...runContext, hook: registration })
+          const result = registration.handler(payload, handlerContext(registration, runContext))
+          if (isThenable(result)) {
+            // A promise is not a decision; observe it and move on.
+            observeThenable(registration, result)
+            results.push({ id: registration.id, result: undefined, async: true })
+            if (registration.once) bus.off(registration.id)
+            continue
+          }
           results.push({ id: registration.id, result })
           if (result === false) {
             stopped = true
@@ -376,6 +431,11 @@ export function createHookBus(options = {}) {
      * Each handler receives `(value, context)` and returns the new value or
      * `undefined` to leave it unchanged.
      *
+     * Global `*` registrations are observers and never participate here; only
+     * the phase's own registrations and its `domain:*` wildcards transform.
+     * Async handlers are observe-only: a returned thenable is watched for
+     * rejection but never becomes the transformed value.
+     *
      * @template T
      * @param {string} phase
      * @param {T} initial
@@ -393,12 +453,18 @@ export function createHookBus(options = {}) {
       let value = initial
       let changed = false
       const steps = []
-      const registrations = enabledFor(normalized)
+      const registrations = enabledFor(normalized, { includeGlobal: false })
       // Same rule as `emit`/`dispatch`: an unlistened transform is not evidence.
       if (registrations.length === 0) return { value, changed, steps }
       for (const registration of registrations) {
         try {
-          const result = registration.handler(value, { ...runContext, hook: registration })
+          const result = registration.handler(value, handlerContext(registration, runContext))
+          if (isThenable(result)) {
+            observeThenable(registration, result)
+            steps.push({ id: registration.id, changed: false, async: true })
+            if (registration.once) bus.off(registration.id)
+            continue
+          }
           if (result !== undefined && result !== null) {
             if (result !== value) changed = true
             value = result
@@ -467,6 +533,29 @@ export function createHookBus(options = {}) {
         ),
       }
     },
+  }
+
+  /**
+   * Watch an async hook's thenable so a rejection is recorded rather than
+   * escaping as an unhandled rejection (which terminates the Node 24 host).
+   * The resolution is deliberately ignored: async hooks are observe-only.
+   * @param {HookRegistration} registration
+   * @param {PromiseLike<unknown>} thenable
+   */
+  function observeThenable(registration, thenable) {
+    try {
+      thenable.then(undefined, (error) => {
+        try {
+          recordHookError(registration, error)
+        } catch {
+          // Recording must never create a new rejection.
+        }
+      })
+    } catch (error) {
+      // A hostile thenable may throw from `then` itself; report it instead of
+      // letting the host see an unhandled failure.
+      recordHookError(registration, error)
+    }
   }
 
   function recordHookError(registration, error) {

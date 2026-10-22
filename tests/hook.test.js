@@ -342,6 +342,111 @@ test('registerHooks accepts tuple and list shapes instead of dropping them', () 
   assert.equal(bus.describe().find((entry) => entry.id === 'before').priority, 5)
 })
 
+test('a rejecting async hook is observed instead of becoming an unhandled rejection', async () => {
+  const bus = createHookBus({ record: false })
+  let ran = false
+  bus.on('api:after', async () => {
+    throw new Error('async boom')
+  }, { id: 'async-broken', priority: 100 })
+  bus.on('api:after', () => {
+    ran = true
+  }, { id: 'healthy', priority: 1 })
+
+  const emitted = bus.emit('api:after', { api: 'x' })
+  assert.equal(ran, true, 'a later synchronous hook still runs')
+  assert.deepEqual(emitted.results.map((entry) => entry.id), ['async-broken', 'healthy'])
+
+  // Let the rejected promise settle; an unhandled rejection would fail the
+  // process before this point.
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const stats = bus.stats()
+  assert.equal(stats.errors.length, 1)
+  assert.equal(stats.errors[0].hook, 'async-broken')
+  assert.equal(stats.errors[0].phase, 'api:after')
+  assert.equal(stats.errors[0].message, 'async boom')
+})
+
+test('a thenable returned from a handler is never used as a dispatch decision', async () => {
+  const bus = createHookBus({ record: false })
+  bus.on('api:before', async () => ({ block: 'not-a-decision' }), { id: 'async-hook' })
+  bus.on('api:before', () => ({ block: 'sync' }), { id: 'sync-hook', priority: -1 })
+
+  const result = bus.dispatch('api:before', { api: 'fetch' })
+  assert.equal(result.blocked, true)
+  assert.equal(result.value, 'sync', 'the synchronous hook decides; the promise is observe-only')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(bus.stats().errors.length, 0)
+})
+
+test('pipeline never adopts a thenable as the transformed value', async () => {
+  const bus = createHookBus({ record: false })
+  bus.on('code:before', async () => 'rewritten', { id: 'async-transform' })
+
+  const result = bus.pipeline('code:before', 'original')
+  assert.equal(result.value, 'original', 'a promise must not replace the source')
+  assert.equal(result.changed, false)
+  assert.equal(result.steps.length, 1)
+  assert.equal(result.steps[0].id, 'async-transform')
+  assert.equal(result.steps[0].changed, false)
+
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(bus.stats().errors.length, 0)
+})
+
+test('a rejecting async transform is recorded as a hook failure', async () => {
+  const bus = createHookBus({ record: false })
+  bus.on('code:before', async () => {
+    throw new Error('async transform exploded')
+  }, { id: 'async-transform-broken' })
+
+  const result = bus.pipeline('code:before', 'source')
+  assert.equal(result.value, 'source')
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const stats = bus.stats()
+  assert.equal(stats.errors.length, 1)
+  assert.equal(stats.errors[0].hook, 'async-transform-broken')
+  assert.equal(stats.errors[0].message, 'async transform exploded')
+})
+
+test('the global wildcard is excluded from pipeline transforms', () => {
+  const bus = createHookBus({ record: false })
+  const seen = []
+  bus.on('*', (payload, context) => seen.push(context.phase))
+  bus.on('code:*', (source) => `${source}//domain`, { id: 'domain-transform' })
+
+  const result = bus.pipeline('code:before', 'var x = 1')
+  assert.equal(result.value, 'var x = 1//domain', 'only the domain transform applies')
+  assert.equal(result.changed, true)
+  assert.deepEqual(seen, [], 'the global observer did not run as a transform')
+
+  // The same global registration still observes non-pipeline dispatches.
+  bus.emit('code:before', {})
+  assert.deepEqual(seen, ['code:before'])
+})
+
+test('per-registration context is delivered to handlers', () => {
+  const bus = createHookBus({ record: false })
+  const observed = []
+  bus.on('code:before', (source, context) => {
+    observed.push({ tag: context.tag, phase: context.phase, hook: context.hook.id, source })
+    return source
+  }, { id: 'contextual', context: { tag: 'probe' } })
+
+  const result = bus.pipeline('code:before', 'src')
+  assert.equal(result.value, 'src')
+  assert.deepEqual(observed, [{ tag: 'probe', phase: 'code:before', hook: 'contextual', source: 'src' }])
+
+  let dispatched
+  bus.on('api:before', (payload, context) => {
+    dispatched = { tag: context.tag, phase: context.phase }
+    return undefined
+  }, { id: 'api-context', context: { tag: 'api-probe' } })
+  bus.dispatch('api:before', { api: 'x' })
+  assert.deepEqual(dispatched, { tag: 'api-probe', phase: 'api:before' })
+})
+
 test('registerHooks rejects a malformed registration instead of skipping it', () => {
   const bus = createHookBus({ record: false })
   const cases = [
