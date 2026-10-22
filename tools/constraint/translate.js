@@ -8,8 +8,12 @@
  *    `NaN`, `Infinity` and strings. An object's `ToPrimitive`/`valueOf` call is
  *    not modelled: the translator never executes it. `>>>` is converted back
  *    to an unsigned integer.
- *  - `!`, `&&`, `||`, `?:`, `typeof`, and equality/comparison of exact values
- *    are exact.
+ *  - `!`, `typeof`, and equality/comparison of exact values are exact.
+ *    `&&` and `||` are exact only as *truthiness conditions*: they evaluate to
+ *    an operand value, so in a value context (arithmetic, bitwise, comparison,
+ *    equality, a conditional arm) their result is an uninterpreted value and
+ *    never an exact boolean. `?:` is exact only when both arms share a value
+ *    sort; a `Bool` arm is never coerced to `Int` (`true` and `1` differ).
  *  - Integer arithmetic (`+ - * % ** /`) is translated over z3 `Int`. That is
  *    the integer model: a JS number can be fractional, `NaN`, `Infinity`, or
  *    lose precision above 2^53. Those terms therefore carry `exact: false`.
@@ -99,12 +103,15 @@ export function createTranslator(api, context, options = {}) {
    * @param {object} node
    * @param {object} [translateOptions]
    * @param {object|null} [translateOptions.scope] Babel scope for binding identity
-   * @param {'any'|'int'|'bool'|'string'} [translateOptions.expected]
+   * @param {'any'|'value'|'int'|'bool'|'string'} [translateOptions.expected]
    * @returns {Translation}
    */
   function translate(node, translateOptions = {}) {
     const state = createState()
-    return translateInner(node, translateOptions.scope ?? null, translateOptions.expected ?? 'any', state, 0)
+    // `translate`/`translateSafe` return a *value*: `&&`/`||`/`?:` must keep
+    // their operand value, not just truthiness. Callers that want a JS
+    // condition use `translateCondition*`, which applies truthiness at the root.
+    return translateInner(node, translateOptions.scope ?? null, translateOptions.expected ?? 'value', state, 0)
   }
 
   /**
@@ -324,11 +331,15 @@ export function createTranslator(api, context, options = {}) {
     }
     if (operator === '~') {
       const argument = translateInner(node.argument, scope, 'int', state, depth + 1)
+      if (argument.truthiness) {
+        return soft(node, INT, state, 'a truthiness term is not a bitwise value', argument.pure)
+      }
       const bv = toBV(argument, state)
-      return fromBV(bv.not(), true, {
+      return fromBV(bv.expr.not(), true, {
+        exact: bv.exact,
         pure: argument.pure,
         variables: argument.variables,
-        uninterpreted: argument.uninterpreted,
+        uninterpreted: bv.uninterpreted,
       })
     }
     if (operator === '+' || operator === '-') {
@@ -361,8 +372,9 @@ export function createTranslator(api, context, options = {}) {
       return soft(node, BOOL, state, `${operator} is not modelled`)
     }
 
-    const left = translateInner(node.left, scope, 'any', state, depth + 1)
-    const right = translateInner(node.right, scope, 'any', state, depth + 1)
+    // Both operands of a binary operator are consumed as JavaScript values.
+    const left = translateInner(node.left, scope, 'value', state, depth + 1)
+    const right = translateInner(node.right, scope, 'value', state, depth + 1)
 
     if (operator === '+' && (left.sort === STRING || right.sort === STRING)) {
       if (left.sort !== STRING || right.sort !== STRING) {
@@ -377,7 +389,7 @@ export function createTranslator(api, context, options = {}) {
     }
 
     if (['&', '|', '^', '<<', '>>', '>>>'].includes(operator)) {
-      return bitwise(operator, left, right, state)
+      return bitwise(operator, left, right, node, state)
     }
 
     if (['==', '===', '!=', '!=='].includes(operator)) {
@@ -399,25 +411,36 @@ export function createTranslator(api, context, options = {}) {
    * @param {string} operator
    * @param {Translation} left
    * @param {Translation} right
+   * @param {object} node
    * @param {object} state
    * @returns {Translation}
    */
-  function bitwise(operator, left, right, state) {
+  function bitwise(operator, left, right, node, state) {
+    const pure = left.pure && right.pure
+    // `&&`/`||` yield an operand value; without that value, ToInt32 cannot be
+    // reconstructed from truthiness (`(1 && 2) | 0` is `2`, not `1`).
+    if (left.truthiness || right.truthiness) {
+      return soft(node, INT, state, 'a truthiness term is not a bitwise value', pure)
+    }
     const a = toBV(left, state)
     const b = toBV(right, state)
-    const pure = left.pure && right.pure
     const flags = {
+      // A bit-vector operation is exact for the values it receives, but an
+      // uninterpreted operand (for example the value `&&`/`||` yields) makes
+      // the result approximate. Carry that through the coercion rather than
+      // claiming exactness unconditionally.
+      exact: a.exact && b.exact,
       pure,
       variables: mergeVars(left, right),
-      uninterpreted: left.uninterpreted + right.uninterpreted,
+      uninterpreted: a.uninterpreted + b.uninterpreted,
     }
-    if (operator === '&') return fromBV(a.and(b), true, flags)
-    if (operator === '|') return fromBV(a.or(b), true, flags)
-    if (operator === '^') return fromBV(a.xor(b), true, flags)
-    const masked = b.and(context.BitVec.val(31, 32))
-    if (operator === '<<') return fromBV(a.shl(masked), true, flags)
-    if (operator === '>>') return fromBV(a.ashr(masked), true, flags)
-    return fromBV(a.lshr(masked), false, flags)
+    if (operator === '&') return fromBV(a.expr.and(b.expr), true, flags)
+    if (operator === '|') return fromBV(a.expr.or(b.expr), true, flags)
+    if (operator === '^') return fromBV(a.expr.xor(b.expr), true, flags)
+    const masked = b.expr.and(context.BitVec.val(31, 32))
+    if (operator === '<<') return fromBV(a.expr.shl(masked), true, flags)
+    if (operator === '>>') return fromBV(a.expr.ashr(masked), true, flags)
+    return fromBV(a.expr.lshr(masked), false, flags)
   }
 
   /**
@@ -439,7 +462,12 @@ export function createTranslator(api, context, options = {}) {
     const a = tagged ? tagged.left : left
     const b = tagged ? tagged.right : right
 
-    if (a.sort === b.sort && a.exact && b.exact) {
+    // A truthiness term is a boolean over-approximation of the operand value
+    // `&&`/`||` yields, never that value itself, so it cannot decide a
+    // comparison of JS values.
+    const exactValues = a.exact && b.exact && !a.truthiness && !b.truthiness
+
+    if (a.sort === b.sort && exactValues) {
       const eq = a.expr.eq(b.expr)
       return term(negated ? context.Not(eq) : eq, BOOL, {
         exact: true,
@@ -453,7 +481,7 @@ export function createTranslator(api, context, options = {}) {
     // A 32-bit bit-vector and an Int are both exact numeric values; compare
     // them as integers. Booleans are deliberately excluded: `1 === true` is
     // false in JS even though `1 == true` is true.
-    if (a.exact && b.exact && isArith(a) && isArith(b)) {
+    if (exactValues && isArith(a) && isArith(b)) {
       const bvConstant = bvSideConstant(a, b, node)
       if (bvConstant) {
         if (bvConstant.outOfRange) {
@@ -481,7 +509,7 @@ export function createTranslator(api, context, options = {}) {
       })
     }
 
-    if (a.exact && b.exact) {
+    if (exactValues) {
       const typeString = classifyTypeStringEquality(a, b, node)
       if (typeString !== null) {
         const eq = context.Bool.val(typeString)
@@ -544,7 +572,7 @@ export function createTranslator(api, context, options = {}) {
         state.equalityAtoms.set(key, atom)
       }
       return term(negated ? context.Not(atom) : atom, BOOL, {
-        exact: true,
+        exact: exactValues,
         integral: true,
         pure: true,
         variables,
@@ -554,7 +582,7 @@ export function createTranslator(api, context, options = {}) {
 
     // Impure expressions can change between the two evaluations; do not share.
     return term(negated ? context.Not(freshBool(state)) : freshBool(state), BOOL, {
-      exact: true,
+      exact: exactValues,
       integral: true,
       pure: false,
       variables,
@@ -574,8 +602,11 @@ export function createTranslator(api, context, options = {}) {
     const pure = left.pure && right.pure
     const variables = mergeVars(left, right)
     const uninterpreted = left.uninterpreted + right.uninterpreted
+    // Truthiness only says whether an operand value is truthy; relational
+    // operators consume the value itself.
+    const exactValues = left.exact && right.exact && !left.truthiness && !right.truthiness
 
-    if (left.exact && right.exact) {
+    if (exactValues) {
       if (left.sort === STRING && right.sort === STRING) {
         // JS orders strings by UTF-16 code unit; z3 orders code points. For
         // non-ASCII (especially astral) text those differ, so only ASCII
@@ -618,7 +649,7 @@ export function createTranslator(api, context, options = {}) {
         state.relationalAtoms.set(key, atom)
       }
       return term(atom, BOOL, {
-        exact: true,
+        exact: exactValues,
         integral: true,
         pure: true,
         variables,
@@ -627,7 +658,7 @@ export function createTranslator(api, context, options = {}) {
     }
 
     return term(freshBool(state), BOOL, {
-      exact: true,
+      exact: exactValues,
       integral: true,
       pure: false,
       variables,
@@ -644,6 +675,11 @@ export function createTranslator(api, context, options = {}) {
    * @returns {Translation}
    */
   function arithmetic(operator, left, right, node, state) {
+    // `&&`/`||` yield an operand value; its truthiness cannot reconstruct the
+    // number `(x && 5) + 1` actually adds.
+    if (left.truthiness || right.truthiness) {
+      return soft(node, INT, state, 'a truthiness term is not an arithmetic value', left.pure && right.pure)
+    }
     const a = asInt(left, state)
     const b = asInt(right, state)
     const pure = a.pure && b.pure
@@ -718,18 +754,42 @@ export function createTranslator(api, context, options = {}) {
     if (node.operator === '??') {
       return soft(node, BOOL, state, 'nullish coalescing is not modelled')
     }
-    const left = asBool(translateInner(node.left, scope, 'any', state, depth + 1), state)
-    const right = asBool(translateInner(node.right, scope, 'any', state, depth + 1), state)
+    const leftValue = translateInner(node.left, scope, 'any', state, depth + 1)
+    const rightValue = translateInner(node.right, scope, 'any', state, depth + 1)
+    const left = asBool(leftValue, state)
+    const right = asBool(rightValue, state)
+    const pure = left.pure && right.pure
+    const variables = mergeVars(leftValue, rightValue)
+    const uninterpreted = leftValue.uninterpreted + rightValue.uninterpreted
+    // `a && b` / `a || b` evaluate to an operand value, not a boolean. When
+    // both operands really are JS booleans the connective is also that value;
+    // otherwise the result is only a truthiness term.
+    const booleanValue =
+      leftValue.sort === BOOL && leftValue.truthiness !== true &&
+      rightValue.sort === BOOL && rightValue.truthiness !== true
+
+    if (isValueContext(expected) && !booleanValue) {
+      // The operand value is not modelled. Returning an uninterpreted value
+      // keeps every later comparison, arithmetic op and branch decision
+      // conservative instead of conflating `2` with `true`.
+      const loosened = soft(node, expected, state, 'a logical operand value is not modelled', pure)
+      return {
+        ...loosened,
+        variables,
+        uninterpreted: loosened.uninterpreted + uninterpreted,
+      }
+    }
+
     const expr = node.operator === '&&' ? context.And(left.expr, right.expr) : context.Or(left.expr, right.expr)
     return term(expr, BOOL, {
-      exact: true,
+      exact: left.exact && right.exact,
       integral: true,
-      // `&&` and `||` yield an operand value, so this term is the truthiness of
-      // the operands rather than a JavaScript boolean.
-      truthiness: true,
-      pure: left.pure && right.pure,
-      variables: mergeVars(left, right),
-      uninterpreted: left.uninterpreted + right.uninterpreted,
+      // A truthiness result is not a JavaScript-typed value unless both
+      // operands were booleans.
+      truthiness: !booleanValue,
+      pure,
+      variables,
+      uninterpreted,
     })
   }
 
@@ -745,8 +805,12 @@ export function createTranslator(api, context, options = {}) {
     const test = asBool(translateInner(node.test, scope, 'any', state, depth + 1), state)
     const consequent = translateInner(node.consequent, scope, expected, state, depth + 1)
     const alternate = translateInner(node.alternate, scope, expected, state, depth + 1)
+    const pure = test.pure && consequent.pure && alternate.pure
     const sort = unify(consequent, alternate)
-    if (!sort) return soft(node, expected, state, 'conditional branches have different sorts')
+    // A truthiness branch is not the JS value the conditional produces.
+    if (!sort || (isValueContext(expected) && (consequent.truthiness || alternate.truthiness))) {
+      return soft(node, expected, state, 'conditional branch values cannot be unified exactly', pure)
+    }
     const a = coerce(consequent, sort, state)
     const b = coerce(alternate, sort, state)
     return term(context.If(test.expr, a.expr, b.expr), sort, {
@@ -755,7 +819,7 @@ export function createTranslator(api, context, options = {}) {
       truthiness: a.truthiness === true || b.truthiness === true,
       nanSafe: a.nanSafe && b.nanSafe,
       integral: a.integral && b.integral,
-      pure: test.pure && a.pure && b.pure,
+      pure,
       variables: mergeVars(test, a, b),
       uninterpreted: test.uninterpreted + a.uninterpreted + b.uninterpreted,
     })
@@ -827,7 +891,12 @@ export function createTranslator(api, context, options = {}) {
         if (args.length !== 2) return soft(node, INT, state, 'Math.imul needs two arguments')
         const a = toBV(rawArgs[0], state)
         const b = toBV(rawArgs[1], state)
-        return fromBV(a.mul(b), true, { pure, variables, uninterpreted })
+        return fromBV(a.expr.mul(b.expr), true, {
+          exact: a.exact && b.exact,
+          pure,
+          variables,
+          uninterpreted: a.uninterpreted + b.uninterpreted,
+        })
       }
       if (name === 'abs') {
         const arg = args[0]
@@ -966,11 +1035,30 @@ export function createTranslator(api, context, options = {}) {
     return soft(null, expectedSort, state, `cannot coerce ${value.sort} to ${expectedSort}`)
   }
 
-  /** @param {Translation} left @param {Translation} right */
+  /**
+   * A conditional only has one JS value when both arms share a value sort.
+   * `true` and `1` are distinct values, so a Bool arm is never folded into Int.
+   *
+   * @param {Translation} left
+   * @param {Translation} right
+   * @returns {string|null}
+   */
   function unify(left, right) {
     if (left.sort === right.sort) return left.sort
-    if (isNumeric(left) && isNumeric(right)) return INT
+    if (isArith(left) && isArith(right)) return INT
     return null
+  }
+
+  /**
+   * True when the parent consumes the JS value, not just its truthiness.
+   * `any`/`bool` mean the parent applies `asBool` itself (if/loop tests, `!`,
+   * and the operands of `&&`/`||`).
+   *
+   * @param {string} expected
+   * @returns {boolean}
+   */
+  function isValueContext(expected) {
+    return expected !== 'any' && expected !== 'bool'
   }
 
   function isNumeric(value) {
@@ -1011,11 +1099,18 @@ export function createTranslator(api, context, options = {}) {
    */
   function asInt(value, state) {
     if (value.sort === INT) return value
+    if (value.sort === BOOL && value.truthiness === true) {
+      // `&&`/`||` yielded an operand value; its truthiness says nothing about
+      // the number ToNumber would produce from that operand.
+      return soft(null, INT, state, 'a truthiness term is not a number', value.pure)
+    }
     if (value.sort === BV32) {
       return term(context.BV2Int(value.expr, true), INT, {
-        exact: true,
+        // BV2Int is faithful to the 32-bit value, but that value is only the
+        // JavaScript number when the bit-vector term itself was exact.
+        exact: value.exact,
         integral: true,
-        nanSafe: true,
+        nanSafe: value.nanSafe,
         pure: value.pure,
         variables: value.variables,
         uninterpreted: value.uninterpreted,
@@ -1094,32 +1189,62 @@ export function createTranslator(api, context, options = {}) {
    * BitVec symbol, so a bitwise-only predicate never bit-blasts an unbounded
    * Int (which makes z3 return `unknown` on ordinary identities).
    *
+   * The result carries the exactness of the coercion so a caller combining it
+   * with other operands does not report an approximate term as exact. An
+   * identifier's native symbol is an exact ToInt32 representation even though
+   * its unbounded Int model is not, which keeps `(x | 0)` exact.
+   *
    * @param {Translation} value
    * @param {object} state
-   * @returns {object}
+   * @returns {{expr: object, exact: boolean, uninterpreted: number}}
    */
   function toBV(value, state) {
-    if (value.sort === BV32) return value.expr
-    if (value.sort === BOOL) {
-      return context.Int2BV(context.If(value.expr, context.Int.val(1), context.Int.val(0)), 32)
+    if (value.sort === BV32) {
+      return { expr: value.expr, exact: value.exact, uninterpreted: value.uninterpreted }
     }
-    if (value.sort === UNDEFINED || value.sort === NULL) return context.BitVec.val(0, 32)
-    if (value.bvExpr) return value.bvExpr
+    if (value.sort === BOOL && value.truthiness === true) {
+      // Truthiness cannot reconstruct the operand value ToInt32 would read.
+      return {
+        expr: context.BitVec.const(freshName('u_bv'), 32),
+        exact: false,
+        uninterpreted: value.uninterpreted + 1,
+      }
+    }
+    if (value.sort === BOOL) {
+      return {
+        expr: context.Int2BV(context.If(value.expr, context.Int.val(1), context.Int.val(0)), 32),
+        exact: value.exact,
+        uninterpreted: value.uninterpreted,
+      }
+    }
+    if (value.sort === UNDEFINED || value.sort === NULL) {
+      return { expr: context.BitVec.val(0, 32), exact: true, uninterpreted: value.uninterpreted }
+    }
+    if (value.bvExpr) {
+      return { expr: value.bvExpr, exact: true, uninterpreted: value.uninterpreted }
+    }
     const integer = value.sort === INT ? value : asInt(value, state)
-    return context.Int2BV(integer.expr, 32)
+    return {
+      expr: context.Int2BV(integer.expr, 32),
+      exact: integer.exact,
+      uninterpreted: integer.uninterpreted,
+    }
   }
 
   /**
    * @param {object} bv
    * @param {boolean} signed
    * @param {object} flags
+   * @param {boolean} [flags.exact] whether the bit-vector result is the exact
+   *   JavaScript value (defaults to true for callers with no approximations)
    * @returns {Translation}
    */
   function fromBV(bv, signed, flags = {}) {
+    const exact = flags.exact !== false
     const common = {
-      exact: true,
+      exact,
       integral: true,
-      nanSafe: true,
+      nanSafe: exact,
       pure: flags.pure !== false,
       variables: flags.variables,
       uninterpreted: flags.uninterpreted,

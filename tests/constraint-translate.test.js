@@ -56,6 +56,24 @@ test('bitwise identities and constants use the exact fragment', async () => {
   }
 })
 
+test('bitwise exactness is not claimed for an uninterpreted operand value', async () => {
+  // The bit-vector operation is exact for any *value* ToInt32 receives, but
+  // `1 && 2` yields an operand value the translator does not model. Treating
+  // the bitwise result as exact would report a proof over an approximation.
+  for (const source of ['(~(1 && 2)) === -3', '((1 && 2) | 0) === 2', '(((1 && 2) | 0) + 1) === 3']) {
+    const proof = await provePredicate(source)
+    assert.equal(proof.exact, false, `${source}: ${JSON.stringify(proof)}`)
+    assert.equal(proof.proved, false, `${source}: ${JSON.stringify(proof)}`)
+  }
+
+  // Bitwise operations over genuinely exact primitive values stay exact.
+  for (const source of ['(5 | 0) === 5', '(true | 0) === 1', '(null | 0) === 0', '(undefined | 0) === 0']) {
+    const proof = await provePredicate(source)
+    assert.equal(proof.status, 'always-true', `${source}: ${JSON.stringify(proof)}`)
+    assert.equal(proof.exact, true, `${source}: ${JSON.stringify(proof)}`)
+  }
+})
+
 test('boolean structure is short-circuit-correct and does not execute the sample', async () => {
   assert.equal((await provePredicate('true || f()')).status, 'always-true')
   assert.equal((await provePredicate('false && f()')).status, 'always-false')
@@ -110,6 +128,58 @@ test('truthiness values are not treated as JavaScript booleans', async () => {
     const proof = await provePredicate(source)
     assert.equal(proof.status, expected, `${source}: ${JSON.stringify(proof)}`)
   }
+})
+
+test('operand values from && and || are never decided as booleans', async () => {
+  // `a && b` / `a || b` evaluate to an operand value. A value the translator
+  // cannot model exactly must stay unproved rather than become a wrong
+  // always-true/always-false claim.
+  for (const source of [
+    '(1 && 2) === true',
+    '(x || 5) > 1',
+    '(x && 5) + 1 === 6',
+  ]) {
+    const proof = await provePredicate(source)
+    assert.equal(proof.proved, false, `${source}: ${JSON.stringify(proof)}`)
+    assert.equal(proof.exact, false, `${source}: ${JSON.stringify(proof)}`)
+    assert.notEqual(proof.status, 'always-true', source)
+    assert.notEqual(proof.status, 'always-false', source)
+  }
+})
+
+test('a truthy ternary branch is not coerced to the other branch type', async () => {
+  // `true` and `1` are different JS values even though they agree on
+  // truthiness; unifying their sorts would prove the wrong predicate.
+  for (const source of [
+    '(true ? true : 1) === 1',
+    '(true ? true : 5) === true',
+  ]) {
+    const proof = await provePredicate(source)
+    assert.equal(proof.proved, false, `${source}: ${JSON.stringify(proof)}`)
+    assert.equal(proof.exact, false, `${source}: ${JSON.stringify(proof)}`)
+    assert.notEqual(proof.status, 'always-true', source)
+    assert.notEqual(proof.status, 'always-false', source)
+  }
+})
+
+test('equivalence compares operand values, not their truthiness', async () => {
+  const proof = await proveEquivalent('1 && 2', '3 && 4')
+  assert.equal(proof.proved, false, JSON.stringify(proof))
+  assert.equal(proof.exact, false, JSON.stringify(proof))
+  assert.equal(proof.equivalent, false, JSON.stringify(proof))
+})
+
+test('an unmodelled && result leaves both if arms reachable', async () => {
+  const report = await analyzeConstraints('if ((1 && 2) === true) { a() } else { b() }')
+  assert.equal(report.ok, true)
+  assert.deepEqual(report.unreachableBranches, [], JSON.stringify(report.unreachableBranches))
+  // The standalone `1 && 2` still has a knowable truthiness; only the value
+  // comparison that consumes it must stay unproved.
+  assert.equal(
+    report.opaquePredicates.some((finding) => finding.text === '(1 && 2) === true'),
+    false,
+    JSON.stringify(report.opaquePredicates),
+  )
 })
 
 test('strings, typeof tags and Math helpers are translated', async () => {
