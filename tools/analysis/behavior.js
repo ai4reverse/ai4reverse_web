@@ -33,6 +33,19 @@ const PLATFORM_POLICY_MOCK_REASONS = new Set(['dialog-suppressed', 'popup-blocke
 const PLATFORM_POLICY_MOCK_APIS = new Set(['window.alert', 'window.confirm', 'window.prompt', 'window.open'])
 
 /**
+ * Keyboard event types whose capture indicates keystroke logging (T1056).
+ * Shared with the verdict so the report and the summary agree on what counts.
+ */
+export const INPUT_CAPTURE_EVENTS = Object.freeze(['keydown', 'keyup', 'keypress'])
+
+/**
+ * Upper bound on retained entries for a high-volume behaviour list. Counts stay
+ * exact; only the evidence slice is capped so a noisy sample cannot bloat the
+ * report (or the verdict's memory) with millions of entries.
+ */
+const MAX_BEHAVIOR_ENTRIES = 2000
+
+/**
  * Attribute one trace event: was it the sample or the platform?
  *
  * The recorder stamps a single `actor` per run (`sandbox`), so attribution has
@@ -84,6 +97,12 @@ export function summarizeBehavior(events = []) {
   const exceptions = { uncaught: [], caught: [], promiseJobs: [] }
   const evals = []
   const mocks = []
+  // Keyboard listeners kept as structured evidence: the aggregated API count
+  // only names `addEventListener`, so the event type has to survive the
+  // retention slice for the verdict to reason about keylogging. The retained
+  // list is bounded; `inputCaptureCount` stays exact for scoring.
+  const inputCaptures = []
+  let inputCaptureCount = 0
   let platformEvents = 0
   const iocs = []
   const consoleLines = []
@@ -109,6 +128,16 @@ export function summarizeBehavior(events = []) {
         if (api && countable) apis.set(api, (apis.get(api) ?? 0) + 1)
         // `api.wrapped`/`api.after` are instrumentation metadata, not calls.
         const isCallEvent = event.phase === 'invoke' || event.phase === 'before' || event.phase === 'skip'
+        const listenerType = event.type ?? event.args?.[0]
+        // Use the deduped `countable` predicate: when API instrumentation wraps
+        // the event target (`config.api.targets`) one addEventListener call
+        // emits both an `invoke` (wrapper) and a `before` (env module) event.
+        if (api && countable && api.includes('addEventListener') && INPUT_CAPTURE_EVENTS.includes(listenerType)) {
+          inputCaptureCount += 1
+          if (inputCaptures.length < MAX_BEHAVIOR_ENTRIES) {
+            inputCaptures.push({ api, type: listenerType, seq: event.seq })
+          }
+        }
         if (api && isCallEvent && NETWORK_APIS.has(api)) {
           network.push({
             api: event.api,
@@ -203,14 +232,15 @@ export function summarizeBehavior(events = []) {
     apiCount: ranked.reduce((total, entry) => total + entry.count, 0),
     network: dedupeNetwork(network),
     storage,
-    dom: dom.slice(0, 2000),
-    timers: timers.slice(0, 2000),
+    dom: dom.slice(0, MAX_BEHAVIOR_ENTRIES),
+    timers: timers.slice(0, MAX_BEHAVIOR_ENTRIES),
     exceptions,
     evalStages: evals,
     probes: evals.length,
     mocks,
+    inputCaptures,
     iocs,
-    console: consoleLines.slice(0, 2000),
+    console: consoleLines.slice(0, MAX_BEHAVIOR_ENTRIES),
     crypto,
     clipboard,
     counts: {
@@ -226,6 +256,7 @@ export function summarizeBehavior(events = []) {
       exceptions: exceptions.uncaught.length + exceptions.caught.length,
       evals: evals.length,
       mocks: mocks.length,
+      inputCaptures: inputCaptureCount,
       iocs: iocs.length,
     },
     killChain: inferKillChain({ ranked, network, storage, evals, exceptions, iocs }),
