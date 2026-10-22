@@ -190,7 +190,41 @@ const EVENT_KINDS = new Set(['net', 'ioc', 'eval'])
 const DEFANG_HINT_RE = /hxxp|\[\.\]|\(\.\)|\{\.\}|\[dot\]|\(dot\)|\{dot\}|\[:\]|\[\/\]|\[@|\[at\]/i
 
 const URL_RE = /\b(?:https?|wss?|ftp):\/\/[^\s"'`<>\\]+/gi
-const DOMAIN_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\b/gi
+/** Hostname grammar bounds: a label is 1-63 chars, a TLD is 2-24 letters. */
+const DOMAIN_LABEL_MAX = 63
+const DOMAIN_TLD_MIN = 2
+const DOMAIN_TLD_MAX = 24
+
+const CHAR_DIGIT_0 = 0x30
+const CHAR_DIGIT_9 = 0x39
+const CHAR_UPPER_A = 0x41
+const CHAR_UPPER_Z = 0x5a
+const CHAR_LOWER_A = 0x61
+const CHAR_LOWER_Z = 0x7a
+const CHAR_HYPHEN = 0x2d
+const CHAR_DOT = 0x2e
+const CHAR_UNDERSCORE = 0x5f
+
+/** @param {number} code */
+function isLetterCode(code) {
+  return (code >= CHAR_LOWER_A && code <= CHAR_LOWER_Z) || (code >= CHAR_UPPER_A && code <= CHAR_UPPER_Z)
+}
+
+/** @param {number} code */
+function isAlphanumericCode(code) {
+  return isLetterCode(code) || (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9)
+}
+
+/** JavaScript `\b` word characters: `[A-Za-z0-9_]`. @param {number} code */
+function isWordCode(code) {
+  return isAlphanumericCode(code) || code === CHAR_UNDERSCORE
+}
+
+/** Characters a hostname match can contain. @param {number} code */
+function isDomainCode(code) {
+  return isAlphanumericCode(code) || code === CHAR_HYPHEN || code === CHAR_DOT
+}
+
 // Bounded local-part (O(64n)); unbounded `[\w.+-]+` was quadratic on dense input (P0-11).
 const EMAIL_RE = /(?<![A-Za-z0-9._%+-])[\w.+-]{1,64}@(?:[a-z0-9-]{1,63}\.)+[a-z]{2,24}/gi
 const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g
@@ -515,6 +549,111 @@ function scanUrls(result, text, state, offsetOf, source) {
 }
 
 /**
+ * End offset for a `[a-z]{2,24}\b` TLD starting at `index`, or -1 when the
+ * letter run is too short, too long, or not followed by a word boundary.
+ * @param {string} text
+ * @param {number} index
+ * @returns {number}
+ */
+function domainTldEnd(text, index) {
+  if (!isLetterCode(text.charCodeAt(index))) return -1
+  let end = index + 1
+  while (end < text.length && end - index < DOMAIN_TLD_MAX && isLetterCode(text.charCodeAt(end))) end += 1
+  if (end - index < DOMAIN_TLD_MIN) return -1
+  if (end < text.length && isWordCode(text.charCodeAt(end))) return -1
+  return end
+}
+
+/**
+ * Yield hostname matches in one left-to-right pass.
+ *
+ * The former `DOMAIN_RE` retried an unbounded `(?:label\.)+` repetition from
+ * every start position, so zero-match input such as `'a.'.repeat(n / 2)`
+ * backtracked over the whole tail per position (quadratic: ~15 minutes at the
+ * 5 MiB cap). This tokenizer parses each dot-separated segment chain once and
+ * answers each start in O(1), so the work stays linear in the scanned text.
+ *
+ * @param {string} text
+ * @returns {Generator<{index: number, value: string}>}
+ */
+function* findDomainMatches(text) {
+  const length = text.length
+  let cursor = 0
+  while (cursor < length) {
+    if (!isDomainCode(text.charCodeAt(cursor))) {
+      cursor += 1
+      continue
+    }
+    const tokenStart = cursor
+    while (cursor < length && isDomainCode(text.charCodeAt(cursor))) cursor += 1
+    yield* findDomainMatchesInToken(text, tokenStart, cursor)
+  }
+}
+
+/**
+ * @param {string} text
+ * @param {number} tokenStart
+ * @param {number} tokenEnd
+ * @returns {Generator<{index: number, value: string}>}
+ */
+function* findDomainMatchesInToken(text, tokenStart, tokenEnd) {
+  const starts = [tokenStart]
+  for (let index = tokenStart; index < tokenEnd; index += 1) {
+    if (text.charCodeAt(index) === CHAR_DOT) starts.push(index + 1)
+  }
+  const count = starts.length
+
+  /** @param {number} segment */
+  const isLabelDot = (segment) => {
+    if (segment + 1 >= count) return false
+    const start = starts[segment]
+    const end = starts[segment + 1] - 1
+    const length = end - start
+    return (
+      length >= 1 &&
+      length <= DOMAIN_LABEL_MAX &&
+      isAlphanumericCode(text.charCodeAt(start)) &&
+      isAlphanumericCode(text.charCodeAt(end - 1))
+    )
+  }
+
+  // nextInvalid[j] is the first segment >= j that cannot extend the label chain.
+  const nextInvalid = new Int32Array(count)
+  nextInvalid[count - 1] = count - 1
+  for (let segment = count - 2; segment >= 0; segment -= 1) {
+    nextInvalid[segment] = isLabelDot(segment) ? nextInvalid[segment + 1] : segment
+  }
+
+  // previousTld[j] is the last segment <= j whose start can open a TLD.
+  const tldEnds = new Int32Array(count)
+  const previousTld = new Int32Array(count)
+  for (let segment = 0; segment < count; segment += 1) {
+    tldEnds[segment] = domainTldEnd(text, starts[segment])
+    previousTld[segment] =
+      tldEnds[segment] >= 0 ? segment : segment > 0 ? previousTld[segment - 1] : -1
+  }
+
+  let segment = 0
+  for (let index = tokenStart; index < tokenEnd; index += 1) {
+    while (segment + 1 < count && starts[segment + 1] <= index) segment += 1
+    if (!isAlphanumericCode(text.charCodeAt(index))) continue
+    // `\b` at the match start: the preceding character must be a non-word char.
+    if (index > 0 && isWordCode(text.charCodeAt(index - 1))) continue
+    if (segment + 1 >= count) continue
+    const segmentEnd = starts[segment + 1] - 1
+    const labelLength = segmentEnd - index
+    if (labelLength < 1 || labelLength > DOMAIN_LABEL_MAX) continue
+    if (!isAlphanumericCode(text.charCodeAt(segmentEnd - 1))) continue
+    // Greedy backtracking: the last reachable segment start that opens a TLD wins.
+    const tldSegment = previousTld[nextInvalid[segment + 1]]
+    if (tldSegment < segment + 1) continue
+    const end = tldEnds[tldSegment]
+    yield { index, value: text.slice(index, end) }
+    index = end - 1
+  }
+}
+
+/**
  * @param {object} result
  * @param {string} text
  * @param {object} state
@@ -526,15 +665,15 @@ function scanDomains(result, text, state, offsetOf) {
   // separates `"c2.example.test"` from `window.top` / `document.body.style`.
   const literalMask = buildLiteralMask(text)
   let firstNonSpaceIndex = -1
-  for (const match of matches(DOMAIN_RE, text)) {
+  for (const match of findDomainMatches(text)) {
     if (!takeCandidate(state)) return
-    const value = match[0].toLowerCase()
+    const value = match.value.toLowerCase()
     if (isBenignHost(value, state.settings.benignHosts)) continue
     const tld = value.slice(value.lastIndexOf('.') + 1)
     if (NON_TLD.has(tld) || MEMBER_TOKENS.has(tld)) continue
     const firstLabel = value.slice(0, value.indexOf('.'))
     if (JS_OBJECT_HEADS.has(firstLabel)) continue
-    if (text[match.index + match[0].length] === '(') continue
+    if (text[match.index + match.value.length] === '(') continue
     if (match.index > 0 && /[A-Za-z0-9_$.\])]/.test(text[match.index - 1])) continue
     const inLiteral = literalMask[match.index] === 1
     const urlContext = /(?:\/\/|@)$/.test(text.slice(Math.max(0, match.index - 3), match.index))
@@ -545,7 +684,7 @@ function scanDomains(result, text, state, offsetOf) {
     }
     const standalone =
       match.index === firstNonSpaceIndex &&
-      /^(?:\s|$)/.test(text.slice(match.index + match[0].length, match.index + match[0].length + 1))
+      /^(?:\s|$)/.test(text.slice(match.index + match.value.length, match.index + match.value.length + 1))
     if (!inLiteral && !urlContext && !standalone) continue
     const record = { offset: offsetOf(match.index) }
     if (isSuspiciousTld(value)) record.suspiciousTld = true

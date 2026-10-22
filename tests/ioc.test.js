@@ -148,6 +148,33 @@ test('extractFromEvents reports network, eval and ioc event URLs as dynamic', ()
   assert.deepEqual(empty.meta, { truncated: false })
 })
 
+test('extractIOCs scans a long zero-match domain-shaped input in linear time', () => {
+  const adversarial = 'a.'.repeat(100_000)
+  const startedAt = process.hrtime.bigint()
+  const result = extractIOCs(adversarial)
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6
+
+  assert.deepEqual(result.domains, [], 'no domain matches in "a." repetition')
+  assert.ok(elapsedMs < 2000, `domain scan took ${elapsedMs.toFixed(1)} ms; expected under 2000 ms`)
+})
+
+test('extractIOCs keeps domain and email values and offsets exact', () => {
+  const text = 'a="Alpha-1.Example.CO.UK:443"; b="x.y.z"; c="Ops@Mail.Example.com"'
+  const result = extractIOCs(text)
+
+  assert.deepEqual(
+    result.domains.map((domain) => [domain.value, domain.offset]),
+    [
+      ['alpha-1.example.co.uk', text.indexOf('Alpha-1.Example.CO.UK')],
+      ['mail.example.com', text.indexOf('Mail.Example.com')],
+    ],
+  )
+  assert.deepEqual(
+    result.emails.map((email) => [email.value, email.offset]),
+    [['Ops@Mail.Example.com', text.indexOf('Ops@Mail.Example.com')]],
+  )
+})
+
 test('extractIOCs does not starve wallets when domains flood the candidate budget', () => {
   const btc = '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'
   const hosts = Array.from({ length: 2100 }, (_, i) => `"host${i}.com"`).join(' ')
