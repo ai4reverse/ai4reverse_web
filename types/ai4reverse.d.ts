@@ -172,12 +172,42 @@ export interface TimerBatchResult {
   stackExhaustion: boolean
 }
 
+/** A timer accepted by `VirtualClock.schedule`. */
+export interface VirtualTimer {
+  fn: Function
+  delay?: number
+  /** Reschedule at the same interval after each run instead of firing once. */
+  interval?: boolean
+  args?: unknown[]
+}
+
+/**
+ * The seeded virtual clock returned by `createVirtualClock`.
+ *
+ * This is not the guest's `setTimeout`: it has no browser timer methods. The
+ * host schedules through `schedule({ fn, delay, interval, args })` and cancels
+ * with `cancel(id)`; `schedule` returns `0` when `maxTimers` refuses the timer.
+ */
 export interface VirtualClock {
+  epoch: number
+  /** `epoch` minus the seeded `performance.timeOrigin` offset. */
+  timeOrigin: number
+  /** Wall-clock milliseconds as the guest sees them. */
   now(): number
-  setTimeout(fn: Function, delay?: number, ...args: unknown[]): number
-  clearTimeout(id: number): boolean
-  setInterval(fn: Function, delay?: number, ...args: unknown[]): number
-  clearInterval(id: number): boolean
+  /** Sub-millisecond wall clock. */
+  nowFloat(): number
+  /** `performance.now()` value. */
+  performanceNow(): number
+  readonly elapsedMs: number
+  /** Advance virtual time by `ms`; non-positive values are ignored. */
+  advance(ms: number): number
+  /** Advance by one resolution quantum (instrumentation use). */
+  tick(units?: number): number
+  /** Schedule a timer; returns `0` when the pending-timer cap refuses it. */
+  schedule(timer: VirtualTimer): number
+  cancel(id: number): boolean
+  /** Number of pending timers. */
+  pending(): number
   /** Drain due timers, up to `maxCallbacks` per call. */
   runDue(options?: { maxCallbacks?: number; maxVirtualMs?: number }): TimerBatchResult
   advanceToNextTimer(capMs?: number): number
@@ -362,7 +392,8 @@ export interface StaticFacts {
   functions: number
   asyncFunctions: number
   generatorFunctions: number
-  strings: number
+  /** Up to 200 extracted string literals; the total count is `stringsTotal`. */
+  strings: string[]
   stringsTotal: number
   uniqueStrings: number
   regexps: number
@@ -391,9 +422,24 @@ export interface StaticFacts {
   parse?: { sourceType: string; errors: number }
   obfuscation?: { score: number; indicators: { id: string; weight: number; detail: string }[] }
   techniques?: string[]
-  stringSamples?: string[]
   networkCalls?: number
   [key: string]: unknown
+}
+
+/**
+ * Static facts as attached to run, invocation and prepared records.
+ *
+ * `instrumentation.prepare()` normalises the extraction result before it
+ * reaches a record: `strings` becomes the total count and the retained sample
+ * literals move to `stringSamples`. The two shapes are kept distinct because
+ * sharing `StaticFacts` made the declaration claim a `string[]` where every
+ * runtime record carries a number.
+ */
+export interface NormalizedStaticFacts extends Omit<StaticFacts, 'strings' | 'stringSamples'> {
+  /** Total string literals extracted from the source. */
+  strings: number
+  /** Up to 200 extracted string literals (the samples behind `strings`). */
+  stringSamples: string[]
 }
 
 export interface ObfuscationScore {
@@ -484,7 +530,7 @@ export interface InstrumentationDescribe {
 export interface InstrumentationPrepared {
   code: string
   plan: unknown
-  facts: StaticFacts | null
+  facts: NormalizedStaticFacts | null
   vm: object | null
   sourceChangedByHooks: boolean
   stats: InstrumentedCode['stats']
@@ -683,11 +729,13 @@ export interface SandboxRunRecord {
   durationMs: number
   virtualMs: number
   /**
-   * Event-loop outcome. Absent when the run never reached the event loop (a
-   * failed run record), because no settlement was attempted.
+   * Event-loop outcome. Absent only when no settlement was attempted: the run
+   * failed before reaching the event loop, or a genuine stack breach made the
+   * runtime unrecoverable. A host-wall or virtual-time interrupt still records
+   * `SandboxSettleSkipped` (`{ skipped: true, reason }`).
    */
   settle?: SandboxSettle | null
-  facts?: StaticFacts | null
+  facts?: NormalizedStaticFacts | null
   vm?: object | null
   instrumentation?: { stats: InstrumentedCode['stats'] | null; describe: InstrumentationDescribe } | object
   environment: EnvironmentInstallResult | null
@@ -733,6 +781,15 @@ export interface SandboxRunOptions {
   network?: object
   settle?: SandboxSettleOptions
   hooks?: HookDescriptor[]
+}
+
+/**
+ * Options for the one-shot `run()`: sandbox construction, per-run overrides and
+ * an optional caller-owned sandbox. A supplied sandbox is reused and is not
+ * disposed by `run()`.
+ */
+export interface RunOptions extends SandboxOptions, SandboxRunOptions {
+  sandbox?: TracelessSandbox
 }
 
 export declare class TracelessSandbox {
@@ -875,7 +932,7 @@ export interface InvocationResult {
   filename?: string
   durationMs?: number
   virtualMs?: number
-  facts?: StaticFacts | null
+  facts?: NormalizedStaticFacts | null
   vm?: object | null
   prepared?: InstrumentationPrepared | null
   [key: string]: unknown
@@ -884,7 +941,12 @@ export interface InvocationResult {
 export interface Invoker {
   invoke(source: string, runOptions?: SandboxRunOptions): InvocationResult
   /** Normalise the guest-visible filename for one source text. */
-  filenameFor(options?: { sourceUrl?: string; filename?: string; source?: string }): string
+  resolveFilename(options?: {
+    sourceUrl?: string
+    filename?: string
+    kind?: 'script' | 'module' | 'eval'
+    source?: string
+  }): string
   stats(): object
   [key: string]: unknown
 }
@@ -1940,6 +2002,6 @@ export declare function scopeLogger(logger: Logger, scope: { runId: string; samp
 
 export declare function analyze(source: string, options?: AnalyzeSampleOptions): Promise<AnalyzeSampleResult>
 
-export declare function run(source: string, options?: SandboxOptions & SandboxRunOptions): Promise<SandboxRunRecord>
+export declare function run(source: string, options?: RunOptions): Promise<SandboxRunRecord>
 
 export declare function restoreCode(code: string, options?: RestoreOptions): RestoreResult

@@ -30,6 +30,7 @@ export type {
   Limits,
   LimitKind,
   VirtualClock,
+  VirtualTimer,
   ClockStats,
   ScreenShape,
   WindowShape,

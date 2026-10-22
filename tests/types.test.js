@@ -294,3 +294,162 @@ test('the Stealth declaration types the intrinsic stack-error probe', async () =
   const body = source.slice(start, source.indexOf('\n}', start))
   assert.match(body, /\bisIntrinsicStackError\(handle: object\): boolean/, 'Stealth must declare isIntrinsicStackError')
 })
+
+/**
+ * Member-level drift gates.
+ *
+ * The export-name gate above cannot see a wrong member: declaring browser timer
+ * methods on `VirtualClock`, or `filenameFor` on `Invoker`, still lists the right
+ * exports. Each case compares a declaration block with the value the runtime
+ * actually produces.
+ */
+
+/** Body of one `export interface Name ... { ... }` block. */
+function interfaceBody(source, name) {
+  const start = source.indexOf(`export interface ${name}`)
+  assert.ok(start >= 0, `missing declaration for ${name}`)
+  const open = source.indexOf('{', start)
+  assert.ok(open > start, `malformed declaration for ${name}`)
+  const end = source.indexOf('\n}', open)
+  assert.ok(end > open, `unterminated declaration for ${name}`)
+  return source.slice(start, end)
+}
+
+test('VirtualClock declares the timer API createVirtualClock actually returns', async () => {
+  const { createVirtualClock } = await import('../tools/index.js')
+  const clock = createVirtualClock()
+  try {
+    const body = interfaceBody(await readTypes('ai4reverse.d.ts'), 'VirtualClock')
+
+    for (const [name, value] of Object.entries(clock)) {
+      const pattern = typeof value === 'function' ? `\\b${name}\\(` : `\\b${name}:`
+      assert.match(body, new RegExp(pattern), `VirtualClock must declare ${name}`)
+    }
+
+    for (const name of ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']) {
+      assert.doesNotMatch(body, new RegExp(`\\b${name}\\b`), `VirtualClock must not declare ${name}`)
+      assert.equal(Object.hasOwn(clock, name), false, `createVirtualClock() must not expose ${name}`)
+    }
+  } finally {
+    clock.dispose()
+  }
+})
+
+test('Invoker declares the runtime resolveFilename method, not filenameFor', async () => {
+  const body = interfaceBody(await readTypes('ai4reverse.d.ts'), 'Invoker')
+  assert.match(body, /\bresolveFilename\(/, 'Invoker must declare resolveFilename')
+  assert.match(
+    body,
+    /kind\?: 'script' \| 'module' \| 'eval'/,
+    'resolveFilename must accept the runtime kind',
+  )
+  assert.doesNotMatch(body, /\bfilenameFor\b/, 'Invoker must not declare the phantom filenameFor')
+})
+
+test('StaticFacts.strings is the sample array and stringsTotal is the count', async () => {
+  const { analyzeSource } = await import('../tools/index.js')
+  const analysis = analyzeSource('var first = "alpha"; var second = "beta";')
+  assert.equal(analysis.ok, true)
+  assert.ok(Array.isArray(analysis.facts.strings), 'analyzeSource().facts.strings must be samples')
+  assert.ok(analysis.facts.strings.includes('alpha'), 'the sample list must contain "alpha"')
+  assert.equal(analysis.facts.stringsTotal, 2)
+
+  const body = interfaceBody(await readTypes('ai4reverse.d.ts'), 'StaticFacts')
+  assert.match(body, /\bstrings: string\[\]/, 'StaticFacts.strings must be the sample array')
+  assert.doesNotMatch(body, /\bstrings: number\b/, 'StaticFacts.strings must not be the count')
+  assert.match(body, /\bstringsTotal: number\b/, 'StaticFacts.stringsTotal must be the count')
+})
+
+/**
+ * The parse-failure path is still a `StaticFacts` result.
+ *
+ * `AnalyzeSourceResult` types both arms as `facts: StaticFacts`, so the failure
+ * arm cannot hand back `strings: 0`: a consumer that narrows on `ok` would read
+ * a `string[]` it can never iterate. The empty result must keep the same shape
+ * as a successful extraction and report zero through `stringsTotal`.
+ */
+test('a parse failure returns the StaticFacts sample-array shape, not a numeric strings count', async () => {
+  const { analyzeSource } = await import('../tools/index.js')
+  const failed = analyzeSource('function {')
+  assert.equal(failed.ok, false)
+  assert.ok(Array.isArray(failed.facts.strings), 'a parse failure must still expose the sample array')
+  assert.deepEqual(failed.facts.strings, [], 'a parse failure has no string samples')
+  assert.equal(failed.facts.stringsTotal, 0, 'stringsTotal is the count on every StaticFacts result')
+  assert.equal(failed.facts.uniqueStrings, 0)
+  assert.deepEqual(failed.facts.domains, [], 'the empty facts keep the declared domains array')
+
+  // The success arm uses the identical shape: array of samples + numeric total.
+  const ok = analyzeSource('var alpha = "alpha"; var beta = "beta";')
+  assert.equal(ok.ok, true)
+  assert.ok(Array.isArray(ok.facts.strings), 'the success arm exposes the sample array')
+  assert.equal(ok.facts.stringsTotal, 2, 'the success arm reports the count separately')
+  assert.deepEqual(
+    Object.keys(failed.facts).filter((key) => key === 'strings' || key === 'stringsTotal').sort(),
+    Object.keys(ok.facts).filter((key) => key === 'strings' || key === 'stringsTotal').sort(),
+    'both arms expose the same strings/stringsTotal keys',
+  )
+})
+
+/**
+ * Two shapes share the name "facts".
+ *
+ * `analyzeSource()` returns the extraction result: `strings` is the sample
+ * array. The instrumentation layer then normalises it for run/invocation/
+ * prepared records: `strings` becomes the total count and the samples move to
+ * `stringSamples`. Declaring one shape for both sites makes the compile-time
+ * type disagree with the runtime value (a `string[]` that is a number), so this
+ * pins both halves and the normalisation actually performed by the sandbox.
+ */
+test('run/invocation/prepared facts declare the normalised strings count and samples', async () => {
+  const { TracelessSandbox } = await import('../tools/index.js')
+  const sandbox = await TracelessSandbox.create({
+    logLevel: 'silent',
+    instrumentation: { code: { level: 'off' } },
+  })
+  try {
+    const run = await sandbox.run('var alpha = "alpha"; var beta = "beta"; 1')
+    assert.equal(run.ok, true)
+    assert.equal(run.facts.strings, 2, 'run facts expose the string count, not the sample array')
+    assert.ok(Array.isArray(run.facts.stringSamples), 'run facts expose the samples separately')
+    assert.ok(run.facts.stringSamples.includes('alpha'), 'the normalised sample list must keep the literals')
+  } finally {
+    sandbox.dispose()
+  }
+
+  const source = await readTypes('ai4reverse.d.ts')
+  const normalized = interfaceBody(source, 'NormalizedStaticFacts')
+  assert.match(normalized, /\bstrings: number\b/, 'NormalizedStaticFacts.strings must be the count')
+  assert.match(normalized, /\bstringSamples: string\[\]/, 'NormalizedStaticFacts must declare stringSamples')
+
+  for (const [name, pattern] of [
+    ['InstrumentationPrepared', /\bfacts: NormalizedStaticFacts \| null/],
+    ['SandboxRunRecord', /\bfacts\?: NormalizedStaticFacts \| null/],
+    ['InvocationResult', /\bfacts\?: NormalizedStaticFacts \| null/],
+  ]) {
+    assert.match(interfaceBody(source, name), pattern, `${name}.facts must use the normalised shape`)
+  }
+  // analyzeSource() is not normalised: its facts keep the sample-array shape.
+  assert.match(
+    interfaceBody(source, 'AnalyzeSampleResult'),
+    /\bfacts: StaticFacts \| null/,
+    'AnalyzeSampleResult.facts must stay StaticFacts',
+  )
+  assert.match(
+    source,
+    /export type AnalyzeSourceResult =[\s\S]*?facts: StaticFacts;/,
+    'AnalyzeSourceResult.facts must stay StaticFacts',
+  )
+})
+
+test('the root run() declaration accepts a caller-owned sandbox', async () => {
+  const source = await readTypes('ai4reverse.d.ts')
+  const signature = source.slice(source.indexOf('export declare function run('))
+  assert.ok(signature.startsWith('export declare function run('), 'must declare the root run()')
+  const declaration = signature.slice(0, signature.indexOf('\n'))
+  assert.match(declaration, /options\?: RunOptions/, 'run() must accept the shared run option shape')
+
+  const body = interfaceBody(source, 'RunOptions')
+  assert.match(body, /extends SandboxOptions/, 'RunOptions must reuse sandbox construction options')
+  assert.match(body, /SandboxRunOptions/, 'RunOptions must reuse the per-run options')
+  assert.match(body, /\bsandbox\?: TracelessSandbox/, 'root run() must accept a caller-owned sandbox')
+})
