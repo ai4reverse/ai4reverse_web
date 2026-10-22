@@ -74,31 +74,46 @@ export function restore(code, options = {}) {
     if (result.changed) changedAny = true
   }
 
-  const generated = generate(parsed.ast, String(code), generateOptions)
-  // Never hand back code that does not parse: a pass is allowed to be wrong,
-  // the pipeline is not. The input source is the only honest fallback.
-  const validation = checkOutput(generated.code, { sourceType: parsed.sourceType, filename })
-  const outputCode = validation.ok ? generated.code : String(code)
-  const beforeHash = sha256(String(code))
+  const inputCode = String(code)
+  const mergedPasses = mergePassReports(reports)
+  const failedPass = mergedPasses.find((report) => report.failed)
+  // A pass that threw may have left the AST half-transformed. Generating from
+  // that tree would present partial evidence as valid output, so skip
+  // generation and fail closed on the input source instead.
+  const generated = failedPass ? null : generate(parsed.ast, inputCode, generateOptions)
+  const validation = generated
+    ? checkOutput(generated.code, { sourceType: parsed.sourceType, filename })
+    : {
+        ok: false,
+        error: {
+          message: `restoration pass '${failedPass.id}' failed: ${failedPass.error?.message ?? 'unknown error'}`,
+        },
+      }
+  const outputCode = validation.ok ? generated.code : inputCode
+  const beforeHash = sha256(inputCode)
   const afterHash = sha256(outputCode)
   const notes = validation.ok
     ? []
-    : [`output validation failed (${validation.error.message}); returned the input source unchanged`]
+    : [
+        failedPass
+          ? `restoration pass '${failedPass.id}' failed (${failedPass.error?.message ?? 'unknown error'}); returned the input source unchanged`
+          : `output validation failed (${validation.error.message}); returned the input source unchanged`,
+      ]
 
   return {
     code: outputCode,
     map: validation.ok ? generated.map : null,
     sourceType: parsed.sourceType,
     parseErrors: parsed.errors,
-    passes: mergePassReports(reports),
+    passes: mergedPasses,
     rounds,
-    changed: validation.ok && (changedAny || generated.code !== String(code)),
+    changed: validation.ok && (changedAny || generated.code !== inputCode),
     outputValid: validation.ok,
     outputError: validation.ok ? null : { message: validation.error.message },
     notes,
     stats: {
       durationMs: Date.now() - started,
-      inputBytes: String(code).length,
+      inputBytes: inputCode.length,
       outputBytes: outputCode.length,
       passCount: passes.length,
       changedPasses: reports.filter((report) => report.changed).length,
@@ -162,6 +177,7 @@ function mergePassReports(reports) {
       byId.set(report.id, {
         id: report.id,
         changed: report.changed,
+        failed: Boolean(report.failed),
         notes: [...(report.notes ?? [])],
         durationMs: report.durationMs ?? 0,
         rounds: [report.round],
@@ -170,6 +186,7 @@ function mergePassReports(reports) {
       continue
     }
     existing.changed = existing.changed || report.changed
+    existing.failed = existing.failed || Boolean(report.failed)
     existing.notes.push(...(report.notes ?? []))
     existing.durationMs += report.durationMs ?? 0
     existing.rounds.push(report.round)

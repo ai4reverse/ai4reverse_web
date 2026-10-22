@@ -195,3 +195,50 @@ test('string-array does not inline reads before the declaration', () => {
   const result = restoreWithPass('string-array', source)
   assert.equal(execute(result.code).join(''), 'threw')
 })
+
+test('a script parse with module-only errors falls back to the module attempt', () => {
+  const parsed = parse('export const x = 1;')
+  assert.equal(parsed.sourceType, 'module')
+  assert.equal(parsed.ast.program.sourceType, 'module')
+  assert.deepEqual(parsed.errors, [], 'errors from the rejected script attempt must not leak')
+
+  const result = restore('export const x = 1;')
+  assert.equal(result.sourceType, 'module')
+  assert.deepEqual(result.parseErrors, [])
+  assert.equal(result.outputValid, true)
+  assert.match(result.code, /export const x = 1/)
+})
+
+test('import.meta also forces the module fallback', () => {
+  const parsed = parse('import.meta.url')
+  assert.equal(parsed.sourceType, 'module')
+  assert.equal(parsed.ast.program.sourceType, 'module')
+  assert.deepEqual(parsed.errors, [])
+
+  const result = restore('import.meta.url')
+  assert.equal(result.sourceType, 'module')
+  assert.equal(result.outputValid, true)
+})
+
+test('a throwing pass fails closed instead of returning half-mutated output', (t) => {
+  const target = PASSES.find((pass) => pass.meta.id === 'dead-code')
+  assert.ok(target, 'dead-code pass must be registered')
+  // Simulate a pass that mutates the AST directly and then throws before it
+  // can report the change.
+  t.mock.method(target, 'run', (ast) => {
+    ast.program.body = []
+    throw new Error('pass exploded')
+  })
+
+  const source = "console.log('keep me')"
+  const result = restore(source, { only: ['dead-code'], maxRounds: 1 })
+
+  assert.equal(result.outputValid, false)
+  assert.equal(result.code, source, 'a failed pass must return the input source, not a partial transform')
+  assert.equal(result.changed, false)
+  assert.match(result.outputError.message, /pass exploded/)
+  const report = result.passes.find((pass) => pass.id === 'dead-code')
+  assert.equal(report.failed, true)
+  assert.match(report.error.message, /pass exploded/)
+  assert.ok(result.notes.some((note) => /failed/.test(note)), JSON.stringify(result.notes))
+})

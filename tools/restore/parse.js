@@ -33,6 +33,24 @@ export const BASE_PLUGINS = Object.freeze([
 ])
 
 /**
+ * Babel reason codes that mean the text can only be a module. With
+ * `errorRecovery` babel keeps the import/export declaration and records one of
+ * these instead of throwing, so the AST alone would look like a valid script.
+ */
+const MODULE_ONLY_REASON_CODES = new Set(['ImportOutsideModule', 'ImportMetaOutsideModule'])
+
+/**
+ * True when a recovered parse really needs the module goal.
+ * @param {object} ast
+ * @returns {boolean}
+ */
+function needsModule(ast) {
+  if (ast.program?.sourceType === 'module') return false
+  if ((ast.errors ?? []).some((error) => MODULE_ONLY_REASON_CODES.has(error.reasonCode))) return true
+  return (ast.program?.body ?? []).some((node) => node.type === 'ImportDeclaration' || node.type.startsWith('Export'))
+}
+
+/**
  * @param {string} code
  * @param {object} [options]
  * @param {'script'|'module'|'unambiguous'} [options.sourceType]
@@ -53,7 +71,6 @@ export function parse(code, options = {}) {
     filename,
   } = options
 
-  const errors = []
   const attempt = (type) => {
     try {
       const ast = babelParse(String(code), {
@@ -69,31 +86,49 @@ export function parse(code, options = {}) {
         plugins,
         sourceFilename: filename,
       })
-      return ast
+      return { ast, errors: [...(ast.errors ?? [])] }
     } catch (error) {
-      errors.push({ sourceType: type, message: error.message })
-      return null
+      return { ast: null, errors: [{ sourceType: type, message: error.message }] }
     }
   }
 
   const order =
     sourceType === 'unambiguous' ? ['script', 'module'] : sourceType === 'module' ? ['module', 'script'] : ['script', 'module']
 
+  const failures = []
+  let candidate = null
+
   for (const type of order) {
-    const ast = attempt(type)
-    if (ast) {
-      // errorRecovery keeps parse errors on the AST; reject a recovery that
-      // produced no usable program body so callers can fall through.
-      return {
-        ast,
-        sourceType: ast.program.sourceType === 'module' ? 'module' : 'script',
-        comments: ast.comments ?? [],
-        errors: [...errors, ...(ast.errors ?? [])],
-      }
+    const result = attempt(type)
+    if (!result.ast) {
+      failures.push(...result.errors)
+      continue
+    }
+    // A recovered script parse can "succeed" on module syntax. Such an AST is a
+    // candidate, not a winner: keep trying the module goal, and only accept the
+    // recovered script when no later attempt produces a better parse.
+    if (needsModule(result.ast)) {
+      candidate ??= result
+      continue
+    }
+    return {
+      ast: result.ast,
+      sourceType: result.ast.program.sourceType === 'module' ? 'module' : 'script',
+      comments: result.ast.comments ?? [],
+      errors: result.errors,
     }
   }
 
-  throw new ParseError(`unable to parse source (${errors.length} attempts)`, {
-    details: { attempts: errors },
+  if (candidate) {
+    return {
+      ast: candidate.ast,
+      sourceType: candidate.ast.program.sourceType === 'module' ? 'module' : 'script',
+      comments: candidate.ast.comments ?? [],
+      errors: candidate.errors,
+    }
+  }
+
+  throw new ParseError(`unable to parse source (${failures.length} attempts)`, {
+    details: { attempts: failures },
   })
 }
