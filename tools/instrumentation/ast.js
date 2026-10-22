@@ -88,6 +88,7 @@ export function analyzeSource(source, options = {}) {
   const domains = new Map()
   let jsfuckScore = 0
   let cryptoWalletLike = 0
+  let stringCount = 0
 
   const bump = (map, key, amount = 1) => map.set(key, (map.get(key) ?? 0) + amount)
   const onExit = hooks
@@ -117,7 +118,7 @@ export function analyzeSource(source, options = {}) {
           if (node.generator) facts.generatorFunctions += 1
           break
         case 'StringLiteral':
-          facts.strings += 1
+          stringCount += 1
           if (strings.length < maxStrings) strings.push(node.value)
           if (node.value.length >= 2048) facts.longStringBlobs += 1
           if (/\\x[0-9a-f]{2}/i.test(source.slice(node.start, node.end))) facts.hexEscapes += 1
@@ -126,7 +127,7 @@ export function analyzeSource(source, options = {}) {
           if (/^[13][a-km-zA-HJ-NP-Z1-9]{25,34}$|^0x[a-fA-F0-9]{40}$/.test(node.value)) cryptoWalletLike += 1
           break
         case 'TemplateLiteral':
-          facts.strings += node.quasis.length
+          stringCount += node.quasis.length
           for (const quasi of node.quasis) extractDomains(quasi.value.cooked ?? '', domains)
           break
         case 'RegExpLiteral':
@@ -200,7 +201,7 @@ export function analyzeSource(source, options = {}) {
   facts.calls = Math.max(facts.calls, [...callNames.values()].reduce((a, b) => a + b, 0))
   facts.apiCalls = topEntries(callNames, 40)
   facts.memberPaths = topEntries(memberPaths, 40)
-  facts.stringsTotal = facts.strings
+  facts.stringsTotal = stringCount
   facts.uniqueStrings = new Set(strings).size
   facts.strings = strings.slice(0, 200)
   facts.domains = [...domains.entries()]
@@ -340,7 +341,7 @@ function emptyFacts() {
     functions: 0,
     asyncFunctions: 0,
     generatorFunctions: 0,
-    strings: 0,
+    strings: [],
     stringsTotal: 0,
     uniqueStrings: 0,
     regexps: 0,

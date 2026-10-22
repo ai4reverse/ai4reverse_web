@@ -159,10 +159,18 @@ export function createApiInstrumenter(options) {
       }
     })
 
-  const rethrow = (error) => {
-    const rethrown = new Error(error?.message ?? 'api call failed')
-    rethrown.name = error?.name ?? 'Error'
-    throw rethrown
+  /**
+   * Transfer a guest exception back through the bridge unchanged.
+   *
+   * The bridge's `{ error: handle }` contract rethrows the *original* guest
+   * value, so `instanceof`/brand checks and non-enumerable `name`/`message`
+   * behave exactly as they do without instrumentation. Constructing a fresh
+   * host `Error` here used to replace the guest exception with a host-shaped
+   * object (`e instanceof TypeError === false`, enumerable `name`/`message`).
+   */
+  const transferGuestError = (handle) => {
+    stats.failed += 1
+    return { error: handle }
   }
 
   /**
@@ -234,11 +242,9 @@ export function createApiInstrumenter(options) {
       }
       if (result.error) {
         const error = bridge.fromGuest(result.error)
-        result.error.dispose()
-        stats.failed += 1
         trace?.emit('api', 'error', { api: label, error })
         hooks?.emit('api:error', { api: label, error, args: truncate(argsPlain) })
-        rethrow(error)
+        return transferGuestError(result.error)
       }
       trace?.emit('api', 'after', { api: label, result: truncate(bridge.value([result.value], 0)) })
       // The deep fromGuest dump is the expensive part of this payload; skip
@@ -297,12 +303,7 @@ export function createApiInstrumenter(options) {
             return bridge.toGuest(decision.value)
           }
           const call = ctx.callFunction(getter, thisHandle ?? ctx.undefined, [])
-          if (call.error) {
-            const error = bridge.fromGuest(call.error)
-            call.error.dispose()
-            stats.failed += 1
-            rethrow(error)
-          }
+          if (call.error) return transferGuestError(call.error)
           // The deep fromGuest dump only pays off when someone consumes it:
           // the trace records a truncated copy, hooks get the full summary.
           if (trace || hooks?.hasListeners('api:after')) {
@@ -324,12 +325,7 @@ export function createApiInstrumenter(options) {
             return ctx.undefined
           }
           const call = ctx.callFunction(setter, thisHandle ?? ctx.undefined, args)
-          if (call.error) {
-            const error = bridge.fromGuest(call.error)
-            call.error.dispose()
-            stats.failed += 1
-            rethrow(error)
-          }
+          if (call.error) return transferGuestError(call.error)
           call.value?.dispose?.()
           trace?.emit('api', 'before', { api: `${label}:set`, value: truncate(bridge.value(args, 0)) })
           return ctx.undefined

@@ -131,7 +131,7 @@ export function createInstrumentation(options) {
               const instrumented = instrumentDispatch(code, {
                 dispatch: detected.dispatch,
                 channelExpression,
-                bindingName: config.jsvmp?.binding ?? '_$v',
+                bindingName: config.jsvmp?.binding ?? codeInstrumenter.jsvmpBindingName(),
                 marker: config.jsvmp?.marker ?? 'v',
                 interpreter,
               })

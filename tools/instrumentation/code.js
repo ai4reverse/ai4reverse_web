@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { parse } from '../restore/parse.js'
 import { traverse } from '../util/babel.js'
 
@@ -11,10 +12,21 @@ import { traverse } from '../util/babel.js'
  * that reads its own source (self-checksums, anti-tamper, `toString` brand
  * checks) sees byte-identical original code.
  *
- * The trace channel is a host function reached through a run-unique
- * `Symbol.for(...)` stored on `document` (or the global object when there is no
- * document). It is not a named global: `Object.getOwnPropertyNames(window)` is
- * unchanged and `for...in` sees nothing.
+ * The trace channel is a host function. It is never installed as a value a
+ * guest can reach: the only published property is a *binder* carrying a
+ * per-run capability token, and the binder yields the channel exclusively when
+ * called with that token. The token is embedded in the instrumented text
+ * inside a marker span, so the stealth `toString` masker hides it along with
+ * the probe call sites. A sample that steals the binder through a
+ * descriptor-trap/unfiltered enumeration therefore obtains an inert function:
+ * calling it without the token returns `undefined` and forges no event.
+ * The channel is resolved exactly once, in the Program prologue, before any
+ * guest statement runs; later probes (including the JSVMP interpreter) reuse
+ * the resulting binding, so redecorating `document` after the first statement
+ * cannot observe the token. (Residual risk: a sample that can read the
+ * instrumented bytes could learn the token. The channel property is also still
+ * visible to an enumeration API the anti-fingerprint filter does not wrap;
+ * only its usability is closed here.)
  *
  * Levels:
  *   'function'   function enter/exit, catch clauses, eval/Function call sites
@@ -24,6 +36,25 @@ import { traverse } from '../util/babel.js'
  */
 
 const LEVEL_RANK = { off: 0, function: 1, branch: 2, statement: 3 }
+
+/**
+ * Expression for the realm root, safe at the very top of a script or module.
+ *
+ * A script's top-level `this` is the global object even under strict mode, and
+ * reading it never touches the `globalThis` identifier. That matters because
+ * the Program-level binding is spliced in *before* the guest's first statement:
+ * `let globalThis = 1; ...` is a legal script, and evaluating `globalThis`
+ * there would throw the TDZ ReferenceError.
+ *
+ * A module has no top-level `this` (it is `undefined`), so the fallback is an
+ * indirect eval of `'this'`: indirect eval code is compiled as a script, whose
+ * top-level `this` is the realm's global object. That path evaluates no
+ * lexical binding of the guest module, so `let globalThis = 1` in a module is
+ * safe too. `eval` itself cannot be lexically shadowed in module/strict code
+ * (`let eval` / `var eval` are SyntaxErrors there), and the short-circuit
+ * keeps it unevaluated for scripts entirely.
+ */
+const CHANNEL_ROOT = '(((typeof this === "object") && this) || (0, eval)("this"))'
 
 /**
  * Platform-private probe: true when the value's *direct* prototype is one of
@@ -54,9 +85,9 @@ export function createCodeInstrumenter(options) {
 
   const rank = LEVEL_RANK[level] ?? 3
   let channel = null
-  let channelSymbol = null
   let channelBinder = null
   let channelKey = null
+  let capability = null
   let bindingSuffix = 'q'
   let channelTarget = null
   let channelExpression = null
@@ -107,31 +138,40 @@ export function createCodeInstrumenter(options) {
       const kind = bridge.int(args, 0, -1)
       const id = bridge.int(args, 1, -1)
       const meta = plan.get(id)
+      const valueHandle = args[2]
+      const overBudget = emitted >= maxEvents
+      const isCatch = meta?.event === 'catch'
       // Once the trace budget is exhausted, refuse further work before paying
-      // any FFI conversion: the truncation path must be free.
-      if (emitted >= maxEvents) {
-        if (!truncated) {
-          truncated = true
-          trace?.emit('code', 'error', { event: 'trace-truncated', maxEvents })
-        }
-        return args[2]
+      // any FFI conversion: the truncation path must be free. The catch path is
+      // the exception: rewriting the caught error's stack is a correctness
+      // guarantee (it hides `<eval>` and host frames from the sample), so it
+      // runs even when no code event may be emitted.
+      if (overBudget && !isCatch) {
+        markTruncated()
+        return valueHandle
       }
       // Never dump arbitrary guest objects here: that would run getters and
       // change observable behaviour. Primitives are summarised; objects are
       // reported by type only (see summarizeArgument).
-      const value = args.length > 2 ? summarizeArgument(ctx, bridge, args[2], errorGate) : undefined
+      const value = args.length > 2 ? summarizeArgument(ctx, bridge, valueHandle, errorGate) : undefined
       if (meta) {
         // A caught error is about to be observed by guest code: rewrite its
         // stack in place so `<eval>`/host paths never reach the sample.
         bridge.clock?.tick?.(0.01)
-        if (meta.event === 'catch' && stealth && value && typeof value === 'object' && typeof value.stack === 'string') {
+        if (isCatch && stealth && value && typeof value === 'object' && typeof value.stack === 'string') {
           try {
-            const stackHandle = args[2]
-            ctx.setProp(stackHandle, 'stack', ctx.newString(stealth.sanitizeStack(value.stack)))
+            ctx.setProp(valueHandle, 'stack', ctx.newString(stealth.sanitizeStack(value.stack)))
           } catch {
             /* best effort: never break the guest for a stack rewrite */
           }
         }
+        if (isCatch && exception) exception.reportCaught(value, meta)
+      }
+      if (overBudget) {
+        markTruncated()
+        return valueHandle
+      }
+      if (meta) {
         emitted += 1
         // One summary shared by both sinks: computing it twice paid double FFI
         // on every traced step. The summary is a fresh plain object per call
@@ -147,7 +187,6 @@ export function createCodeInstrumenter(options) {
           caseIndex: meta.caseIndex,
           value: stepValue,
         })
-        if (meta.event === 'catch' && exception) exception.reportCaught(value, meta)
         if (meta.event === 'throw' && exception) exception.reportThrown(value, meta)
         if (hooks) {
           hooks.emit(meta.event === 'catch' ? 'exception:catch' : 'code:step', {
@@ -157,36 +196,39 @@ export function createCodeInstrumenter(options) {
           })
         }
       }
-      return args[2]
+      return valueHandle
     })
 
     channelKey = `ai4r.channel.${nonceFrom(stealth, 0)}`
     bindingSuffix = `${marker}${shortBinding(channelKey)}`
-    // Unregistered symbol: guest cannot reconstruct it via Symbol.for / keyFor.
-    channelSymbol = ctx.newUniqueSymbol(channelKey)
+    // Per-run capability. The channel itself is never published: the only
+    // guest-reachable value is a binder that hands the channel back for this
+    // token and returns `undefined` for anything else. A stolen binder is
+    // therefore inert (see the module comment).
+    capability = randomBytes(8).toString('hex')
     const binderKey = `\u200b${channelKey}`
     const documentHandle = safeProp(ctx, ctx.global, 'document')
     try {
       const target =
         documentHandle && ctx.typeof(documentHandle) === 'object' ? documentHandle : ctx.global
       channelTarget = target === documentHandle ? 'document' : null
-      // Non-enumerable: Object.assign / spread never copy the channel.
-      bridge.install(target, channelSymbol, channel, {
-        enumerable: false,
-        configurable: true,
-        writable: true,
-      })
-      // Closed binder so instrumented source can resolve the unique symbol
-      // without putting it in the global registry.
+      // Closed binder so the instrumented source can resolve the channel with
+      // the capability token without putting either in the global registry.
       const binderFactory = ctx.unwrapResult(
         ctx.evalCode(
-          '(function(target, sym){ return function(){ return target[sym]; }; })',
+          '(function(channel, token){ return function (supplied) { return supplied === token ? channel : undefined; }; })',
           'ai4r-internal:channel-binder',
         ),
       )
       let binder
       try {
-        const binderResult = ctx.callFunction(binderFactory, ctx.undefined, [target, channelSymbol])
+        const tokenHandle = ctx.newString(capability)
+        let binderResult
+        try {
+          binderResult = ctx.callFunction(binderFactory, ctx.undefined, [channel, tokenHandle])
+        } finally {
+          tokenHandle.dispose()
+        }
         if (binderResult.error) {
           const message = bridge.fromGuest?.(binderResult.error) ?? 'channel binder failed'
           binderResult.error.dispose()
@@ -194,6 +236,7 @@ export function createCodeInstrumenter(options) {
         }
         binder = binderResult.value
         bridge.adopt?.(binder, '')
+        // Non-enumerable: Object.assign / spread never copy the binder.
         bridge.install(target, binderKey, binder, {
           enumerable: false,
           configurable: true,
@@ -203,18 +246,28 @@ export function createCodeInstrumenter(options) {
       } finally {
         binderFactory.dispose()
       }
+      const binderCall = `[${JSON.stringify(binderKey)}](${JSON.stringify(capability)})`
+      // Resolve the realm root without touching `globalThis` at Program
+      // prologue time; see CHANNEL_ROOT.
       channelExpression = channelTarget
-        ? `globalThis.document[${JSON.stringify(binderKey)}]()`
-        : `globalThis[${JSON.stringify(binderKey)}]()`
-      bridge.registerHiddenChannel?.(channelSymbol, binderKey)
+        ? `${CHANNEL_ROOT}.document${binderCall}`
+        : `${CHANNEL_ROOT}${binderCall}`
+      bridge.registerHiddenChannel?.(null, binderKey)
     } finally {
       documentHandle?.dispose?.()
     }
     trace?.emit('sandbox', 'emit', {
       event: 'code.instrumentation.installed',
       level,
-      channel: channelTarget ? 'document[symbol]' : 'global[symbol]',
+      channel: channelTarget ? 'document[binder]' : 'global[binder]',
     })
+  }
+
+  /** Report an exhausted code-event budget exactly once. */
+  function markTruncated() {
+    if (truncated) return
+    truncated = true
+    trace?.emit('code', 'error', { event: 'trace-truncated', maxEvents })
   }
 
   /**
@@ -328,7 +381,10 @@ export function createCodeInstrumenter(options) {
           const bodyOffset = offsetAfterDirectives(node.body)
           // Leading newline: a directive prologue without a semicolon needs a
           // line terminator before the injected statement, or ASI never fires.
-          add(bodyOffset, 100, `\nvar ${bindingName()} = ${channelExpression};`)
+          // No channel binding is declared here: it is hoisted once at Program
+          // level, so a legal local `var globalThis` (hoisted to `undefined` on
+          // function entry) cannot break a probe. Re-evaluating the channel
+          // expression per function is both slower and shadowable.
           add(bodyOffset, 95, `\ntry{`)
           add(bodyOffset, 90, `${bindingName()}(${kind('function:enter')},${enterId});`)
           add((node.body.end ?? 1) - 1, 90, `}finally{${bindingName()}(${kind('function:exit')},${exitId});}`)
@@ -509,6 +565,18 @@ export function createCodeInstrumenter(options) {
     return `_$${bindingSuffix}`
   }
 
+  /**
+   * Mint a per-run, unguessable lexical name for the JSVMP channel binding.
+   *
+   * It is derived from this instrumenter's run-specific suffix (so it differs
+   * from {@link bindingName}, avoiding a duplicate Program-level `let`) plus
+   * fresh randomness, so guest code cannot reference it by name.
+   * @returns {string}
+   */
+  function jsvmpBindingName() {
+    return `_$${bindingSuffix}v${randomBytes(4).toString('hex')}`
+  }
+
   function channelExpressionForGuest() {
     return channelExpression
   }
@@ -526,6 +594,8 @@ export function createCodeInstrumenter(options) {
     install,
     instrument,
     mergePlan,
+    bindingName,
+    jsvmpBindingName,
     channelExpression: channelExpressionForGuest,
     /** Plan for the most recent instrumentation call. */
     get plan() {
@@ -546,11 +616,6 @@ export function createCodeInstrumenter(options) {
         /* already gone */
       }
       try {
-        channelSymbol?.dispose()
-      } catch {
-        /* already gone */
-      }
-      try {
         errorGate?.probe?.dispose?.()
       } catch {
         /* already gone */
@@ -562,7 +627,6 @@ export function createCodeInstrumenter(options) {
       }
       channel = null
       channelBinder = null
-      channelSymbol = null
       errorGate = null
     },
   }

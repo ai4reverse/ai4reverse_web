@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
+import { buildVM, buildSampleProgram } from '../tools/jsvmp/index.js'
 
 /**
  * Detection-corpus test: these are the probes real loaders use to decide
@@ -294,6 +295,164 @@ test('the instrumentation binding name is not a guessable identifier', async () 
     assert.equal(probe.ok, true, JSON.stringify(probe.error))
     assert.deepEqual(probe.result.preview ? JSON.parse(probe.result.preview) : null, ['undefined', 'undefined'])
   })
+})
+
+test('a stolen descriptor-trap channel cannot forge a trace event', async () => {
+  const sb = await TracelessSandbox.create({ logLevel: 'silent', env: { strict: true } })
+  try {
+    const run = await sb.run(`
+      (function () {
+        var keys = [];
+        var probe = new Proxy(document, {
+          getOwnPropertyDescriptor: function (target, key) {
+            keys.push(key);
+            return Reflect.getOwnPropertyDescriptor(target, key);
+          }
+        });
+        Object.getOwnPropertyDescriptors(probe);
+        var stealable = keys.filter(function (key) { return typeof document[key] === 'function' });
+        for (var i = 0; i < stealable.length; i += 1) {
+          try { document[stealable[i]](0, 1, 'forged-value') } catch (error) {}
+          try { document[stealable[i]]('forged-value') } catch (error) {}
+        }
+        return { stealable: stealable.length };
+      })()
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    // The proxy still sees the hidden channel property (enumeration filtering is
+    // not a capability boundary); the test is only meaningful if it was stolen.
+    const value = JSON.parse(run.result.preview)
+    assert.ok(value.stealable >= 1, 'the proxy trap captured no channel function')
+    const forged = (run.events ?? []).filter(
+      (event) => event.kind === 'code' && JSON.stringify(event.value ?? '').includes('forged-value'),
+    )
+    assert.deepEqual(forged, [], 'a stolen channel function forged a code event')
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('a local globalThis binding does not disable instrumentation', async () => {
+  await withSandbox(async (sb) => {
+    const run = await sb.run(
+      'function f() { var globalThis = 1; var total = 41; return total + 1 } f()',
+    )
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.value, 42)
+    assert.ok(
+      (run.events ?? []).some((event) => event.kind === 'code' && event.event === 'function:enter'),
+      'function probes were not emitted',
+    )
+  })
+})
+
+test('the retired fixed JSVMP binding name cannot forge opcode events', async () => {
+  // The JSVMP channel binding used to be the fixed lexical name `_$v`, so a
+  // sample could call `_$v(kind, id, value)` from its own code and mint
+  // `jsvmp:*` evidence. The per-run binding must be unguessable: `_$v` is now
+  // an ordinary (undeclared) identifier and every call throws.
+  const vm = buildVM(buildSampleProgram(), { seed: 13 })
+  const theft = `
+    var forgedCalls = 0;
+    for (var index = 0; index < 40; index += 1) {
+      try { _$v(10, 1000001 + index, 'FORGED-FIXED'); forgedCalls += 1 } catch (error) {}
+    }
+    ({ forgedCalls: forgedCalls, bindingType: typeof _$v })
+  `
+  const sb = await TracelessSandbox.create({
+    logLevel: 'silent',
+    env: { strict: false, only: ENV },
+    instrumentation: { jsvmp: true, code: { level: 'function' } },
+  })
+  try {
+    const run = await sb.run(`${vm.code}\n__vm_run()\n${theft}`, {
+      filename: 'https://cdn.test/vm-fixed-name.js',
+    })
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.vm?.detected, true, 'the sample was not instrumented as a VM')
+    assert.ok(
+      (run.events ?? []).some((event) => event.kind === 'code' && event.event === 'jsvmp:opcode'),
+      'the VM produced no genuine opcode events',
+    )
+    const value = JSON.parse(run.result.preview)
+    assert.equal(value.bindingType, 'undefined', 'the fixed binding name is still declared')
+    assert.equal(value.forgedCalls, 0, 'the sample could call the JSVMP channel')
+    const forged = (run.events ?? []).filter(
+      (event) => event.kind === 'code' && JSON.stringify(event.value ?? '').includes('FORGED-FIXED'),
+    )
+    assert.deepEqual(forged, [], 'the fixed binding name forged a trace event')
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('a late document proxy cannot recover the JSVMP channel token', async () => {
+  // A JSVMP probe used to re-evaluate `globalThis.document[binder](token)`
+  // inside the interpreter, long after guest statements had run. This oracle
+  // swaps `document` for a Proxy: its get trap returns a wrapper that records
+  // the capability token and keeps the real channel, so the sample can then
+  // replay valid opcode ids as forged evidence.
+  const vm = buildVM(buildSampleProgram(), { seed: 11 })
+  const oracle = `
+    var realDocument = globalThis.document;
+    var seen = [];
+    var stolenChannel = null;
+    var shim = new Proxy(realDocument, {
+      get: function (target, key) {
+        var value = target[key];
+        if (typeof value !== 'function') return value;
+        return function (argument) {
+          seen.push(String(key) + '|' + String(argument));
+          try { stolenChannel = value(argument); } catch (error) {}
+          return stolenChannel;
+        };
+      }
+    });
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      writable: true,
+      value: shim
+    });
+  `
+  const forge = `
+    var forgedCalls = 0;
+    if (stolenChannel) {
+      for (var index = 0; index < 40; index += 1) {
+        try { stolenChannel(10, 1000001 + index, 'FORGED-EVIDENCE'); forgedCalls += 1 } catch (error) {}
+      }
+    }
+    ({ seen: seen, forgedCalls: forgedCalls, hasChannel: stolenChannel !== null })
+  `
+  const sb = await TracelessSandbox.create({
+    logLevel: 'silent',
+    env: { strict: false, only: [...ENV, 'dom'] },
+    instrumentation: { jsvmp: true, code: { level: 'function' } },
+  })
+  try {
+    const run = await sb.run(`${oracle}\n${vm.code}\n__vm_run()\n${forge}`, {
+      filename: 'https://cdn.test/vm-proxy.js',
+    })
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.vm?.detected, true, 'the sample was not instrumented as a VM')
+    assert.ok(
+      (run.events ?? []).some((event) => event.kind === 'code' && event.event === 'jsvmp:opcode'),
+      'the VM produced no genuine opcode events',
+    )
+    const value = JSON.parse(run.result.preview)
+    assert.deepEqual(
+      value.seen.filter((entry) => /ai4r[./]channel/.test(entry)),
+      [],
+      'the capability token was observable through the document proxy',
+    )
+    assert.equal(value.hasChannel, false, 'the sample obtained the trace channel')
+    assert.equal(value.forgedCalls, 0, 'the sample could call the trace channel')
+    const forged = (run.events ?? []).filter(
+      (event) => event.kind === 'code' && JSON.stringify(event.value ?? '').includes('FORGED-EVIDENCE'),
+    )
+    assert.deepEqual(forged, [], 'a stolen JSVMP channel forged a trace event')
+  } finally {
+    sb.dispose()
+  }
 })
 
 test('document symbol enumeration is empty under the full environment', async () => {

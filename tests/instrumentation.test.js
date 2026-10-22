@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TracelessSandbox } from '../tools/sandbox/sandbox.js'
+import { buildVM, buildSampleProgram } from '../tools/jsvmp/index.js'
 
 const ENV = ['globals', 'console', 'timers', 'encoding', 'time', 'stack', 'random', 'storage', 'anti-fingerprint']
 
@@ -326,6 +327,43 @@ test('non-default levels inject the channel binding for top-level probes', async
   }
 })
 
+test('catch stack sanitisation is not subject to the trace budget', async () => {
+  const sb = await sandbox({ instrumentation: { code: { level: 'statement', maxEvents: 1 } } })
+  try {
+    const run = await sb.run(
+      'var observed = null; try { null.boom } catch (e) { observed = e.stack } observed',
+      { filename: 'https://cdn.test/budget.js' },
+    )
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.doesNotMatch(run.result.value, /<eval>/)
+    assert.match(run.result.value, /cdn\.test\/budget\.js/)
+    assert.ok(run.instrumentation.describe.exceptions.caught >= 1, 'the caught error was not reported')
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('api instrumentation rethrows the original guest exception', async () => {
+  const sb = await sandbox()
+  try {
+    const probe = `
+      var caught = null;
+      try { WebAssembly.validate(1) } catch (e) { caught = e }
+      ({ instance: caught instanceof TypeError, keys: Object.keys(caught), name: caught.name })
+    `
+    for (const api of [true, false]) {
+      const run = await sb.run(probe, { instrumentation: { api } })
+      assert.equal(run.ok, true, JSON.stringify(run.error))
+      const value = JSON.parse(run.result.preview)
+      assert.equal(value.instance, true, `api:${api} replaced the guest exception`)
+      assert.deepEqual(value.keys, [], `api:${api} made error fields enumerable`)
+      assert.equal(value.name, 'TypeError')
+    }
+  } finally {
+    sb.dispose()
+  }
+})
+
 test('catch and throw probes never run guest getters', async () => {
   const sb = await sandbox()
   try {
@@ -342,6 +380,64 @@ test('catch and throw probes never run guest getters', async () => {
     )
     assert.equal(run.ok, true, JSON.stringify(run.error))
     assert.equal(run.result.value, 'handled:0', 'a guest getter ran during trace summarisation')
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('a top-level lexical globalThis declaration does not break the channel binding', async () => {
+  // `let globalThis = 1` is legal at script top level. The Program-prologue
+  // binding used to initialize from `globalThis` before that declaration was
+  // initialized, so every run failed with a TDZ ReferenceError.
+  const sb = await sandbox()
+  try {
+    const run = await sb.run('let globalThis = 1; var total = 2; total')
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.value, 2)
+    assert.ok(
+      (run.events ?? []).some((event) => event.kind === 'code' && event.event === 'statement'),
+      'the run was not instrumented',
+    )
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('a module with a lexical globalThis declaration still resolves the channel root', async () => {
+  // A module has no top-level `this` (it is `undefined`), so the channel root
+  // used to fall back to evaluating the `globalThis` identifier. A module that
+  // declares `let globalThis` itself puts that binding in the TDZ at prologue
+  // time, so the whole run failed to compile/evaluate.
+  const sb = await sandbox()
+  try {
+    const run = await sb.run('let globalThis = 1; var total = 41 + 1; total', { type: 'module' })
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.ok(
+      (run.events ?? []).some((event) => event.kind === 'code' && event.event === 'statement'),
+      'the module was not instrumented',
+    )
+  } finally {
+    sb.dispose()
+  }
+})
+
+test('a sample declaring the retired fixed JSVMP binding name compiles and runs', async () => {
+  // Wave 2 moved the JSVMP channel binding to a Program-level
+  // `let <bindingName> = ...` but used the fixed default `_$v`. A legal
+  // `let _$v = 1;` sample then produced a duplicate lexical declaration and
+  // failed to compile before any guest code ran.
+  const vm = buildVM(buildSampleProgram(), { seed: 23 })
+  const sb = await sandbox({ instrumentation: { jsvmp: true, code: { level: 'function' } } })
+  try {
+    const run = await sb.run(`let _$v = 1;\n${vm.code}\n__vm_run()`, {
+      filename: 'https://cdn.test/vm-fixed-binding.js',
+    })
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.vm?.detected, true, 'the sample was not instrumented as a VM')
+    assert.ok(
+      (run.events ?? []).some((event) => event.kind === 'code' && event.event === 'jsvmp:opcode'),
+      'the VM produced no opcode events',
+    )
   } finally {
     sb.dispose()
   }

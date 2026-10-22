@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { parse } from '../restore/parse.js'
 import { traverse } from '../util/babel.js'
 import { analyzeVMStructure } from '../jsvmp/analyze.js'
@@ -78,7 +79,9 @@ const LOOP_KINDS = {
  * @param {object} options
  * @param {object} options.dispatch dispatch descriptor (from detectDispatch or analyzeVM)
  * @param {string} options.channelExpression guest expression yielding the trace channel
- * @param {string} [options.bindingName]
+ * @param {string} [options.bindingName] per-run lexical binding name; omit to mint
+ *   a random one (a fixed name would be guest-readable and conflict with samples
+ *   that declare it)
  * @param {string} [options.marker]
  * @param {{functionStart?: number, functionBodyStart?: number, functionBodyEnd?: number}} [options.interpreter]
  * @returns {{code: string, plan: Map<number, object>, stats: object}}
@@ -87,10 +90,16 @@ export function instrumentDispatch(source, options) {
   const {
     dispatch,
     channelExpression,
-    bindingName = '_$v',
+    bindingName: requestedBinding,
     marker = 'v',
     interpreter = null,
   } = options
+  // Never publish a fixed, guessable name: guest code shares the Program scope
+  // with the spliced probes, so `_$v(...)` would be a direct channel handle.
+  const bindingName =
+    typeof requestedBinding === 'string' && requestedBinding.length > 0
+      ? requestedBinding
+      : `_$v${randomBytes(8).toString('hex')}`
   const begin = `/*#${marker}*/`
   const end = `/*#/${marker}*/`
   const wrap = (code) => `${begin}${code}${end}`
@@ -149,12 +158,18 @@ export function instrumentDispatch(source, options) {
     })
   }
 
-  // Channel binding inside the interpreter function keeps the binding local.
+  // Capture the channel once, in the Program prologue, and reuse the resulting
+  // binding from every opcode probe. Resolving it inside the interpreter (as an
+  // earlier version did) re-evaluated `globalThis.document[...](token)` every
+  // time the VM ran: a sample that swapped `document` for a Proxy after the
+  // first statement could observe the capability token and replay it to forge
+  // evidence. The Program-prologue insertion runs before any guest statement,
+  // so the realm's real `document` is captured before the sample can intervene.
+  // It is a lexical `let`, not `var`, so it never becomes a global property.
   insertions.push({
-    offset: interpreter.functionBodyStart,
-    priority: 110,
-    // Leading newline keeps a directive prologue intact when it has no semicolon.
-    text: wrap(`\nvar ${bindingName} = ${channelExpression};`),
+    offset: programInsertionOffset(source),
+    priority: 120,
+    text: wrap(`\nlet ${bindingName} = ${channelExpression};`),
   })
 
   const code = applyInsertions(source, insertions)
@@ -267,6 +282,29 @@ export function devirtualize(sequence, semantics = {}, resolve = null) {
  */
 function offsetAfterDirectives(block) {
   return block.directives?.at(-1)?.end ?? (block.start ?? 0) + 1
+}
+
+/**
+ * Offset in the Program body where a top-level declaration can be spliced
+ * without disturbing a hashbang or directive prologue.
+ * @param {string} source
+ * @returns {number}
+ */
+function programInsertionOffset(source) {
+  try {
+    const program = parse(source, { sourceType: 'script', errorRecovery: false }).ast.program
+    const directives = program.directives ?? []
+    const body = program.body ?? []
+    // A hashbang-only source has no statement to declare before.
+    if (program.interpreter && directives.length === 0 && body.length === 0) {
+      return program.interpreter.end ?? 0
+    }
+    return directives.at(-1)?.end ?? body[0]?.start ?? 0
+  } catch {
+    // The caller only reaches this with a source the detection pass parsed;
+    // fall back to the start rather than skipping instrumentation silently.
+    return 0
+  }
 }
 
 function applyInsertions(source, insertions) {
