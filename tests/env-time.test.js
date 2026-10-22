@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHarness } from './helpers/harness.js'
+import { instantFromLocalFields, timezoneOffsetMinutesAt } from '../tools/util/timezone.js'
 
 /**
  * Virtual `Date` behaviour: one clock (the virtual one) and one timezone (the
@@ -30,6 +31,40 @@ function evaluate(harness, code) {
   const result = harness.run(code)
   assert.equal(result.ok, true, `guest evaluation failed: ${JSON.stringify(result.error)}`)
   return result.value
+}
+
+/**
+ * Build an instant from full proleptic-Gregorian fields without `Date.UTC`'s
+ * 0..99 -> 1900..1999 year mapping.
+ * @param {number} year
+ * @param {number} month zero-based
+ * @param {number} date
+ * @returns {number} epoch milliseconds
+ */
+function utcInstant(year, month, date) {
+  const moment = new Date(0)
+  moment.setUTCFullYear(year, month, date)
+  moment.setUTCHours(0, 0, 0, 0)
+  return moment.getTime()
+}
+
+/**
+ * Offset oracle that does not reconstruct wall-clock fields: ICU's
+ * `longOffset` zone name states the raw UTC offset at an instant.
+ * @param {string} timeZone
+ * @param {number} instant epoch milliseconds
+ * @returns {number} `getTimezoneOffset()`-style minutes (may be fractional)
+ */
+function referenceOffsetMinutes(timeZone, instant) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' }).formatToParts(
+    new Date(instant),
+  )
+  const name = parts.find((part) => part.type === 'timeZoneName').value
+  const match = /^GMT(?:([+-])(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?)?$/.exec(name)
+  assert.ok(match, `unexpected longOffset zone name: ${name}`)
+  if (match[1] === undefined) return 0
+  const sign = match[1] === '-' ? 1 : -1
+  return sign * (Number(match[2]) * 60 + Number(match[3] ?? 0) + Number(match[4] ?? 0) / 60)
 }
 
 test('Date.now() and new Date() read the virtual clock', async () => {
@@ -274,4 +309,108 @@ test('the applied timezone is traced once', async () => {
     assert.equal(events[0].gmtOffset, 'GMT+0800')
     assert.equal(events[0].instant, new Date(EPOCH).toISOString())
   })
+})
+
+test('a spring-forward gap keeps the pre-transition offset', async () => {
+  // 02:30 does not exist on 2024-03-10 in New York. ECMAScript resolves it
+  // with the offset still in effect before the transition (EST, UTC-5), so the
+  // engine reports 07:30Z and 03:30 local — not 06:30Z under EDT.
+  assert.equal(
+    instantFromLocalFields('America/New_York', [2024, 2, 10, 2, 30, 0, 0]),
+    Date.UTC(2024, 2, 10, 7, 30),
+  )
+
+  await withHarness({ locale: 'en-US' }, (harness) => {
+    const fields = evaluate(
+      harness,
+      `var d = new Date(2024, 2, 10, 2, 30, 0);
+       [d.toISOString(), d.getHours(), d.getMinutes()]`,
+    )
+    assert.deepEqual(fields, ['2024-03-10T07:30:00.000Z', 3, 30])
+  })
+})
+
+test('a fall-back overlap resolves to the first occurrence', async () => {
+  // 01:30 occurs twice on 2024-11-03 in New York; ECMAScript picks the
+  // pre-transition (EDT, UTC-4) instance.
+  assert.equal(
+    instantFromLocalFields('America/New_York', [2024, 10, 3, 1, 30, 0, 0]),
+    Date.UTC(2024, 10, 3, 5, 30),
+  )
+
+  await withHarness({ locale: 'en-US' }, (harness) => {
+    const iso = evaluate(harness, 'new Date(2024, 10, 3, 1, 30, 0).toISOString()')
+    assert.equal(iso, '2024-11-03T05:30:00.000Z')
+  })
+})
+
+test('spring-forward gaps resolve to the pre-transition offset in both hemispheres', () => {
+  // Expected instants measured from Node with TZ set to each zone:
+  //   TZ=<zone> node -e 'new Date(y, m, d, h, min).toISOString()'
+  const gaps = [
+    ['America/New_York', [2024, 2, 10, 2, 30, 0, 0], '2024-03-10T07:30:00.000Z'],
+    ['Europe/London', [2024, 2, 31, 1, 30, 0, 0], '2024-03-31T01:30:00.000Z'],
+    ['Europe/Berlin', [2024, 2, 31, 2, 30, 0, 0], '2024-03-31T01:30:00.000Z'],
+    ['Australia/Sydney', [2024, 9, 6, 2, 30, 0, 0], '2024-10-05T16:30:00.000Z'],
+  ]
+
+  for (const [zone, fields, expected] of gaps) {
+    assert.equal(
+      new Date(instantFromLocalFields(zone, fields)).toISOString(),
+      expected,
+      `${zone} ${fields.slice(0, 5).join('-')}`,
+    )
+  }
+})
+
+test('fall-back overlaps resolve to the first occurrence east and west of UTC', () => {
+  // Expected instants measured from Node with TZ set to each zone; the first
+  // occurrence uses the pre-transition offset, which is also the earlier
+  // instant.
+  const overlaps = [
+    ['America/New_York', [2024, 10, 3, 1, 30, 0, 0], '2024-11-03T05:30:00.000Z'],
+    ['Europe/London', [2024, 9, 27, 1, 30, 0, 0], '2024-10-27T00:30:00.000Z'],
+    ['Europe/Berlin', [2024, 9, 27, 2, 30, 0, 0], '2024-10-27T00:30:00.000Z'],
+    ['Australia/Sydney', [2024, 3, 7, 2, 30, 0, 0], '2024-04-06T15:30:00.000Z'],
+  ]
+
+  for (const [zone, fields, expected] of overlaps) {
+    assert.equal(
+      new Date(instantFromLocalFields(zone, fields)).toISOString(),
+      expected,
+      `${zone} ${fields.slice(0, 5).join('-')}`,
+    )
+  }
+})
+
+test('years 0 through 99 stay literal instead of 1900 through 1999', () => {
+  for (const year of [0, 1, 26, 50, 99]) {
+    assert.equal(
+      instantFromLocalFields('UTC', [year, 0, 1, 0, 0, 0, 0]),
+      utcInstant(year, 0, 1),
+      `year ${year} must not be remapped`,
+    )
+  }
+})
+
+test('timezoneOffsetMinutesAt is sane for years 0..99 and BCE', () => {
+  const zone = 'America/New_York'
+  for (const year of [-1, 0, 1, 50, 99]) {
+    const instant = utcInstant(year, 5, 1)
+    const offset = timezoneOffsetMinutesAt(zone, instant)
+    assert.equal(offset, Math.round(referenceOffsetMinutes(zone, instant)), `year ${year} offset`)
+    assert.ok(Math.abs(offset) <= 24 * 60, `year ${year} offset ${offset} is implausible`)
+  }
+
+  // Modern instants keep their DST-aware offsets.
+  assert.equal(timezoneOffsetMinutesAt(zone, Date.UTC(2024, 0, 15)), 300)
+  assert.equal(timezoneOffsetMinutesAt(zone, Date.UTC(2024, 6, 15)), 240)
+})
+
+test('zero-offset zones report positive zero', () => {
+  for (const zone of ['UTC', 'Africa/Abidjan']) {
+    const offset = timezoneOffsetMinutesAt(zone, EPOCH)
+    assert.equal(offset, 0, `${zone} should be zero`)
+    assert.equal(Object.is(offset, -0), false, `${zone} must not report -0`)
+  }
 })
