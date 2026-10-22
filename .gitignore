@@ -4,6 +4,7 @@ node_modules/
 
 # Agent and tooling state
 .pi/
+.mcp.json
 
 # Logs
 *.log
