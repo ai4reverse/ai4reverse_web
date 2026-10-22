@@ -40,6 +40,15 @@ sandbox.dispose()
 `run.events` is the structured trace (see `docs/ARCHITECTURE.md`). Set
 `keepTrace: false` when you only need statistics.
 
+URL-bearing browser default actions are captured as mock-network requests, never
+performed. Clicking an `<a href>`/`<area href>` and calling
+`HTMLFormElement.submit()`/`requestSubmit()` resolve the target against the live
+document URL, emit one `net` request and an IOC, and leave
+`document.URL`/`location.href` unchanged. An empty form action uses the document
+URL, relative targets resolve against it, non-http(s) schemes (for example
+`blob:`) are recorded as blocked and produce no request (an anchor with no
+`href` sends nothing), and `preventDefault()` cancels the click action.
+
 ### Option validation
 
 `profile` and `limits` are validated, not guessed:
@@ -181,6 +190,8 @@ Report fields that carry evidence rather than volume (`docs/REPORT-SCHEMA.md`):
 | `tracing.truncated`, `tracing.truncatedBy` | `true` with `code-budget` and/or `event-limit`; derived from the run record, so it stays true when the `code:trace-truncated` marker was evicted from the retained window. |
 | `static.restoration.error` | The restoration pipeline threw; `null` when it ran. Markdown prints `**Restoration error:**`. |
 | `hooks.errors`, `hooks.errorsTruncated` | Newest 50 hook failures (`{hook, phase, message}`); the bus itself keeps 200. |
+| `dynamic.provisional` | The host wall deadline (`limits.timeoutMs`) interrupted the run. Observations up to that point are host-speed dependent, and `DYNAMIC_LIMITS` is not scored. |
+| `dynamic.eventsTruncated` | The retained `dynamic.events` slice is smaller than the observed trace (`maxRetainedEvents`, `keepTrace:false`, or recorder drops), or the run is provisional. `dynamic.counts` carries only `{byKind}`; those counters still reflect every observed event (nothing is subtracted when the retained slice is truncated). |
 
 Static-only: pass `dynamic: false`. It never executes the sample.
 
@@ -205,7 +216,7 @@ const result = restore(source, {
   hooks: hookBus,             // optional: ast:transform may rewrite the tree
 })
 console.log(result.code)
-console.log(result.passes.filter((p) => p.changed)) // [{id, changed, notes, durationMs, round}]
+console.log(result.passes.filter((p) => p.changed)) // [{id, changed, notes, durationMs, rounds}]
 console.log(result.stats.beforeHash, result.stats.afterHash)
 console.log(result.outputValid, result.outputError, result.notes)
 ```
@@ -261,6 +272,14 @@ per-statement probe already emits a `code` event). A hook trace event uses trace
 phase `emit` (or `transform` for the mutating pipeline) and carries the hook
 phase in `hook`. Throwing handlers are isolated: the bus keeps the newest 200
 failures capped at 64 KiB of text and reports `errorsTruncated`.
+
+Handlers that return a promise are **observe-only**: the value is never used as
+a transform result or dispatch decision, and a rejection is recorded in
+`stats().errors` instead of becoming an unhandled rejection. Mutating phases
+(`code:before`, `ast:transform`) must therefore be synchronous. `pipeline()`
+dispatches exact and `<domain>:*` registrations only, so a global `'*'` observer
+is never fed into transformed source. `opts.context` data is merged into the
+handler context, with standard fields such as `phase` taking precedence.
 
 ## Instrumentation directly
 
@@ -399,18 +418,30 @@ shared options (parsed by one strict parser for analyze/restore/run):
 ```
 
 `restore` therefore accepts `--json`, `--seed`, `--out` and `--level` too
-(`--pretty` and `--log-level` apply to its own logging).
+(`--pretty` and `--log-level` apply to its own logging). `--passes`,
+`--exclude` and `--rounds` configure the restoration pipeline only: the shared
+parser rejects them for every other command (`analyze` included) instead of
+silently ignoring them, so a wrapper cannot believe it configured a restoration
+that never ran.
 
 Exit codes: `0` success, `1` analysis/run failure, `2` usage error.
+
+For `analyze`, "analysis failure" means the dynamic stage was requested and
+`report.dynamic.ok === false` — a guest throw, engine failure or interrupted run
+prints the report and then exits `1`. With `--no-dynamic` (or `dynamic:false`)
+the CLI exits `0` because no run was requested, even though the report still
+carries `dynamic.ok: false`; library callers should read `report.dynamic.ok`
+rather than infer it from a process exit code.
 
 ### CLI contract (strict validation)
 
 | Invocation | Exit | stderr | stdout |
 | --- | --- | --- | --- |
-| valid `analyze`/`restore`/`run`/`constraint`/`taint`/`passes`/`version`/`--help` | 0 | empty (logs only with `--log-level`) | result (pure JSON with `--json`) |
+| valid `analyze`/`restore`/`run`/`constraint`/`taint`/`passes`/`version`/`--help` | 0 | empty (logs only with `--log-level`; `--out <file>` adds `wrote N bytes…`) | result (pure JSON with `--json`) |
 | unknown option (`--nonsense`) | 2 | `error: invalid arguments: Unknown option '--nonsense'. …` | empty |
 | `--seed zzz` / `--seed 0xzz` | 2 | `error: --seed must be a decimal or 0x-prefixed hex integer, got "zzz"` | empty |
 | `--rounds 0`, `--rounds 6`, `--rounds 2.5` | 2 | `error: --rounds must be an integer between 1 and 5, got "0"` | empty |
+| `--passes`/`--exclude`/`--rounds` on a non-`restore` command | 2 | `error: --passes, --exclude and --rounds are only valid with the restore command` | empty |
 | `--level bogus` | 2 | `error: --level must be one of off\|function\|branch\|statement, got "bogus"` | empty |
 | unknown `--passes`/`--exclude` id | 2 | `error: unknown pass id for --passes: bogus (valid: strings, …)` | empty |
 | unreadable input / empty file | 2 | `error: cannot read <path>: ENOENT` / `error: <path> is empty` | empty |
@@ -419,6 +450,10 @@ Exit codes: `0` success, `1` analysis/run failure, `2` usage error.
 | analysis/run failure (`--entry` missing, sample throws) | 1 | diagnosis | JSON result |
 | `--out -` | 0 | empty | result |
 | `--out <file>` | 0 | `wrote N bytes to <file>` | empty |
+
+On success, `--out <file>` writes `wrote N bytes to <file>` to **stderr**, not
+stdout; stdout stays empty. `--out -` writes the result to stdout and nothing to
+stderr.
 
 `--arg <value>` is repeatable and is parsed as JSON when the value is valid JSON
 (so `--arg 42` is a number and `{"a":1}` is an object) and passed as a string
@@ -429,8 +464,23 @@ otherwise (`--arg hello`).
 - `run.events`, `run.settle`, `run.disposal` and the whole report are plain
   JSON. Trace payloads are sanitised (strings 2 048 chars, arrays 100 items,
   depth 5, handles → `'[Handle]'`), so `JSON.stringify(report)` always works.
-- Host timing (`wall`, `startedAt`, `durationMs`) is the only non-deterministic
-  field; strip it before comparing two runs.
+- Host timing is the only non-deterministic input. Strip **all** of it before
+  comparing two reports: every trace event's `wall`, `meta.startedAt`,
+  `meta.durationMs`, and `static.restoration.passes[].durationMs` (on a raw
+  `run` record, `run.durationMs`; on a raw `restore()` result,
+  `stats.durationMs` and `passes[].durationMs`). The normalised report has no
+  `dynamic.durationMs` field: dynamic timing is exposed only on the raw `run`
+  record. Markdown omits per-pass durations, so Markdown for two same-seed
+  completed runs is identical without stripping.
+- Determinism is scoped to runs that finish inside the host wall deadline. A run
+  stopped by `limits.timeoutMs` is marked `dynamic.provisional: true` and
+  `dynamic.eventsTruncated: true`; the events observed up to the interruption
+  depend on host speed, and the run contributes no `DYNAMIC_LIMITS` reason.
+  `dynamic.eventsTruncated` also means the retained slice lost events
+  (`maxRetainedEvents`, `keepTrace:false`, or recorder drops); `dynamic.counts`
+  is the `{byKind}` histogram, and its counters still reflect the observed
+  events even when the retained slice is smaller. The full guarantee is in
+  [ARCHITECTURE.md](ARCHITECTURE.md#9-determinism).
 - `restore().code` has **no trailing newline**. Redirecting stdout (`> out.js`)
   appends one, so re-restoring that file reports `changed: true` with zero
   changed passes. Use `--out <file>` for a byte-exact round trip.
