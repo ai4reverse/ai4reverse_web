@@ -13,11 +13,47 @@ shared host, and it is not a browser.
 | --- | --- |
 | Guest ↔ host memory | QuickJS compiled to WebAssembly; no shared JS objects except explicit bridge functions. |
 | Guest ↔ filesystem/process | QuickJS has no `require`, `fs`, `process`, `spawn`; the host never exposes one. Anti-fingerprint deletes them if a hook ever injects them. |
-| Guest ↔ network | No socket API is reachable. `fetch`/XHR/WebSocket/EventSource are synthetic services driven by the virtual clock; policies are `deny` (default), `empty`, `echo`, or explicit routes. Every request is a trace event + IOC. |
+| Guest ↔ network | No socket API is reachable. `fetch`/XHR/WebSocket/EventSource are synthetic services driven by the virtual clock; policies are `deny` (default), `empty`, `echo`, or explicit routes. No surface opens a socket, resolves a host name, or sends a byte. What each egress path records is listed below. |
 | CPU | Interrupt handler enforces a host deadline (default 5 s) and a virtual-time budget (default 60 s). Infinite loops are interrupted and classified. |
 | Memory | `setMemoryLimit` (default 64 MB) and `setMaxStackSize` (default 1 MB); breaches become structured limit results. |
 | Event volume | Trace ring buffer limit; instrumentation event budget; console buffer cap, each entry bounded by argument count **and** serialized characters; concurrent-timer cap (`limits.maxTimers`, refused schedules counted in `clock.stats().droppedTimers`); artifact size/count caps; hook error ring (200 entries **and** 64 KiB of message text, 2 KiB per message). |
-| State leakage between samples | A **fresh runtime and context per run**; guest execution serialized one run at a time per process; intrinsic snapshot before/after proves no cross-run residue. |
+| State leakage between samples | A **fresh runtime and context per run**; guest execution serialized one run at a time per process; the intrinsic snapshot before/after is supplementary evidence only (see "What the integrity snapshot proves"). |
+
+### What an egress attempt records
+
+There is no blanket "every request is an api + net event + IOC": surfaces are
+captured at different depths, and a scheduled response can be cancelled. The
+exact guarantee per path:
+
+- **`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `<a>`/`<area>`
+  click, form `submit()`/`requestSubmit()`** — an `api` event for the request
+  (XHR emits `open` and `send`; WebSocket and EventSource also emit lifecycle
+  events), one URL IOC and one `net` event. `network.dispatch` (fetch/XHR)
+  records the IOC when the
+  request is dispatched and the `net`/`after` event when the response is
+  delivered on the virtual clock; `computeResult` (WebSocket, EventSource,
+  anchor click, form submit) records both synchronously at the connect call. A
+  request cancelled before delivery (`XHR.abort`, `network.cancel`) keeps its
+  `api` event and IOC but has no `net` event.
+- **`img.src`** — a `dom` event (`api: 'img.src'`, not an `api` event), one
+  URL IOC and one `net` event, because the image loader goes through
+  `computeResult`.
+- **`location.assign`/`replace`/`location.href`, `window.open`,
+  `navigator.sendBeacon`** — one `api` event and one URL IOC, but **no `net`
+  event**. These are navigations or a beacon; the target is recorded, not
+  served by the mock network, and `sendBeacon` returns `true` without storing
+  the body.
+- **A non-`http(s)` target on a scheme-checking navigation** (`location.*`,
+  anchor click, form submit) — an `api` event with `blocked: true` and
+  `reason: 'scheme'`; no IOC and no `net` event, because no request exists.
+  `img.src`, `window.open` and `sendBeacon` do not scheme-check: they record
+  the URL as an IOC (and `img.src` also as a mock `net` request).
+- **`navigator.clipboard.writeText`** — an `api` event and a `clipboard` IOC
+  (not a URL IOC); no `net` event.
+
+Every event is local evidence. No listed path opens a socket or resolves a
+host name, so the "request" never leaves the process regardless of which trace
+kinds it produced.
 
 The sandbox is *not* a kernel-level isolation boundary. QuickJS/WASM has a strong
 track record, but a WASM engine escape is a host compromise. Run the platform in
@@ -44,6 +80,66 @@ on:
    guarantee is *not* "disposal always succeeds". It is: a stack breach leaves
    the runtime unreleasable, and the platform refuses to pretend otherwise —
    see the next section.
+
+## What the integrity snapshot proves
+
+`tools/sandbox/integrity.js` captures one snapshot after the environment and
+instrumentation are installed (before guest code) and a second after invocation
+and settle; `diffIntegrity` compares them. **The snapshot is produced by guest
+code and is therefore guest-influenced evidence, not an attestation.** It is
+one observation source, not a precondition for a run record.
+
+The two defences are:
+
+- the snapshot function and the original `JSON.stringify` handle are captured
+  before guest code and cached (a WeakMap keyed by context); serialisation uses
+  the captured `JSON.stringify`, so replacing the guest's writable global cannot
+  forge the serialised text;
+- at call time the snapshot compares its closed-over originals
+  (`JSON.stringify`, `Object.getOwnPropertyNames`, `Object.getOwnPropertySymbols`,
+  `Function.prototype.toString`, `Reflect.apply`, `Array.prototype.sort`,
+  `Object.create`, `Object.setPrototypeOf`, `String`) and returns a
+  `{ tampered: <name> }` sentinel if one was replaced. The host turns that
+  sentinel, a malformed shape, or a serialisation failure into an
+  **unavailable** snapshot.
+
+**What it can prove.** For the surfaces it enumerates, a before/after difference
+is an observed change in that run: own property names of the 26
+`INTRINSIC_NAMES` constructors and their prototypes, global own-property names
+and symbol descriptions, the `Function.prototype.toString` text of the 15
+`BRAND_TARGETS`, and five navigator/Date values. Those drifts are useful
+corroboration (prototype patching, replaced `JSON.stringify`/`fetch`, added
+globals). An unavailable snapshot is reported as unavailable, not dropped.
+
+**What it cannot prove.**
+
+- **Absence of tampering.** Only property *names* are compared for intrinsics;
+  property values, descriptors, accessors, getter results and most function
+  bodies are not. Only 15 functions have their source text compared. A sample
+  that replaces a method's value, patches then restores, or mutates an
+  intrinsic the snapshot does not enumerate can leave `intact: true`.
+- **That the view is honest.** The snapshot reads live guest-reachable objects
+  and calls guest-reachable built-ins. A replaced constructor, a `Proxy` with
+  `ownKeys`/`getOwnPropertyDescriptor` traps, or a throwing getter can hide or
+  fabricate entries; the primitive check above covers replacement of the named
+  primitives, not arbitrary lies from the objects being inspected. `intact:
+  true` is not evidence of tampering, and it is equally not evidence that none
+  occurred.
+- **Anything across runs.** The snapshot sees only the current context. "No
+  cross-run residue" is proved by the fresh runtime and context, not by this
+  diff; it cannot observe a previous run.
+- **That unavailability means tampering.** `hash` is the literal
+  `'unavailable'` with an `error` and empty collections;
+  `diffIntegrity` reports `intact: false` with
+  `[{ kind: 'unavailable', detail: 'integrity snapshot unavailable' }]` for
+  either snapshot. A run that failed before the check reports `not-captured`
+  and a disabled/failed dynamic stage reports `no-dynamic-run`. Those kinds say
+  verification did not run. Sample-defined globals are recorded as
+  `global-added`/`global-removed` and do **not** make `intact` false; only
+  intrinsic/prototype/native/value drifts do.
+
+Treat `report.integrity` as bounded supporting evidence, and read the drift
+kinds rather than the boolean alone.
 
 ## Runtime abandonment and module quarantine
 
