@@ -350,10 +350,14 @@ export class TracelessSandbox {
       })
 
       let settle = null
-      if (invocation.ok && !runtimeHandle.interrupted) {
-        settle = invoker.settle({ ...(runOptions.settle ?? {}) })
-      } else if (runtimeHandle.interrupted) {
+      if (runtimeHandle.interrupted) {
         settle = { skipped: true, reason: runtimeHandle.state.reason }
+      } else if (!invocation.stackExhaustion) {
+        // The event loop is evidence, not a reward for a successful script: a
+        // sample that throws at top level must not thereby suppress the timers
+        // and promise jobs it scheduled before the throw. A genuine stack
+        // breach is the only exception — that runtime is unrecoverable.
+        settle = invoker.settle({ ...(runOptions.settle ?? {}) })
       }
 
       // `record.limitsHit` is the union of both phases: a stack breach inside a
