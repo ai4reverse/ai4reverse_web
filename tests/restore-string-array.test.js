@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { runInNewContext } from 'node:vm'
 
 import { parse } from '../tools/restore/parse.js'
 import { generate } from '../tools/restore/generate.js'
@@ -31,6 +32,29 @@ function runSnippet(code) {
   try {
     // eslint-disable-next-line no-new-func
     new Function('log', code)((...args) => logged.push(args))
+    return { logged, error: null }
+  } catch (error) {
+    return { logged, error: error.message }
+  }
+}
+
+/**
+ * Execute a snippet as a classic script and capture `log(...)` calls. Top-level
+ * `var` declarations become global properties, so `this.<name>` and indirect
+ * `eval` reach them exactly as they would in a browser script.
+ *
+ * @param {string} code
+ * @returns {{logged: unknown[][], error: string|null}}
+ */
+function runScript(code) {
+  /** @type {unknown[][]} */
+  const logged = []
+  const sandbox = { log: (...args) => logged.push(args) }
+  // Browsers expose `window` as an alias of the global object; mirror that so a
+  // snippet can destructure `eval` from it as real obfuscators do.
+  sandbox.window = sandbox
+  try {
+    runInNewContext(code, sandbox)
     return { logged, error: null }
   } catch (error) {
     return { logged, error: error.message }
@@ -158,6 +182,185 @@ log(_0xg7[0]);
   assert.deepEqual(runSnippet(code).logged, [['a'], ['d']])
 })
 
+test('negative: an eval alias blocks rotation, inlining and declaration removal', () => {
+  const source = `
+var _0xea1 = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xev = eval;
+log(_0xev('_0xea1[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xea1);
+log(_0xea1[0]);
+`
+  const result = transform(source)
+  const before = runScript(source)
+  const after = runScript(result.code)
+  assert.deepEqual(after.logged, before.logged, `logged values differ for:\n${result.code}`)
+  assert.equal(after.error, before.error, `error behaviour differs for:\n${result.code}`)
+  assert.equal(result.changed, false)
+  assert.match(result.code, /_0xea1\s*=\s*\[/, 'the declaration is kept')
+  assert.match(result.code, /\.reverse\(\)/, 'the rotation is never applied')
+  assert.ok(
+    result.notes.some((note) => note.includes('dynamic access')),
+    JSON.stringify(result.notes),
+  )
+})
+
+test('negative: this.<name> keeps the array declaration in a script', () => {
+  const source = `
+var _0xtb1 = ['alpha', 'beta', 'gamma', 'delta'];
+log(this._0xtb1[0]);
+`
+  const result = transform(source)
+  const before = runScript(source)
+  const after = runScript(result.code)
+  assert.deepEqual(after.logged, before.logged, `logged values differ for:\n${result.code}`)
+  assert.equal(after.error, before.error, `error behaviour differs for:\n${result.code}`)
+  assert.equal(result.changed, false)
+  assert.match(result.code, /_0xtb1\s*=\s*\[/, 'the declaration is kept')
+  assert.ok(
+    result.notes.some((note) => note.includes('dynamic access')),
+    JSON.stringify(result.notes),
+  )
+})
+
+test('negative: a computed global key with a constant expression keeps the array', () => {
+  const source = `
+var _0xck1 = ['alpha', 'beta', 'gamma', 'delta'];
+log(globalThis['_0xck' + '1'][0]);
+`
+  const result = transform(source)
+  const before = runScript(source)
+  const after = runScript(result.code)
+  assert.deepEqual(after.logged, before.logged, `logged values differ for:\n${result.code}`)
+  assert.equal(after.error, before.error, `error behaviour differs for:\n${result.code}`)
+  assert.equal(result.changed, false)
+  assert.match(result.code, /_0xck1\s*=\s*\[/, 'the declaration is kept')
+  assert.ok(
+    result.notes.some((note) => note.includes('dynamic access')),
+    JSON.stringify(result.notes),
+  )
+})
+
+// Indirect eval reaches script scope without naming the array as a callee or a
+// global member. Each shape below still resolves `_0xie` at runtime, so the pass
+// must leave the whole array untouched (rotation, inlining and deletion).
+const INDIRECT_EVAL_SNIPPETS = {
+  'sequence expression callee around eval': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+log((0, eval)('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'sequence expression callee around an eval alias': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xev = eval;
+log((0, _0xev)('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'call through an eval alias': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xev = eval;
+log(_0xev.call(null, '_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'apply through an eval alias': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xev = eval;
+log(_0xev.apply(null, ['_0xie[0]']));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'eval alias chain': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xea = eval;
+var _0xeb = _0xea;
+log(_0xeb('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'destructured eval from window': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var { eval: _0xev } = window;
+log(_0xev('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'destructured eval with a computed string key': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var { ['eval']: _0xev } = window;
+log(_0xev('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'destructured eval with a folded computed key': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var { ['ev' + 'al']: _0xev } = window;
+log(_0xev('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'alias assigned a sequence expression eval': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xev = (0, eval);
+log(_0xev('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'assignment form of a sequence expression alias': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xev;
+_0xev = (0, eval);
+log(_0xev('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'call through an alias of a sequence expression eval': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xev = (0, eval);
+log(_0xev.call(null, '_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'apply directly on a sequence expression eval': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+log((0, eval).apply(null, ['_0xie[0]']));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'member expression ending in the string eval': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xev = window['eval'];
+log(_0xev('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+  'bracket member eval called directly': `
+var _0xie = ['alpha', 'beta', 'gamma', 'delta'];
+log(window['eval']('_0xie[0]'));
+(function (_0xa) { _0xa.reverse(); })(_0xie);
+log(_0xie[0]);
+`,
+}
+
+test('negative: every indirect eval form keeps the reachable string array', () => {
+  for (const [label, source] of Object.entries(INDIRECT_EVAL_SNIPPETS)) {
+    const result = transform(source)
+    const before = runScript(source)
+    assert.equal(before.error, null, `${label} setup failed: ${before.error}`)
+    const after = runScript(result.code)
+    assert.deepEqual(after.logged, before.logged, `${label} logged values differ for:\n${result.code}`)
+    assert.equal(after.error, before.error, `${label} error behaviour differs for:\n${result.code}`)
+    assert.equal(result.changed, false, `${label} changed the program:\n${result.code}`)
+    assert.match(result.code, /_0xie\s*=\s*\[/, `${label} deleted the declaration`)
+    assert.match(result.code, /\.reverse\(\)/, `${label} applied the rotation`)
+    assert.ok(
+      result.notes.some((note) => note.includes('dynamic access')),
+      `${label}: ${JSON.stringify(result.notes)}`,
+    )
+  }
+})
+
 test('negative: arrays shorter than four entries and non-string arrays are ignored', () => {
   const short = transform(`var _0xh8 = ['a', 'b', 'c']; log(_0xh8[0]);`)
   assert.equal(short.changed, false)
@@ -191,6 +394,20 @@ log(_0xdk(_0xj), _0xkk[2]);
   assert.match(code, /_0xdk\(_0xj\)/, 'the dynamic decoder call survives')
   assert.match(code, /'c'/, 'the constant array read is inlined')
   assert.deepEqual(runSnippet(code).logged, [['b', 'c']])
+})
+
+test('negative: a reassigned decoder binding is never inlined', () => {
+  const source = `
+var _0xda = ['alpha', 'beta', 'gamma', 'delta'];
+var _0xdec = function (_0xi) { return _0xda[_0xi]; };
+_0xdec = function () { return 'other'; };
+log(_0xdec(0), _0xda[1]);
+`
+  const { code, changed } = assertSemanticsPreserved(source)
+  assert.equal(changed, true)
+  assert.match(code, /_0xdec\(0\)/, 'the call through the reassigned decoder survives')
+  assert.match(code, /'beta'/, 'the constant array read is still inlined')
+  assert.deepEqual(runSnippet(code).logged, [['other', 'beta']])
 })
 
 test('is idempotent: a second run reports no change', () => {

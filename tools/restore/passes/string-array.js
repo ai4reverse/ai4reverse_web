@@ -101,7 +101,33 @@ function foldNumber(t, node, resolveIdentifier) {
 }
 
 /**
- * Resolve the static name of a member expression (`a.b`, `a['b']`, `a[0]`).
+ * Fold the static value of a computed member key: string/number literals,
+ * escape-free templates and `+` concatenations of those.
+ *
+ * @param {object} t
+ * @param {object} node
+ * @returns {string|number|undefined} `undefined` when the key is not static
+ */
+function foldStaticKeyValue(t, node) {
+  if (!node) return undefined
+  if (t.isStringLiteral(node)) return node.value
+  if (t.isNumericLiteral(node)) return node.value
+  if (t.isParenthesizedExpression?.(node)) return foldStaticKeyValue(t, node.expression)
+  if (t.isTemplateLiteral(node) && node.expressions.length === 0) {
+    return node.quasis[0]?.value?.cooked ?? undefined
+  }
+  if (t.isBinaryExpression(node) && node.operator === '+') {
+    const left = foldStaticKeyValue(t, node.left)
+    const right = foldStaticKeyValue(t, node.right)
+    if (left === undefined || right === undefined) return undefined
+    return typeof left === 'string' || typeof right === 'string' ? `${left}${right}` : left + right
+  }
+  return undefined
+}
+
+/**
+ * Resolve the static name of a member expression (`a.b`, `a['b']`, `a[0]`,
+ * `a['b' + 'c']`).
  *
  * @param {object} t
  * @param {object} node
@@ -110,9 +136,8 @@ function foldNumber(t, node, resolveIdentifier) {
 function memberName(t, node) {
   if (!t.isMemberExpression(node)) return null
   if (!node.computed) return t.isIdentifier(node.property) ? node.property.name : null
-  if (t.isStringLiteral(node.property)) return node.property.value
-  if (t.isNumericLiteral(node.property)) return String(node.property.value)
-  return null
+  const key = foldStaticKeyValue(t, node.property)
+  return key === undefined ? null : String(key)
 }
 
 /**
@@ -407,6 +432,7 @@ class RotationSimulator {
  * @property {object} arrayNode - the `ArrayExpression` node (mutated by rotations)
  * @property {string[]} elements
  * @property {boolean} poisoned - set when rotation/inlining would be unsafe
+ * @property {boolean} [dynamicAccess] - set when the binding is reachable without a static reference
  */
 
 /**
@@ -418,6 +444,7 @@ class RotationSimulator {
  * @property {ArrayRecord} array
  * @property {object} indexNode
  * @property {object} declarationPath - node removed when the decoder becomes unreferenced
+ * @property {boolean} [dynamicAccess] - set when the binding is reachable without a static reference
  */
 
 /**
@@ -766,6 +793,11 @@ function collectDecoders(t, traverse, ast, records) {
     if (!usesOnlyParams(t, returned.property, paramNames)) return
     const binding = bindingScope.getBinding(boundName)
     if (!binding) return
+    // The binding must be this very declaration and never reassigned: inlining a
+    // call through a rebound name would inline the wrong function body.
+    const declarationNode = functionPath.isVariableDeclarator() ? functionPath.node : functionNode
+    if (binding.path.node !== declarationNode) return
+    if (!binding.constant || binding.constantViolations.length > 0) return
     // Only direct calls may be inlined; a decoder used as a value stays.
     for (const reference of binding.referencePaths) {
       const callPath = reference.parentPath
@@ -988,21 +1020,12 @@ function removeUnreferencedDeclarations(traverse, ast, records, decoders, notes,
       if (record.poisoned) continue
       const binding = currentArrayBinding(record)
       if (!binding || binding.referencePaths.length > 0 || binding.constantViolations.length > 0) continue
-      // P0-7: empty referencePaths is not enough — window._0xa / eval / with can
-      // still reach the binding without a static Identifier reference.
-      if (hasDynamicAccess(traverse, ast, record.name)) {
-        notes.push(`kept ${record.name}: reachable via dynamic access`)
-        continue
-      }
       pending.push({ path: record.declaratorPath, name: record.name })
     }
     for (const decoder of decoders) {
+      if (decoder.dynamicAccess) continue
       const binding = currentDecoderBinding(decoder)
-      if (!binding || binding.referencePaths.length > 0) continue
-      if (hasDynamicAccess(traverse, ast, decoder.name)) {
-        notes.push(`kept ${decoder.name}: reachable via dynamic access`)
-        continue
-      }
+      if (!binding || binding.referencePaths.length > 0 || binding.constantViolations.length > 0) continue
       pending.push({ path: decoder.declarationPath, name: decoder.name })
     }
     if (pending.length === 0) break
@@ -1019,10 +1042,136 @@ function removeUnreferencedDeclarations(traverse, ast, records, decoders, notes,
 const GLOBAL_ALIASES = new Set(['window', 'globalThis', 'self', 'global'])
 
 /**
- * True when `name` may still be reached without a static binding reference
- * (`window.name`, `eval`, `with`). Mirrors rename.js dynamic-scope bail (P0-7).
+ * True when `node` can denote the global object: `this` at script scope, or one
+ * of the conventional global aliases.
+ *
+ * @param {object} t
+ * @param {object|null} node
+ * @returns {boolean}
  */
-function hasDynamicAccess(traverse, ast, name) {
+function isGlobalHost(t, node) {
+  return t.isThisExpression(node) || (t.isIdentifier(node) && GLOBAL_ALIASES.has(node.name))
+}
+
+/**
+ * Names that alias the intrinsic `eval` (`var e = eval`, `e = window.eval`,
+ * `var { eval: e } = window`, non-computed or constant-key global-object forms)
+ * and aliases of those aliases. A later call through such a name can read or
+ * write locals without leaving an `eval` callee or a static identifier
+ * reference, so it must be treated like a direct `eval` call.
+ *
+ * @param {object} t
+ * @param {object} traverse
+ * @param {object} ast
+ * @returns {Set<string>}
+ */
+function collectEvalAliases(t, traverse, ast) {
+  const aliases = new Set()
+  /** @type {Array<{names: string[], path: object, source: object|null}>} */
+  const candidates = []
+
+  const destructuredEvalNames = (pattern) => {
+    const names = []
+    if (!t.isObjectPattern(pattern)) return names
+    for (const property of pattern.properties) {
+      if (!t.isObjectProperty(property)) continue
+      // A computed key may still be static (`{['eval']: e}`, `{['ev' + 'al']: e}`);
+      // fold it rather than trusting only identifier/string-literal keys.
+      const key = t.isIdentifier(property.key) && !property.computed
+        ? property.key.name
+        : foldStaticKeyValue(t, property.key)
+      if (key !== 'eval' || !t.isIdentifier(property.value)) continue
+      names.push(property.value.name)
+    }
+    return names
+  }
+
+  traverse(ast, {
+    VariableDeclarator(path) {
+      const { id, init } = path.node
+      if (!init) return
+      if (t.isIdentifier(id)) {
+        candidates.push({ names: [id.name], path, source: init })
+        return
+      }
+      if (isGlobalHost(t, init)) {
+        candidates.push({ names: destructuredEvalNames(id), path, source: null })
+      }
+    },
+    AssignmentExpression(path) {
+      const { left, right } = path.node
+      if (t.isIdentifier(left)) {
+        candidates.push({ names: [left.name], path, source: right })
+        return
+      }
+      if (isGlobalHost(t, right)) {
+        candidates.push({ names: destructuredEvalNames(left), path, source: null })
+      }
+    },
+  })
+
+  // An alias of an alias is only recognizable once the first alias is known, so
+  // iterate to a fixpoint.
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const candidate of candidates) {
+      if (candidate.names.length === 0) continue
+      if (candidate.source && !isEvalValue(t, candidate.path, candidate.source, aliases)) continue
+      for (const name of candidate.names) {
+        if (aliases.has(name)) continue
+        aliases.add(name)
+        changed = true
+      }
+    }
+  }
+  return aliases
+}
+
+/**
+ * True when `node` denotes the intrinsic `eval` or an alias of it.
+ *
+ * Sequence expressions are unwrapped to their last operand: `(0, eval)` is the
+ * canonical indirect-eval spelling and evaluates to the intrinsic function.
+ *
+ * @param {object} t
+ * @param {object} path - path whose scope decides whether bare `eval` is shadowed
+ * @param {object|null} node
+ * @param {Set<string>} evalAliases
+ * @returns {boolean}
+ */
+function isEvalValue(t, path, node, evalAliases) {
+  if (!node) return false
+  if (t.isParenthesizedExpression?.(node)) return isEvalValue(t, path, node.expression, evalAliases)
+  if (t.isSequenceExpression(node)) {
+    const last = node.expressions[node.expressions.length - 1]
+    return isEvalValue(t, path, last, evalAliases)
+  }
+  if (t.isIdentifier(node)) {
+    if (evalAliases.has(node.name)) return true
+    if (node.name === 'eval') return !path.scope.getBinding('eval')
+    return false
+  }
+  if (t.isMemberExpression(node)) {
+    return memberName(t, node) === 'eval' && isGlobalHost(t, node.object)
+  }
+  return false
+}
+
+/**
+ * True when the file contains a shape that reaches script scope through `eval`
+ * without naming it as a callee or a global member: indirect eval through a
+ * sequence expression (`(0, eval)(...)`, `(0, alias)(...)`), `.call`/`.apply`
+ * on an eval alias, or any `with` block. Such a shape can read or write every
+ * script-scope binding, so no string array is statically unreachable.
+ *
+ * @param {object} t
+ * @param {object} traverse
+ * @param {object} ast
+ * @param {Set<string>} evalAliases
+ * @returns {boolean}
+ */
+function hasIndirectEvalShape(t, traverse, ast, evalAliases) {
   let found = false
   traverse(ast, {
     WithStatement(path) {
@@ -1031,24 +1180,69 @@ function hasDynamicAccess(traverse, ast, name) {
     },
     CallExpression(path) {
       if (found) return
-      if (path.node.callee?.type !== 'Identifier' || path.node.callee.name !== 'eval') return
-      if (path.scope.getBinding('eval')) return
+      const callee = path.node.callee
+      // Any call whose callee evaluates to eval/alias reaches script scope:
+      // `eval(...)`, `window['eval'](...)`, an alias name, `(0, eval)(...)`.
+      if (isEvalValue(t, path, callee, evalAliases)) {
+        found = true
+        path.stop()
+        return
+      }
+      if (!t.isMemberExpression(callee)) return
+      const method = memberName(t, callee)
+      // `.call`/`.apply` invoke the function-valued object, so `(0, eval).call`,
+      // `alias.call` and `alias.apply` are indirect eval as well.
+      if ((method === 'call' || method === 'apply') && isEvalValue(t, path, callee.object, evalAliases)) {
+        found = true
+        path.stop()
+      }
+    },
+  })
+  return found
+}
+
+/**
+ * True when `name` may still be reached without a static binding reference
+ * (`window.name`, `this.name`, `eval` and its aliases, `with`).
+ *
+ * @param {object} t
+ * @param {object} traverse
+ * @param {object} ast
+ * @param {string} name
+ * @param {Set<string>} evalAliases
+ * @returns {boolean}
+ */
+function hasDynamicAccess(t, traverse, ast, name, evalAliases) {
+  let found = false
+  traverse(ast, {
+    WithStatement(path) {
       found = true
       path.stop()
     },
+    CallExpression(path) {
+      if (found) return
+      const callee = path.node.callee
+      if (t.isIdentifier(callee)) {
+        const directEval = callee.name === 'eval' && !path.scope.getBinding('eval')
+        if (directEval || evalAliases.has(callee.name)) {
+          found = true
+          path.stop()
+        }
+        return
+      }
+      if (t.isMemberExpression(callee) && memberName(t, callee) === 'eval') {
+        if (isGlobalHost(t, callee.object)) {
+          found = true
+          path.stop()
+        }
+      }
+    },
     MemberExpression(path) {
       if (found) return
-      const property = path.node.property
-      const propertyName = path.node.computed
-        ? property?.type === 'StringLiteral'
-          ? property.value
-          : null
-        : property?.type === 'Identifier'
-          ? property.name
-          : null
-      if (propertyName !== name) return
-      const object = path.node.object
-      if (object?.type === 'Identifier' && GLOBAL_ALIASES.has(object.name)) {
+      if (memberName(t, path.node) !== name) return
+      // `this.x` is not the global object inside a module or function, but
+      // bailing there is conservative and never changes semantics.
+      if (isGlobalHost(t, path.node.object)) {
         found = true
         path.stop()
       }
@@ -1072,9 +1266,31 @@ export function run(ast, context) {
   const records = collectStringArrays(t, traverse, ast)
   if (records.length === 0) return { changed: false, notes }
 
+  // Dynamic reachability (`eval` and its aliases, `with`, global-object writes)
+  // is a whole-program property of a binding. Compute it once per candidate and
+  // apply it before any rewrite, so a bail blocks rotation and inlining, not
+  // just the final declaration removal.
+  const evalAliases = collectEvalAliases(t, traverse, ast)
+  // An indirect-eval or `with` shape can reach any script binding, so it is a
+  // whole-file bail rather than something that can be attributed to one name.
+  const indirectEval = hasIndirectEvalShape(t, traverse, ast, evalAliases)
+  for (const record of records) {
+    if (indirectEval || hasDynamicAccess(t, traverse, ast, record.name, evalAliases)) {
+      record.poisoned = true
+      record.dynamicAccess = true
+      notes.push(`kept ${record.name}: reachable via dynamic access`)
+    }
+  }
+
   const rotations = applyRotations(t, traverse, ast, records, notes, report)
   if (rotations > 0) refreshScopes(traverse, ast)
   const decoders = collectDecoders(t, traverse, ast, records)
+  for (const decoder of decoders) {
+    if (hasDynamicAccess(t, traverse, ast, decoder.name, evalAliases)) {
+      decoder.dynamicAccess = true
+      notes.push(`kept ${decoder.name}: reachable via dynamic access`)
+    }
+  }
   const usable = records.filter((record) => !record.poisoned)
   for (const record of usable) {
     if (!arrayIsReadOnly(record)) {
@@ -1082,7 +1298,9 @@ export function run(ast, context) {
       notes.push(`kept ${record.name}: it is mutated or escapes as a value`)
     }
   }
-  const decodersAfterCheck = decoders.filter((decoder) => !decoder.array.poisoned)
+  const decodersAfterCheck = decoders.filter(
+    (decoder) => !decoder.array.poisoned && !decoder.dynamicAccess,
+  )
 
   const inlines = inlineAll(t, traverse, ast, records, decodersAfterCheck, notes, report)
   const removed = removeUnreferencedDeclarations(traverse, ast, records, decodersAfterCheck, notes, report)
