@@ -31,6 +31,7 @@
  * the initial document, cloning a detached node) runs through the same setters
  * and is therefore silenced: it is platform bookkeeping, not sample behaviour.
  */
+import { ensureNetwork } from './network.js'
 
 export const meta = { id: 'dom', order: 30, requires: ['globals'] }
 
@@ -219,9 +220,11 @@ export function install(bridge) {
   else bound.value.dispose()
 
   // ---- window event target ----------------------------------------------
-  const eventTargetMethods = shimValue('eventTargetMethods')
+  // Global aliases go through guest wrappers so a bare `addEventListener(...)`
+  // call (strict mode: `this === undefined`) still targets the window.
+  const globalEventTargetMethods = shimValue('globalEventTargetMethods')
   for (const name of ['addEventListener', 'removeEventListener', 'dispatchEvent']) {
-    const method = keep(ctx.getProp(eventTargetMethods, name))
+    const method = keep(ctx.getProp(globalEventTargetMethods, name))
     bridge.install(bridge.global, name, method, methodFlags)
     bridge.adopt(method, name)
   }
@@ -710,11 +713,65 @@ export function elementPrototypifier(bridge) {
  */
 function createShim(bridge, keep) {
   const { ctx } = bridge
+  /** Base URL for a captured navigation; `location` publishes the live one. */
+  const egressBase = () =>
+    typeof bridge.currentUrl === 'function' ? bridge.currentUrl() : bridge.profile?.href ?? 'about:blank'
   /** Host hooks: the only channel from the guest model back to the sandbox. */
   const hooks = bridge.obj({
     // Returns a handle, never a plain number: `bridge.fn` disposes every
     // primitive it converts before quickjs-emscripten duplicates the result.
     now: bridge.fn('now', 0, () => ctx.newNumber(bridge.clock?.performanceNow?.() ?? 0)),
+    /**
+     * Resolve a URL attribute the way the `href`/`action` getters must report
+     * it: absolute, against the live document URL. An empty value stays empty;
+     * an unparsable one is returned verbatim rather than throwing.
+     */
+    resolveUrl: bridge.fn('resolveUrl', 1, ({ args }) => {
+      const raw = bridge.str(args, 0, '')
+      if (raw === '') return ctx.newString('')
+      try {
+        return ctx.newString(new URL(raw, egressBase()).href)
+      } catch {
+        return ctx.newString(raw)
+      }
+    }),
+    /** Absolute URL of the current document, the default for `form.action`. */
+    documentUrl: bridge.fn('documentUrl', 0, () => ctx.newString(egressBase())),
+    /**
+     * Capture a browser default action on a URL (link click, form submit).
+     * Mirrors `location` navigation: the request is resolved against the live
+     * document URL and served by the network service, but the document URL is
+     * never changed. When `sameDocumentOnly` is true (an anchor activation) a
+     * URL that differs from the document only by its fragment is a
+     * same-document navigation: no request and no IOC.
+     */
+    navigate: bridge.fn('navigate', 4, ({ args }) => {
+      const api = bridge.str(args, 0, '')
+      const raw = bridge.str(args, 1, '') || egressBase()
+      const method = (bridge.str(args, 2, 'GET') || 'GET').toUpperCase()
+      const sameDocumentOnly = bridge.value(args, 3) === true
+      let target
+      let base
+      try {
+        base = new URL(egressBase())
+        target = new URL(raw, egressBase())
+      } catch {
+        return ctx.undefined
+      }
+      if (sameDocumentOnly && isSameDocumentUrl(target, base)) {
+        bridge.emit('api', 'before', { api, url: target.href, sameDocument: true })
+        return ctx.undefined
+      }
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+        bridge.emit('api', 'before', { api, url: target.href, blocked: true, reason: 'scheme' })
+        return ctx.undefined
+      }
+      bridge.emit('api', 'before', { api, url: target.href })
+      // `computeResult` records the request (net event) and reports the IOC
+      // without scheduling or performing anything.
+      ensureNetwork(bridge).computeResult({ method, url: target.href, headers: {}, body: null })
+      return ctx.undefined
+    }),
     trace: bridge.fn('trace', 3, ({ args }) => {
       const kind = bridge.str(args, 0, '')
       if (!GUEST_TRACE_KINDS.has(kind)) return ctx.undefined
@@ -752,6 +809,23 @@ function createShim(bridge, keep) {
     throw new Error(`dom shim failed: ${dumped?.message ?? dumped}`)
   }
   return keep(call.value)
+}
+
+/**
+ * True when `target` differs from `base` only by its fragment. Such a link is a
+ * same-document navigation: it scrolls the current page instead of sending a
+ * request, so it must not look like egress.
+ *
+ * @param {URL} target resolved candidate navigation
+ * @param {URL} base live document URL
+ * @returns {boolean}
+ */
+function isSameDocumentUrl(target, base) {
+  return (
+    target.origin === base.origin &&
+    target.pathname === base.pathname &&
+    target.search === base.search
+  )
 }
 
 /**
@@ -934,6 +1008,14 @@ function domShim(host) {
     value: 'value',
     width: 'width',
   }
+
+  /**
+   * Attribute-backed URL properties whose property write is also a content
+   * attribute write, so `getAttribute` reports the raw value the page set.
+   * `action` and `href` on elements that shadow the generic accessor use
+   * `makeUrlAttributeAccessor`; `src`/`href` here are the generic Element path.
+   */
+  var URL_ATTRIBUTE_NAMES = { href: true, src: true }
 
   /**
    * tag -> HTML interface name.
@@ -1150,6 +1232,40 @@ function domShim(host) {
     traceMutation('set ' + key, TRACED_TEXT_SETTERS[key], target, { length: length })
   }
 
+  /**
+   * Report a URL-bearing attribute write (`a.href`, `form.action`) as tag plus
+   * length: the URL is attacker-controlled, so the payload keeps its shape and
+   * size, never the address itself.
+   * @param {object} target element whose setter ran
+   * @param {string} key `href` or `action`
+   * @param {string} api interface member, e.g. `HTMLAnchorElement.href`
+   * @param {unknown} value written value, measured but not recorded
+   */
+  function traceUrlMutation(target, key, api, value) {
+    if (quietDepth > 0) return
+    var length = 0
+    try {
+      length = stringOf(value).length
+    } catch (error) {
+      length = 0
+    }
+    traceMutation('set ' + key, api, target, { length: length })
+  }
+
+  /**
+   * Reflect a URL property write into the content attribute. The stored value
+   * is the raw string the guest assigned (`/y`, not the resolved absolute URL),
+   * because that is what `getAttribute` reports on the platform.
+   * @param {object} element element whose property was written
+   * @param {string} key attribute name
+   * @param {unknown} value written value
+   */
+  function reflectUrlAttribute(element, key, value) {
+    var state = nodeStates.get(element)
+    if (!state) return
+    state.attrs[key] = stringOf(value)
+  }
+
   /** Internal-slot bag of the nearest node in the receiver's prototype chain. */
   function bagFor(receiver) {
     var current = receiver
@@ -1184,10 +1300,22 @@ function domShim(host) {
       source =
         'return function (value) { var bag = bagFor(this); if (!bag) return;' +
         ' bag["' + key + '"] = value; traceTextMutation(this, "' + key + '", value) }'
+    } else if (URL_ATTRIBUTE_NAMES[key]) {
+      // A URL-bearing property write is also a content-attribute write:
+      // `img.src = '/x'` followed by `getAttribute('src')` must see `/x`.
+      source =
+        'return function (value) { var bag = bagFor(this); if (!bag) return;' +
+        ' bag["' + key + '"] = value; reflectUrlAttribute(this, "' + key + '", value) }'
     } else {
       source = 'return function (value) { var bag = bagFor(this); if (bag) bag["' + key + '"] = value }'
     }
-    var accessor = new Function('bagFor', 'traceTextMutation', 'aggregateTextContent', source)(bagFor, traceTextMutation, aggregateTextContent)
+    var accessor = new Function(
+      'bagFor',
+      'traceTextMutation',
+      'aggregateTextContent',
+      'reflectUrlAttribute',
+      source,
+    )(bagFor, traceTextMutation, aggregateTextContent, reflectUrlAttribute)
     Object.defineProperty(accessor, 'name', {
       value: (kind === 'get' ? 'get ' : 'set ') + key,
       configurable: true,
@@ -1203,6 +1331,48 @@ function domShim(host) {
       Object.defineProperty(prototype, key, { get: getter, set: setter, enumerable: true, configurable: true })
       attributeAccessors.push(getter, setter)
     }
+  }
+
+  /**
+   * URL-reflecting attribute (`a.href`, `form.action`). The value is stored
+   * verbatim and resolved only when read (`resolveUrl`) or when a default action
+   * runs, so the setter can trace the write as tag + length without touching
+   * the network. The raw value is also reflected into the content attribute,
+   * where `getAttribute` can see it.
+   * @param {string} key property name
+   * @param {string} api interface member name used in the trace
+   * @param {'get'|'set'} kind accessor kind
+   */
+  function makeUrlAttributeAccessor(key, api, kind) {
+    var source
+    if (kind === 'get') {
+      // `form.action` falls back to the document URL when the attribute is
+      // absent (HTML's "missing value default"); `a.href` stays empty.
+      var emptyResult = key === 'action' ? 'return documentUrl()' : 'return ""'
+      source =
+        'return function () { var bag = bagFor(this); var value = bag ? stringOf(bag["' + key + '"]) : "";' +
+        ' if (value === "") ' + emptyResult + ';' +
+        ' return resolveUrl(value) }'
+    } else {
+      source =
+        'return function (value) { var bag = bagFor(this); if (bag) bag["' + key + '"] = value;' +
+        ' reflectUrlAttribute(this, "' + key + '", value);' +
+        ' traceUrlMutation(this, "' + key + '", "' + api + '", value) }'
+    }
+    var accessor = new Function(
+      'bagFor',
+      'stringOf',
+      'traceUrlMutation',
+      'resolveUrl',
+      'documentUrl',
+      'reflectUrlAttribute',
+      source,
+    )(bagFor, stringOf, traceUrlMutation, host.resolveUrl, host.documentUrl, reflectUrlAttribute)
+    Object.defineProperty(accessor, 'name', {
+      value: (kind === 'get' ? 'get ' : 'set ') + key,
+      configurable: true,
+    })
+    return accessor
   }
 
   function stringOf(value) {
@@ -1535,6 +1705,25 @@ function domShim(host) {
     return path
   }
 
+  /**
+   * Nearest `<a href>`/`<area href>` in an event path. Browsers run a click's
+   * activation behavior from the path, so a click on a descendant of the anchor
+   * (or any dispatched click event) follows the link too.
+   * @param {object[]} path event path, target first
+   * @returns {object|null}
+   */
+  function activationAnchorFor(path) {
+    for (var index = 0; index < path.length; index += 1) {
+      var state = nodeStates.get(path[index])
+      if (!state) continue
+      var tag = stringOf(state.tag).toLowerCase()
+      if (tag !== 'a' && tag !== 'area') continue
+      var bag = bagFor(path[index])
+      if (bag && stringOf(bag.href) !== '') return path[index]
+    }
+    return null
+  }
+
   function invokePhaseListeners(target, event, typeName, capture, state) {
     var list = listeners.get(target)
     if (!list) return
@@ -1597,6 +1786,18 @@ function domShim(host) {
       }
     }
 
+    // Default action for a click: the nearest ancestor-or-self anchor with an
+    // href is captured as a request, never navigated to. A same-document URL
+    // (for example `#section`) only scrolls: the host records the activation
+    // but sends nothing.
+    if (typeName === 'click' && event.defaultPrevented !== true) {
+      var activationAnchor = activationAnchorFor(path)
+      if (activationAnchor) {
+        var activationBag = bagFor(activationAnchor)
+        host.navigate('HTMLAnchorElement.click', stringOf(activationBag.href), 'GET', true)
+      }
+    }
+
     event.eventPhase = 0
     event.currentTarget = null
     host.trace('dom', 'emit', {
@@ -1623,10 +1824,18 @@ function domShim(host) {
         passive = options.passive === true
       }
       var list = listenerListOf(target)
-      for (var index = 0; index < list.length; index += 1) {
-        if (list[index].listener === listener && list[index].capture === capture) return
-      }
       var typeName = stringOf(type)
+      // Identity is (type, listener, capture): the same function may listen for
+      // several event types, and the browser dedupes only an exact triple.
+      for (var index = 0; index < list.length; index += 1) {
+        if (
+          list[index].type === typeName &&
+          list[index].listener === listener &&
+          list[index].capture === capture
+        ) {
+          return
+        }
+      }
       list.push({ type: typeName, listener: listener, capture: capture, once: once, passive: passive })
       host.trace('api', 'before', {
         api: 'EventTarget.addEventListener',
@@ -1638,15 +1847,20 @@ function domShim(host) {
     removeEventListener: function removeEventListener(type, listener, options) {
       var target = this
       var capture = typeof options === 'boolean' ? options : Boolean(options && options.capture === true)
+      var typeName = stringOf(type)
       var list = listeners.get(target)
       if (!list) return
       for (var index = 0; index < list.length; index += 1) {
-        if (list[index].listener === listener && list[index].capture === capture) {
+        if (
+          list[index].type === typeName &&
+          list[index].listener === listener &&
+          list[index].capture === capture
+        ) {
           list.splice(index, 1)
           host.trace('api', 'before', {
             api: 'EventTarget.removeEventListener',
             target: targetName(target),
-            type: stringOf(type),
+            type: typeName,
             capture: capture,
           })
           return
@@ -1656,6 +1870,29 @@ function domShim(host) {
     dispatchEvent: function dispatchEvent(event) {
       return dispatchEventOn(this, event)
     },
+  }
+
+  /**
+   * Global aliases (`addEventListener(...)` without a receiver). The shim runs
+   * in strict mode, so a bare call would otherwise see `this === undefined`
+   * and use it as a WeakMap key; the wrapper substitutes the global object.
+   * @param {string} name EventTarget member name
+   */
+  function makeGlobalAlias(name) {
+    var factory = new Function(
+      'methods',
+      'return function ' + name + '() {' +
+        ' return methods["' + name + '"].apply(this === undefined || this === null ? globalThis : this, arguments) }',
+    )
+    var alias = factory(eventTargetMethods)
+    Object.defineProperty(alias, 'name', { value: name, configurable: true })
+    return alias
+  }
+
+  var globalEventTargetMethods = {
+    addEventListener: makeGlobalAlias('addEventListener'),
+    removeEventListener: makeGlobalAlias('removeEventListener'),
+    dispatchEvent: makeGlobalAlias('dispatchEvent'),
   }
 
   // ------------------------------------------------------------ node model
@@ -1977,6 +2214,14 @@ function domShim(host) {
       if (element.style) element.style.cssText = value
       return
     }
+    // `action`/`method` are attribute-backed IDL properties without a generic
+    // Element accessor. Reflection writes the internal bag instead of assigning
+    // a property, which would add an own property to the instance.
+    if (key === 'action' || key === 'method') {
+      var bag = bagFor(element)
+      if (bag) bag[key] = value
+      return
+    }
     var property = REFLECTED_ATTRIBUTES[key]
     if (property) element[property] = value
   }
@@ -2010,8 +2255,10 @@ function domShim(host) {
       var state = nodeStates.get(this)
       if (!state) return
       var key = stringOf(name).toLowerCase()
-      delete state.attrs[key]
+      // Reflect first, then drop the attribute: a URL setter would otherwise
+      // re-create the content attribute it is being asked to remove.
       reflectAttribute(this, key, '')
+      delete state.attrs[key]
       if (key === 'style' && this.style) this.style.cssText = ''
       traceMutation('removeAttribute', 'Element.removeAttribute', this, { attribute: key })
     },
@@ -2774,6 +3021,66 @@ function domShim(host) {
     tagProtos[interfaceName] = tagProto
   }
 
+  // ------------------------------------------------- links and forms
+  // `<a href>` and `<form action>` shadow the generic Element attributes so a
+  // write is traced; the URL is resolved only when the default action runs.
+  var anchorProto = tagProtos.HTMLAnchorElement
+  if (anchorProto) {
+    var anchorHrefGetter = makeUrlAttributeAccessor('href', 'HTMLAnchorElement.href', 'get')
+    var anchorHrefSetter = makeUrlAttributeAccessor('href', 'HTMLAnchorElement.href', 'set')
+    defineAccessor(anchorProto, 'href', anchorHrefGetter, anchorHrefSetter)
+    attributeAccessors.push(anchorHrefGetter, anchorHrefSetter)
+  }
+
+  var formProto = tagProtos.HTMLFormElement
+  if (formProto) {
+    var formActionGetter = makeUrlAttributeAccessor('action', 'HTMLFormElement.action', 'get')
+    var formActionSetter = makeUrlAttributeAccessor('action', 'HTMLFormElement.action', 'set')
+    defineAccessor(formProto, 'action', formActionGetter, formActionSetter)
+    attributeAccessors.push(formActionGetter, formActionSetter)
+
+    // `method` is a limited-to-known-values attribute: reading it reports one of
+    // `get`/`post`/`dialog`, with an unknown (or missing) keyword falling back to
+    // `get`; writing it updates the attribute (`getAttribute` sees the write) as
+    // well as the internal bag.
+    var formMethodGetter = new Function(
+      'nodeStates',
+      'stringOf',
+      'return function () { var state = nodeStates.get(this);' +
+        ' var value = state ? stringOf(state.attrs.method).toLowerCase() : "";' +
+        ' return value === "post" || value === "dialog" ? value : "get" }',
+    )(nodeStates, stringOf)
+    var formMethodSetter = new Function(
+      'nodeStates',
+      'bagFor',
+      'stringOf',
+      'return function (value) { var text = stringOf(value);' +
+        ' var state = nodeStates.get(this); if (state) state.attrs.method = text;' +
+        ' var bag = bagFor(this); if (bag) bag.method = text }',
+    )(nodeStates, bagFor, stringOf)
+    Object.defineProperty(formMethodGetter, 'name', { value: 'get method', configurable: true })
+    Object.defineProperty(formMethodSetter, 'name', { value: 'set method', configurable: true })
+    defineAccessor(formProto, 'method', formMethodGetter, formMethodSetter)
+    attributeAccessors.push(formMethodGetter, formMethodSetter)
+
+    /** Submissions honour a POST method attribute, like the browser default. */
+    function formMethodOf(form) {
+      var state = nodeStates.get(form)
+      var method = state && state.attrs.method ? stringOf(state.attrs.method).toLowerCase() : ''
+      return method === 'post' ? 'POST' : 'GET'
+    }
+
+    defineHidden(formProto, 'submit', function submit() {
+      var bag = bagFor(this)
+      host.navigate('HTMLFormElement.submit', bag ? stringOf(bag.action) : '', formMethodOf(this))
+    })
+    defineHidden(formProto, 'requestSubmit', function requestSubmit(submitter) {
+      void submitter
+      var bag = bagFor(this)
+      host.navigate('HTMLFormElement.requestSubmit', bag ? stringOf(bag.action) : '', formMethodOf(this))
+    })
+  }
+
   defineInterfacePrototype(documentFragmentProto, 'DocumentFragment')
   defineInterfacePrototype(documentProto, 'Document')
   defineInterfacePrototype(htmlDocumentProto, 'HTMLDocument')
@@ -2816,6 +3123,7 @@ function domShim(host) {
     eventMethods: eventMethods,
     eventInits: eventInits,
     eventTargetMethods: eventTargetMethods,
+    globalEventTargetMethods: globalEventTargetMethods,
     nodeMethods: nodeMethods,
     elementMethods: elementMethods,
     documentMethods: documentMethods,
