@@ -12,6 +12,59 @@ export const meta = { id: 'encoding', order: 70, requires: [] }
 
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
+/**
+ * Code units handed to one `String.fromCharCode.apply` call. Kept far below
+ * both V8's spread limit and QuickJS's 65,534-argument cap, so a large string
+ * never overflows either engine.
+ */
+const CHAR_CHUNK = 4096
+
+const FROM_CODE_UNITS_SOURCE =
+  `(function(buffer){ var codes = new Uint16Array(buffer); var size = ${CHAR_CHUNK}; var out = '';` +
+  ` for (var i = 0; i < codes.length; i += size) { var end = i + size; if (end > codes.length) end = codes.length;` +
+  ` out += String.fromCharCode.apply(null, codes.subarray(i, end)); } return out })`
+
+/**
+ * Create a guest-string builder that survives embedded NULs and large inputs.
+ *
+ * `ctx.newString` stops at the first NUL, and one
+ * `String.fromCharCode(...codes)` spread overflows both V8's stack and
+ * QuickJS's argument limit. NUL-bearing text therefore travels as UTF-16 code
+ * units in an ArrayBuffer and is joined in fixed-size chunks inside the guest.
+ *
+ * @param {object} ctx QuickJS context
+ * @returns {{ fromText: (text: string) => object, dispose: () => void }}
+ */
+export function createTextBuilder(ctx) {
+  const fromCodeUnits = ctx.unwrapResult(
+    ctx.evalCode(FROM_CODE_UNITS_SOURCE, 'ai4r-internal:text-from-code-units'),
+  )
+  const fromText = (text) => {
+    const value = String(text)
+    if (!value.includes('\0')) return ctx.newString(value)
+    const units = new Uint16Array(value.length)
+    for (let index = 0; index < value.length; index += 1) {
+      units[index] = value.charCodeAt(index)
+    }
+    const buffer = ctx.newArrayBuffer(units.buffer)
+    try {
+      return ctx.unwrapResult(ctx.callFunction(fromCodeUnits, ctx.undefined, [buffer]))
+    } finally {
+      buffer.dispose()
+    }
+  }
+  return {
+    fromText,
+    dispose() {
+      try {
+        fromCodeUnits.dispose()
+      } catch {
+        /* already gone */
+      }
+    },
+  }
+}
+
 export function install(bridge) {
   const { ctx } = bridge
 
@@ -24,12 +77,7 @@ export function install(bridge) {
   const Uint8ArrayFactory = ctx.unwrapResult(
     ctx.evalCode('(function(buffer){ return new Uint8Array(buffer) })'),
   )
-  const fromCharCodes = ctx.unwrapResult(
-    ctx.evalCode(
-      '(function(codes){ return String.fromCharCode.apply(null, codes) })',
-      'ai4r-internal:encoding-from-codes',
-    ),
-  )
+  const textBuilder = createTextBuilder(ctx)
   const toCharCodes = ctx.unwrapResult(
     ctx.evalCode(
       '(function(s){ var out = []; for (var i = 0; i < s.length; i++) out.push(s.charCodeAt(i)); return out })',
@@ -38,24 +86,19 @@ export function install(bridge) {
   )
   bridge.onDispose(() => {
     Uint8ArrayFactory.dispose()
-    try { fromCharCodes.dispose() } catch { /* already gone */ }
+    textBuilder.dispose()
     try { toCharCodes.dispose() } catch { /* already gone */ }
   })
 
-  const newJsString = (text) => {
-    const value = String(text)
-    if (!value.includes('\0')) return ctx.newString(value)
-    const codes = ctx.newArray()
-    try {
-      for (let index = 0; index < value.length; index += 1) {
-        const code = ctx.newNumber(value.charCodeAt(index))
-        ctx.setProp(codes, index, code)
-        code.dispose()
-      }
-      return ctx.unwrapResult(ctx.callFunction(fromCharCodes, ctx.undefined, [codes]))
-    } finally {
-      codes.dispose()
+  const newJsString = (text) => textBuilder.fromText(text)
+
+  /** Join host-side UTF-16 code units without a single large spread. */
+  const joinCodeUnits = (codes) => {
+    let text = ''
+    for (let index = 0; index < codes.length; index += CHAR_CHUNK) {
+      text += String.fromCharCode.apply(null, codes.slice(index, index + CHAR_CHUNK))
     }
+    return text
   }
 
   const readJsString = (handle) => {
@@ -68,7 +111,7 @@ export function install(bridge) {
     try {
       const codes = ctx.dump(codesHandle.value)
       if (!Array.isArray(codes)) return ctx.getString(handle)
-      return String.fromCharCode(...codes)
+      return joinCodeUnits(codes)
     } finally {
       codesHandle.value.dispose()
     }
@@ -263,6 +306,9 @@ export function install(bridge) {
         bridge.emit('api', 'before', { api: 'TextDecoder.decode', encoding, length: bytes.length })
         return newJsString(decoded)
       } catch (error) {
+        // Only a real codec failure is a TypeError. Anything else keeps its
+        // own identity so a host limit is never misreported as malformed input.
+        if (!(error instanceof TypeError)) throw error
         throw Object.assign(new Error(error.message), { name: 'TypeError' })
       }
     })

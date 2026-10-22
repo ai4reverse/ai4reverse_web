@@ -13,6 +13,7 @@
 
 import { isHandle } from '../bridge.js'
 import { createKit } from './platform-kit.js'
+import { createTextBuilder } from './encoding.js'
 
 export const meta = { id: 'blob', order: 92, requires: ['globals'] }
 
@@ -108,6 +109,8 @@ function readBlobBytes(bridge, kit, source) {
 function installBlob(bridge, kit) {
   const { ctx } = bridge
   const { states, retain, fulfilled } = kit
+  const textBuilder = createTextBuilder(ctx)
+  bridge.onDispose(() => textBuilder.dispose())
 
   const initialize = bridge.fn('initialize', 3, ({ args }) => {
     const bytes = readBlobBytes(bridge, kit, args[1])
@@ -134,7 +137,10 @@ function installBlob(bridge, kit) {
   method('text', bridge.fn('text', 0, ({ thisHandle }) => {
     const state = states.require(thisHandle)
     bridge.emit('api', 'before', { api: 'Blob.text', size: state.bytes.byteLength })
-    return fulfilled(retain(ctx.newString(Buffer.from(state.bytes).toString('utf8'))))
+    // UTF-8 decode per spec strips a leading BOM; the builder keeps embedded
+    // NULs that `ctx.newString` would truncate at.
+    const decoded = new TextDecoder('utf-8').decode(state.bytes)
+    return fulfilled(retain(textBuilder.fromText(decoded)))
   }))
 
   method('arrayBuffer', bridge.fn('arrayBuffer', 0, ({ thisHandle }) => {

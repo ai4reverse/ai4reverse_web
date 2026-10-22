@@ -339,6 +339,121 @@ test('a fatal decoder throws on malformed input and records the decode', async (
   }
 })
 
+test('TextEncoder and btoa handle payloads larger than the engine argument cap', async () => {
+  const harness = await encodingHarness()
+  try {
+    // 200,000 code units is past both V8's spread limit and QuickJS's
+    // 65,534-argument limit, so the host must not rebuild the string with one
+    // `String.fromCharCode(...codes)` call.
+    const value = runGuest(
+      harness,
+      `(function () {
+        var payload = 'a'.repeat(200000);
+        var bytes = new TextEncoder().encode(payload);
+        var encoded = btoa(payload);
+        return JSON.stringify({
+          bytes: bytes.length,
+          firstByte: bytes[0],
+          lastByte: bytes[bytes.length - 1],
+          encoded: encoded.length,
+        });
+      })()`,
+    )
+    const parsed = JSON.parse(value)
+    assert.equal(parsed.bytes, 200000, 'every code unit becomes one UTF-8 byte')
+    assert.equal(parsed.firstByte, 97)
+    assert.equal(parsed.lastByte, 97)
+    assert.equal(parsed.encoded, 266668, 'a 200,000-character latin1 payload encodes in full')
+  } finally {
+    const disposal = harness.dispose()
+    assert.equal(disposal.ok, true, 'a large payload must not abandon the runtime')
+    assert.equal(disposal.leaked, false, 'a large payload must not be reported as a leak')
+  }
+})
+
+test('atob returns a large NUL-bearing string instead of an argument error', async () => {
+  const harness = await encodingHarness()
+  try {
+    const value = runGuest(
+      harness,
+      `(function () {
+        var decoded = atob('A'.repeat(200000));
+        return JSON.stringify({
+          length: decoded.length,
+          first: decoded.charCodeAt(0),
+          last: decoded.charCodeAt(decoded.length - 1),
+        });
+      })()`,
+    )
+    const parsed = JSON.parse(value)
+    // `A` is the zero sextet: 200,000 base64 characters are 150,000 NUL bytes.
+    assert.equal(parsed.length, 150000)
+    assert.equal(parsed.first, 0)
+    assert.equal(parsed.last, 0)
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('TextDecoder returns 200,000 NUL code units without rewriting the error', async () => {
+  const harness = await encodingHarness()
+  try {
+    const value = runGuest(
+      harness,
+      `(function () {
+        var text = new TextDecoder('utf-8').decode(new Uint8Array(200000));
+        return JSON.stringify({
+          length: text.length,
+          first: text.charCodeAt(0),
+          last: text.charCodeAt(text.length - 1),
+        });
+      })()`,
+    )
+    const parsed = JSON.parse(value)
+    assert.equal(parsed.length, 200000)
+    assert.equal(parsed.first, 0)
+    assert.equal(parsed.last, 0)
+  } finally {
+    harness.dispose()
+  }
+})
+
+test('Blob.text strips a UTF-8 BOM and preserves embedded NUL bytes', async () => {
+  const harness = await createHarness({ modules: ['globals', 'encoding', 'blob'] })
+  try {
+    runGuest(
+      harness,
+      `(function () {
+        globalThis.__blobTexts = [];
+        new Blob([new Uint8Array([65, 0, 66])]).text().then(function (text) {
+          globalThis.__blobTexts.push([text.length, text.charCodeAt(0), text.charCodeAt(1), text.charCodeAt(2)]);
+        });
+        new Blob([new Uint8Array([239, 187, 191, 65])]).text().then(function (text) {
+          globalThis.__blobTexts.push([text.length, text.charCodeAt(0)]);
+        });
+        new Blob([new Uint8Array(200000)]).text().then(function (text) {
+          globalThis.__blobTexts.push([text.length, text.charCodeAt(text.length - 1)]);
+        });
+        return 'pending';
+      })()`,
+    )
+    harness.timers()
+    assert.equal(harness.jobs().ok, true)
+    const texts = runGuest(harness, 'globalThis.__blobTexts')
+    assert.deepEqual(
+      texts,
+      [
+        [3, 65, 0, 66],
+        [1, 65],
+        [200000, 0],
+      ],
+      'the BOM is stripped, embedded NULs survive, and large text is intact',
+    )
+  } finally {
+    harness.dispose()
+  }
+})
+
 test('the codecs look native and can be installed standalone', async () => {
   const harness = await createHarness({ modules: ['globals'] })
   try {
