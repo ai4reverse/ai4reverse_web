@@ -16,6 +16,7 @@ import { createLogger } from './logging/logger.js'
 import { analyzeSample } from './analysis/orchestrator.js'
 import { restore, listPasses } from './restore/index.js'
 import { TracelessSandbox } from './sandbox/sandbox.js'
+import { createProfile } from './sandbox/profile.js'
 import { analyzeConstraints, renderConstraintReport } from './constraint/index.js'
 import { analyzeTaint, renderTaintReport, TAINT_LIMITS } from './taint/index.js'
 import { normalizeTaintOptions } from './taint/analyze.js'
@@ -74,7 +75,8 @@ Options (taint):
 
 Option values are validated: an unknown option, an unknown pass id, a bad
 --level or a malformed number is a usage error (exit 2) with the message on
-stderr and nothing on stdout.
+stderr and nothing on stdout. --passes, --exclude and --rounds are restore-only;
+passing them to any other command is the same usage error.
 
 Exit codes:
   0  success
@@ -175,6 +177,33 @@ function parseJsonOption(name, text) {
   } catch (error) {
     throw new UsageError(`invalid JSON for --${name}: ${error.message}`)
   }
+}
+
+/**
+ * Validate `--profile` at the CLI boundary: JSON syntax, object shape, and the
+ * fields the sandbox actually accepts.
+ *
+ * A well-formed JSON object with an unknown value (e.g. `browser: 'chromium'`)
+ * used to reach `TracelessSandbox.create`, fail the dynamic stage, and still
+ * let `analyze` exit 0 with a verdict but no trace. The profile is an argument,
+ * so an invalid one is a usage error, not an analysis result.
+ *
+ * @param {string|undefined} text
+ * @param {number|undefined} seed
+ * @returns {object|undefined} profile overrides to pass to the sandbox
+ */
+function profileOption(text, seed) {
+  if (text === undefined) return undefined
+  const overrides = parseJsonOption('profile', text)
+  if (overrides === null || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw new UsageError('--profile must be a JSON object of profile overrides')
+  }
+  try {
+    createProfile({ seed: seed ?? 0x5eed, ...overrides })
+  } catch (error) {
+    throw new UsageError(`invalid --profile: ${error.message}`)
+  }
+  return overrides
 }
 
 /** Validate an optional numeric CLI option. */
@@ -296,6 +325,13 @@ export async function main(argv = process.argv.slice(2)) {
   if (values.events && command !== 'run') {
     throw new UsageError('--events is only valid with the run command')
   }
+  // `--passes`, `--exclude` and `--rounds` configure the restoration pipeline.
+  // The parser is shared, so without this check `analyze` accepted them and
+  // silently ignored them; a batch wrapper then believed it had configured a
+  // restoration that never ran.
+  if (command !== 'restore' && (values.passes !== undefined || values.exclude !== undefined || values.rounds !== undefined)) {
+    throw new UsageError('--passes, --exclude and --rounds are only valid with the restore command')
+  }
   if ((values['assume-integers'] || values['assume-int32']) && command !== 'constraint') {
     throw new UsageError('--assume-integers and --assume-int32 are only valid with the constraint command')
   }
@@ -307,13 +343,14 @@ export async function main(argv = process.argv.slice(2)) {
   // Validate every closed-set option before a file is read or analysis starts.
   // A typo must never produce a result: batch pipelines treat a silent default
   // as evidence.
+  const seed = seedOption(values.seed)
   const settings = {
-    seed: seedOption(values.seed),
+    seed,
     rounds: roundsOption(values.rounds),
     level: levelOption(values.level),
     passes: passListOption('passes', values.passes),
     exclude: passListOption('exclude', values.exclude),
-    profile: values.profile !== undefined ? parseJsonOption('profile', values.profile) : undefined,
+    profile: profileOption(values.profile, seed),
     mocks: values.mocks !== undefined ? parseJsonOption('mocks', values.mocks) : undefined,
     taintConfig: values['taint-config'] !== undefined ? parseJsonOption('taint-config', values['taint-config']) : undefined,
     // Malformed numbers are usage errors too, and they are checked before any
@@ -494,8 +531,10 @@ export async function main(argv = process.argv.slice(2)) {
     )
     // Guest throw / failed dynamic run is a non-zero exit, matching `run`
     // (ACCEPTANCE H12). `--no-dynamic` leaves `report.dynamic.ok` false with
-    // no `run`, so only an actual sandbox run decides the exit code.
-    if (result.run && result.run.ok === false) return 1
+    // no `run`, so the request itself decides whether a failed stage counts:
+    // once the dynamic stage was asked for, `ok: false` means no trace exists
+    // and a verdict alone must not look like success to a wrapper.
+    if (!values['no-dynamic'] && result.report.dynamic.ok === false) return 1
     return 0
   }
 
@@ -511,9 +550,14 @@ export async function main(argv = process.argv.slice(2)) {
  * (`disposal.skipped`). Dropping it from the summary left the analyst with an
  * unexplained limit hit and a failed teardown.
  *
- * `null` when the run never reached the event loop (init failure, interrupted
- * runtime), matching how `vm` reports "not observed" instead of omitting the
- * key: a consumer must not have to distinguish absent from empty.
+ * `null` only when no settlement was attempted: the run failed before it
+ * reached the event loop, or a genuine stack breach abandoned the runtime.
+ * A run the host clock or virtual-time budget interrupted still records
+ * `{skipped: true, reason}`, which this projection preserves so the analyst
+ * sees why the loop was never drained. Reporting `null` there would hide the
+ * difference between "nothing to settle" and "we could not settle".
+ * Matching how `vm` reports "not observed" instead of omitting the key, a
+ * consumer must not have to distinguish an absent key from an empty one.
  * Optional keys are left as `undefined` so `JSON.stringify` omits them, which
  * keeps `skipped`/`reason` present only when they mean something.
  *

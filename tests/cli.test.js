@@ -204,6 +204,41 @@ test('cli analyze --no-dynamic still exits 0', async () => {
   assert.equal(report.dynamic.ok, false)
 })
 
+/**
+ * A dynamic stage that cannot even start (here: `--mocks` shaped so the
+ * sandbox rejects it) left `report.dynamic.ok` false with the error recorded,
+ * yet `analyze` exited 0 and still emitted a verdict. A wrapper then treats a
+ * run with zero events as evidence. Any requested dynamic stage that fails
+ * must be a non-zero exit, exactly like a guest throw.
+ */
+test('cli analyze exits 1 when the dynamic stage is requested but cannot start', async () => {
+  const result = await runCli(['analyze', 'examples/benign.js', '--json', '--mocks', '{"api":"fetch"}'])
+  assert.equal(result.code, 1, result.stderr)
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.dynamic.ok, false)
+  assert.match(String(report.dynamic.error), /mocks\.entries/)
+  assert.match(result.stderr, /dynamic run failed/)
+})
+
+/**
+ * `--profile '{"browser":"chromium"}'` is valid JSON but an invalid profile.
+ * It used to be accepted, fail the dynamic stage, and exit 0. A malformed
+ * option is a usage error: exit 2, explained on stderr, nothing on stdout.
+ */
+test('cli treats a malformed --profile as a usage error', async () => {
+  for (const args of [
+    ['analyze', 'examples/benign.js', '--json', '--profile', '{"browser":"chromium"}'],
+    ['run', 'examples/benign.js', '--json', '--profile', '{"browser":"chromium"}'],
+  ]) {
+    const result = await assertUsageError(args, /profile\.browser must be one of chrome, edge, firefox/)
+    assert.match(result.stderr, /invalid --profile/)
+  }
+  await assertUsageError(
+    ['analyze', 'examples/benign.js', '--json', '--profile', '[]'],
+    /--profile must be a JSON object/,
+  )
+})
+
 test('cli rejects unknown options for every command', async () => {
   const cases = [
     ['analyze', 'examples/benign.js', '--nonsense'],
@@ -441,11 +476,51 @@ test('cli run --json shows a clean settle for a run that hits no limit', async (
   assert.equal('skipped' in summary.settle, false)
 })
 
-test('cli run --json emits settle: null when the run never reached the event loop', async () => {
-  const path = await sampleFile('throws.js', "throw new Error('boom')")
+/**
+ * A top-level guest throw fails the run but does not skip the event loop:
+ * timers and promise jobs scheduled before the throw are still evidence, so the
+ * sandbox settles them and the CLI must carry that record instead of `null`.
+ * Only a runtime that cannot be settled (interrupted before the loop, or
+ * abandoned after a genuine stack breach) has no settle outcome.
+ */
+test('cli run --json settles the event loop after a top-level guest throw', async () => {
+  const path = await sampleFile(
+    'throws.js',
+    'Promise.resolve().then(function () { globalThis.late = 1 })\nthrow new Error(\'boom\')',
+  )
   const result = await runCli(['run', path, '--json'])
   assert.equal(result.code, 1, result.stderr)
   const summary = JSON.parse(result.stdout)
   assert.equal(summary.ok, false)
+  assert.ok(summary.settle && typeof summary.settle === 'object', 'a failed script must still settle its event loop')
+  assert.equal(summary.settle.error, null)
+  assert.ok(summary.settle.jobs >= 1, `the queued promise job must drain, got jobs=${summary.settle.jobs}`)
+  assert.deepEqual(summary.settle.limitsHit ?? [], [])
+})
+
+test('cli run --json emits settle: null when a main-script stack breach abandons the runtime', async () => {
+  const path = await sampleFile('stack-breach.js', 'function recurse() { return recurse() }\nrecurse()')
+  const result = await runCli(['run', path, '--json'])
+  assert.equal(result.code, 1, result.stderr)
+  const summary = JSON.parse(result.stdout)
+  assert.equal(summary.ok, false)
+  assert.ok(summary.limitsHit.includes('stack'), `expected stack in limitsHit, got ${JSON.stringify(summary.limitsHit)}`)
+  // Settlement was never attempted: the engine stack is gone and the runtime
+  // was abandoned rather than disposed.
   assert.equal(summary.settle, null)
+  assert.equal(summary.disposal.ok, false)
+  assert.equal(summary.disposal.skipped, true)
+})
+
+test('cli analyze rejects the restore-only pass options as a usage error', async () => {
+  for (const args of [
+    ['analyze', 'examples/benign.js', '--passes', 'strings'],
+    ['analyze', 'examples/benign.js', '--exclude', 'rename'],
+    ['analyze', 'examples/benign.js', '--rounds', '2'],
+  ]) {
+    await assertUsageError(args, /--passes, --exclude and --rounds are only valid with the restore command/)
+  }
+  // The same options remain valid for the command that implements them.
+  const restored = await runCli(['restore', 'examples/benign.js', '--rounds', '1'])
+  assert.equal(restored.code, 0, restored.stderr)
 })
