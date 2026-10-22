@@ -14,7 +14,7 @@
 
 import { createRequire } from 'node:module'
 import { extractIOCs } from './ioc.js'
-import { isPlatformEvent } from './behavior.js'
+import { isPlatformEvent, INPUT_CAPTURE_EVENTS } from './behavior.js'
 import { normalizeTaintReport } from '../taint/report.js'
 import { renderTaintReport } from '../taint/render.js'
 
@@ -114,9 +114,6 @@ const ENV_TAMPER_KINDS = new Set([
   'native-changed',
   'value-changed',
 ])
-
-/** Keyboard event types whose capture indicates keystroke logging (T1056). */
-const INPUT_CAPTURE_EVENTS = new Set(['keydown', 'keyup', 'keypress'])
 
 const IOC_KEYS = Object.freeze([
   'urls',
@@ -516,7 +513,10 @@ export function scoreVerdict(input) {
     )
   }
 
-  const evalEvents = counted('eval', 'evals')
+  // Eval payloads are `code` events with `event: 'eval'`, not a trace `eval`
+  // kind, so the raw histogram never sees them. The behaviour summary is the
+  // authoritative count (P0-6: never score from the retained slice).
+  const evalEvents = counted('eval', 'evals', { preferBehavior: true })
   if (evalEvents > 0) {
     add(
       'DYNAMIC_EVAL',
@@ -608,17 +608,33 @@ export function scoreVerdict(input) {
     }
   }
 
-  const inputCaptures = guestEvents.filter((event) => {
-    if (obj(event).kind !== 'api' || !str(obj(event).api).includes('addEventListener')) return false
-    return INPUT_CAPTURE_EVENTS.has(str(obj(event).type ?? obj(event).args?.[0]))
-  })
-  if (inputCaptures.length > 0) {
+  // Prefer the behaviour summary: it is built from the full trace before the
+  // retention slice, so a listener registered late in a long sample still
+  // scores. Fall back to the retained events for hand-built report fixtures.
+  const behaviorInputCaptures = asArray(behavior.inputCaptures)
+  const inputCaptures =
+    behaviorInputCaptures.length > 0
+      ? behaviorInputCaptures
+      : guestEvents.filter((event) => {
+          if (obj(event).kind !== 'api' || !str(obj(event).api).includes('addEventListener')) return false
+          return INPUT_CAPTURE_EVENTS.includes(str(obj(event).type ?? obj(event).args?.[0]))
+        })
+  const inputCaptureCount =
+    behaviorInputCaptures.length > 0 &&
+    Object.prototype.hasOwnProperty.call(behaviorCounts, 'inputCaptures')
+      ? toCount(behaviorCounts.inputCaptures)
+      : inputCaptures.length
+  if (inputCaptureCount > 0) {
+    const captureRefs = inputCaptures
+      .map((event) => eventRef(obj(event).seq))
+      .filter(Boolean)
+      .slice(0, MAX_REFS_PER_REASON)
     add(
       'DYNAMIC_INPUT_CAPTURE',
       weights.dynamicInputCapture,
-      `${inputCaptures.length} keyboard event listener(s) registered`,
+      `${inputCaptureCount} keyboard event listener(s) registered`,
       'credential-access',
-      inputCaptures.map((event) => eventRef(obj(event).seq)).filter(Boolean),
+      captureRefs.length > 0 ? captureRefs : [stageRef('dynamic:input-capture', { count: inputCaptureCount })],
     )
   }
 
@@ -881,11 +897,13 @@ export function renderMarkdown(report) {
   lines.push(`- **Restoration passes:** ${passes.length}`)
   if (restoration.error != null) lines.push(`- **Restoration error:** ${escapeText(restoration.error)}`)
   if (passes.length > 0) {
-    lines.push('', '| Pass | Changed | Duration (ms) | Notes |', '| --- | --- | ---: | --- |')
+    // Wall durations stay in the JSON report but are host measurements, so the
+    // rendered Markdown omits them and two identical runs stay byte-identical.
+    lines.push('', '| Pass | Changed | Notes |', '| --- | --- | --- |')
     for (const pass of passes) {
       const item = obj(pass)
       lines.push(
-        `| ${escapeCell(item.id)} | ${formatBoolean(item.changed)} | ${formatNumber(item.durationMs)} | ${escapeCell(joinValues(item.notes))} |`,
+        `| ${escapeCell(item.id)} | ${formatBoolean(item.changed)} | ${escapeCell(joinValues(item.notes))} |`,
       )
     }
   }
@@ -1588,8 +1606,21 @@ function normalizeDynamic(input, profile) {
               exceptions: toCount(behaviorCounts.exceptions),
               evals: toCount(behaviorCounts.evals),
               mocks: toCount(behaviorCounts.mocks),
+              inputCaptures: toCount(behaviorCounts.inputCaptures),
               iocs: toCount(behaviorCounts.iocs),
             },
+          }
+        : {}),
+      ...(Array.isArray(behaviorInput.inputCaptures)
+        ? {
+            inputCaptures: behaviorInput.inputCaptures.map((entry) => {
+              const item = obj(entry)
+              return {
+                api: str(item.api),
+                type: str(item.type),
+                ...(Number.isFinite(item.seq) ? { seq: item.seq } : {}),
+              }
+            }),
           }
         : {}),
       evalStages: asArray(behaviorInput.evalStages),

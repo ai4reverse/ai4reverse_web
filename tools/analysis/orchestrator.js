@@ -306,6 +306,15 @@ export async function analyzeSample(source, options = {}) {
   const maxRetainedEvents = options.maxRetainedEvents ?? 5000
   const retainEvents = options.keepTrace !== false
   const retainedEvents = retainEvents ? events.slice(0, maxRetainedEvents) : []
+  // State explicit retention loss instead of letting the slice shrink silently:
+  // keepTrace:false, the maxRetained window, and recorder drops all mean the
+  // reported `dynamic.events` is smaller than the observed trace.
+  const droppedEvents = Number.isFinite(run?.traceStats?.dropped) ? run.traceStats.dropped : 0
+  const eventsTruncated =
+    (retainEvents && events.length > maxRetainedEvents) ||
+    (!retainEvents && events.length > 0) ||
+    droppedEvents > 0 ||
+    Boolean(run?.provisional)
   const dynamicSection = {
     ok: Boolean(run?.ok),
     error: run?.error ?? runError ?? null,
@@ -313,7 +322,7 @@ export async function analyzeSample(source, options = {}) {
     provisional: Boolean(run?.provisional),
     result: run?.result ?? null,
     events: retainedEvents,
-    eventsTruncated: (retainEvents && events.length > maxRetainedEvents) || Boolean(run?.provisional),
+    eventsTruncated,
     counts: { byKind: run?.traceStats?.byKind ?? {}, total: run?.traceStats?.total ?? 0 },
     behavior: {
       apis: behavior.apis,
@@ -323,6 +332,7 @@ export async function analyzeSample(source, options = {}) {
       timers: behavior.timers,
       console: behavior.console,
       evalStages: behavior.evalStages,
+      inputCaptures: behavior.inputCaptures,
       killChain: behavior.killChain,
       mocks: behavior.mocks,
       counts: behavior.counts,

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import { buildReport, renderMarkdown, scoreVerdict, VERDICT_WEIGHTS } from '../tools/analysis/report.js'
 import { summarizeBehavior } from '../tools/analysis/behavior.js'
+import { analyzeSample } from '../tools/analysis/orchestrator.js'
 
 const maliciousIocs = {
   urls: [
@@ -585,6 +586,49 @@ test('the behaviour summary separates platform policy mocks from caller mocks', 
   assert.equal(behavior.counts.mocks, 1)
 })
 
+test('the behaviour summary caps inputCaptures evidence but keeps the exact count', () => {
+  const events = Array.from({ length: 100000 }, (_, index) => ({
+    seq: index + 1,
+    kind: 'api',
+    phase: 'invoke',
+    api: 'document.addEventListener',
+    args: ['keydown'],
+  }))
+  const behavior = summarizeBehavior(events)
+
+  // Retention is bounded like every other high-volume list, but the counter
+  // stays exact so the verdict still sees the full volume.
+  assert.equal(behavior.inputCaptures.length, 2000)
+  assert.equal(behavior.counts.inputCaptures, 100000)
+
+  const report = buildReport({ dynamic: { behavior } })
+  assert.equal(report.dynamic.behavior.inputCaptures.length, 2000)
+  assert.equal(report.dynamic.behavior.counts.inputCaptures, 100000)
+  assert.equal(reasonFor(report.verdict, 'DYNAMIC_INPUT_CAPTURE')?.weight, VERDICT_WEIGHTS.dynamicInputCapture)
+})
+
+test('counts one input capture when instrumentation emits invoke and before for one call', () => {
+  // With custom `config.api.targets`, the API wrapper emits an `invoke` event
+  // and the DOM env module then emits its own `before` event for the same
+  // addEventListener call. The deduped `countable` predicate must drive the
+  // input-capture counter so the call is counted once, not twice.
+  const events = [
+    {
+      seq: 1,
+      kind: 'api',
+      phase: 'invoke',
+      api: 'EventTarget.addEventListener',
+      args: ['keydown'],
+      instrumented: true,
+    },
+    { seq: 2, kind: 'api', phase: 'before', api: 'EventTarget.addEventListener', type: 'keydown' },
+  ]
+  const behavior = summarizeBehavior(events)
+
+  assert.equal(behavior.counts.inputCaptures, 1)
+  assert.equal(behavior.inputCaptures.length, 1)
+})
+
 test('a mocked environment API still scores when the summary reports it', () => {
   const report = buildReport({ hooks: { mocks: 1 } })
 
@@ -714,4 +758,85 @@ test('reasons without evidence refs score zero points', () => {
   assert.deepEqual(verdict.reasons, [])
   assert.deepEqual(verdict.provenance, [])
   assert.equal(verdict.score, 0)
+})
+
+test('DYNAMIC_EVAL scores a real eval whose trace payload has no eval kind', async () => {
+  const { report } = await analyzeSample('eval("1+1")', {
+    logLevel: 'silent',
+    constraints: false,
+    taint: false,
+    restore: false,
+  })
+
+  // The eval payload is a `code` event (`event: 'eval'`), so the raw trace
+  // histogram has no `eval` kind; only the behaviour summary counts it.
+  assert.equal(report.dynamic.counts.byKind.eval, undefined)
+  assert.equal(report.dynamic.behavior.counts.evals, 1)
+
+  const reason = report.verdict.reasons.find((entry) => entry.code === 'DYNAMIC_EVAL')
+  assert.ok(reason, JSON.stringify(report.verdict.reasons))
+  assert.equal(
+    reason.weight,
+    Math.min(
+      VERDICT_WEIGHTS.dynamicEvalMax,
+      VERDICT_WEIGHTS.dynamicEvalBase + VERDICT_WEIGHTS.dynamicEvalStep,
+    ),
+  )
+  assert.ok(reason.refs.length > 0)
+})
+
+test('DYNAMIC_INPUT_CAPTURE survives trace retention and reports truncation', async () => {
+  const source = [
+    'var s = 0;',
+    'for (var i = 0; i < 6000; i++) { s += i }',
+    "document.addEventListener('keydown', function () {})",
+    's;',
+  ].join('\n')
+
+  for (const keepTrace of [true, false]) {
+    const { report } = await analyzeSample(source, {
+      filename: 'big-listener.js',
+      keepTrace,
+      logLevel: 'silent',
+      constraints: false,
+      taint: false,
+      restore: false,
+    })
+
+    const reason = report.verdict.reasons.find((entry) => entry.code === 'DYNAMIC_INPUT_CAPTURE')
+    assert.ok(reason, `keepTrace=${keepTrace}: ${JSON.stringify(report.verdict.reasons)}`)
+    assert.equal(reason.weight, VERDICT_WEIGHTS.dynamicInputCapture)
+    assert.ok(reason.refs.length > 0)
+
+    // The retained slice cannot hold the listener after a 6000-iteration loop;
+    // the behaviour summary still knows about it, and the report says the slice
+    // was truncated instead of silently dropping the evidence.
+    const retainedListener = report.dynamic.events.some((event) => {
+      const type = event.type ?? event.args?.[0]
+      return String(event.api ?? '').includes('addEventListener') && type === 'keydown'
+    })
+    assert.equal(retainedListener, false, `keepTrace=${keepTrace}: listener unexpectedly retained`)
+    assert.equal(report.dynamic.eventsTruncated, true)
+  }
+})
+
+test('renderMarkdown is reproducible while the JSON report keeps wall durations', () => {
+  const first = buildReport(analysisFixture)
+  const second = buildReport({
+    ...analysisFixture,
+    meta: { ...analysisFixture.meta, durationMs: 9999 },
+    static: {
+      ...analysisFixture.static,
+      restoration: {
+        ...analysisFixture.static.restoration,
+        passes: [{ id: 'strings', changed: true, durationMs: 41, notes: ['decoded 2 strings'] }],
+      },
+    },
+  })
+
+  assert.equal(renderMarkdown(first), renderMarkdown(second))
+  // Wall durations stay available to JSON consumers.
+  assert.equal(first.meta.durationMs, 1234)
+  assert.equal(first.static.restoration.passes[0].durationMs, 3)
+  assert.equal(second.static.restoration.passes[0].durationMs, 41)
 })
