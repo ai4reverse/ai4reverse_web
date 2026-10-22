@@ -6,6 +6,32 @@ import pino from 'pino'
  * receives already-serialised log lines.
  */
 
+/**
+ * Credential and header spellings that are not covered by camelCase field
+ * names. Header keys are matched in their canonical spellings because pino
+ * path matching is case-sensitive.
+ */
+const CREDENTIAL_FIELD_NAMES = [
+  'Set-Cookie',
+  'setCookie',
+  'set-cookie',
+  'x-api-key',
+  'X-Api-Key',
+  'Proxy-Authorization',
+  'access_token',
+  'refresh_token',
+  'api_key',
+  'credential',
+  'credentials',
+]
+
+/** Every credential spelling at the top level and at one and two wildcard depths. */
+const CREDENTIAL_REDACT_PATHS = CREDENTIAL_FIELD_NAMES.flatMap((name) => [
+  name,
+  `*.${name}`,
+  `*.*.${name}`,
+])
+
 /** Fields that must never reach a log sink verbatim. */
 export const redactPaths = [
   'cookie',
@@ -42,6 +68,7 @@ export const redactPaths = [
   '*.*.password',
   '*.*.token',
   '*.*.set-cookie',
+  ...CREDENTIAL_REDACT_PATHS,
 ]
 
 const DEFAULT_LEVEL = process.env.AI4REVERSE_LOG_LEVEL || 'info'

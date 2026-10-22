@@ -34,6 +34,39 @@ test('sensitive fields are redacted', () => {
   assert.ok(redactPaths.includes('cookie'))
 })
 
+test('redacts canonical header spellings at every supported depth', () => {
+  const destination = createMemoryDestination()
+  const logger = createLogger({ level: 'info', destination })
+  const headerNames = ['Set-Cookie', 'setCookie', 'set-cookie', 'x-api-key', 'X-Api-Key', 'Proxy-Authorization']
+  const headers = Object.fromEntries(headerNames.map((name) => [name, `value-of-${name}`]))
+  logger.info({
+    headers,
+    nested: { headers: { 'Set-Cookie': 'nested-cookie', 'X-Api-Key': 'nested-key' } },
+  }, 'headers')
+  const record = destination.records()[0]
+  for (const name of headerNames) {
+    assert.equal(record.headers[name], '[redacted]', `top-level headers.${name}`)
+  }
+  assert.equal(record.nested.headers['Set-Cookie'], '[redacted]', 'nested Set-Cookie')
+  assert.equal(record.nested.headers['X-Api-Key'], '[redacted]', 'nested X-Api-Key')
+})
+
+test('redacts snake_case credential fields at every supported depth', () => {
+  const destination = createMemoryDestination()
+  const logger = createLogger({ level: 'info', destination })
+  const credentialNames = ['access_token', 'refresh_token', 'api_key', 'credential', 'credentials']
+  const topLevel = Object.fromEntries(credentialNames.map((name) => [name, `value-of-${name}`]))
+  const nested = Object.fromEntries(credentialNames.map((name) => [name, `nested-${name}`]))
+  const deep = Object.fromEntries(credentialNames.map((name) => [name, `deep-${name}`]))
+  logger.info({ ...topLevel, nested, deep: { deepest: deep } }, 'credentials')
+  const record = destination.records()[0]
+  for (const name of credentialNames) {
+    assert.equal(record[name], '[redacted]', `top-level ${name}`)
+    assert.equal(record.nested[name], '[redacted]', `nested ${name}`)
+    assert.equal(record.deep.deepest[name], '[redacted]', `deep ${name}`)
+  }
+})
+
 test('event sink writes greppable trace messages and counts kinds', () => {
   const destination = createMemoryDestination()
   const logger = createLogger({ level: 'trace', destination })
