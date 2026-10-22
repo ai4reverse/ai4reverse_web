@@ -161,8 +161,11 @@ forwarding them made a strict recorder throw.
 
 ### `registerHooks(bus, registrations)`
 
-Registers one registration, a list of them, or the tuple form, and returns the
-registered ids:
+Registers one registration, a list of them, or the tuple form, and returns one
+id per registration. The returned entry is the caller-supplied `options.id` when
+present and the literal string `'anonymous'` otherwise — it is **not** the id the
+bus generated internally for an unnamed hook. A caller that needs to
+unregister or target a hook must pass its own `id`.
 
 ```js
 registerHooks(bus, { phase: 'api:before', handler })            // descriptor
@@ -481,6 +484,31 @@ same check as a boolean. `changed` is therefore
 
 Passes must be conservative: never change observable semantics of surviving
 code. When semantics are uncertain, leave the node untouched and record a note.
+
+### `string-array` and dynamic reachability
+
+`string-array` only rotates, inlines or removes an array when no dynamic form
+can reach its binding. Two computations run before any rewrite, so a bail blocks
+rotation and inlining, not just the final declaration removal:
+
+- `collectEvalAliases` collects names that alias the intrinsic `eval` —
+  `var e = eval`, `e = window.eval`, destructuring such as
+  `{ eval: e } = window`, and aliases of aliases.
+- `hasIndirectEvalShape` is true when the file contains a sequence expression
+  ending in `eval` or an eval alias (`(0, eval)(…)`, `(0, alias)(…)`),
+  `.call`/`.apply` on an eval alias, `window.eval(…)`/`globalThis.eval(…)`, or
+  any `with` block. These reach script scope without naming a callee, so they
+  can read or write every binding; this is a whole-file bail.
+
+When an indirect-eval/`with` shape is present, every candidate is marked
+`poisoned`. Otherwise `hasDynamicAccess` checks each candidate individually, but
+it is only partly per-binding: a direct `eval(...)` or an eval-alias call
+anywhere in the file stops every candidate, while `window.<name>`,
+`this.<name>` or another global-object member access (`globalThis.<name>`) stops
+only that name. In every case the pass records a note of the form
+`kept <name>: reachable via dynamic access` and leaves the array and its
+decoder in place. This is deliberately conservative: keeping an obfuscated array
+is preferred to risking a change in observable semantics.
 
 ## JSVMP contract (`tools/jsvmp/*.js`)
 
