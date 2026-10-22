@@ -37,14 +37,16 @@ The translator tracks four independent flags on every term:
 
 | Flag | Meaning |
 | --- | --- |
-| `exact` | The term captures the JS value/truth value for **every** input. |
+| `exact` | The term captures the JS value/truth value for **every** input, with no approximation beyond its uninterpreted leaves. A term with uninterpreted leaves never yields a model witness. |
 | `nanSafe` | `NaN` cannot change the result of the surrounding operation. |
 | `integral` | Every numeric value in the term is an integer. |
 | `pure` | Evaluating the source expression twice yields the same value. |
 
 `analyzeConstraints()` only claims an opaque predicate or an unreachable branch
-when the translated condition is `exact`. That matters because z3 `Int` is not
-a JS number:
+when the translated condition is `exact`. An explicit `assumeIntegers` also
+admits an inexact arithmetic condition, but the finding then carries
+`assumptions: ["integers"]`. The exact gate matters because z3 `Int` is not a
+JS number:
 
 - `x !== x` is **not** claimed always-false. It is `false` for ordinary
   numbers and `true` for `NaN`; the translator models the equality as a
@@ -59,16 +61,32 @@ a JS number:
 The exact fragment is larger than it looks:
 
 - `& | ^ ~ << >>` are translated through signed 32-bit bit-vectors, and `| 0`
-  is `ToInt32`. These are exact for primitive values, including strings, `NaN`
-  and `Infinity`. An object's `ToPrimitive`/`valueOf` call is not modelled: the
-  translator never runs it, so an object with a side-effecting coercion is
-  outside the exact fragment.
+  is `ToInt32`. The conversion is exact for operands the translator models as
+  integers: identifiers, integer and boolean literals, and `undefined`/`null`
+  (which coerce to `0`). A string literal, `NaN`, `Infinity`, or any other value
+  with no integer model is first replaced by an uninterpreted integer, so a
+  bitwise identity over it stays conservative rather than being proved. An
+  object's `ToPrimitive`/`valueOf` call is not modelled: the translator never
+  runs it, so an object with a side-effecting coercion is outside the exact
+  fragment.
 - `>>>` is converted back to an unsigned integer.
-- `!`, `&&`, `||`, `?:`, `typeof`, and equality/comparison of exact values are
-  exact. A `&&`/`||`/`?:` operand yields the **operand value** rather than a
-  boolean, so a term derived from truthiness is marked as such and stays
-  `contingent` when compared across sorts even though the comparison itself is
-  exact.
+- `!`, `typeof`, and equality/comparison of exact values are exact. `&&` and
+  `||` are exact only as **truthiness conditions**: as an `if`/loop test, a
+  `?:` test, under `!`, or as an operand of another `&&`/`||`, they translate to
+  the boolean conjunction/disjunction of the operands' truthiness. They evaluate
+  to an **operand value**, so in a value context (arithmetic, bitwise,
+  relational, equality or a conditional arm) a result that is not a JS boolean
+  is translated as an uninterpreted value with `exact: false`. No comparison,
+  equivalence or path decision over that value is proved. `?:` is exact only
+  when both arms share a value sort; a `Bool` arm is never coerced to `Int`
+  (`true` and `1` are different JS values). A different-sort or truthiness
+  branch likewise becomes an uninterpreted value in a value context.
+  These shapes are **not** reported as `unsupported` and are not usually
+  `unknown`: `translateConditionSafe` still returns a term, so `provePredicate`
+  reports `contingent` (or `unknown` when z3 itself returns one) with
+  `proved:false`; the arithmetic, relational, equality and conditional-arm
+  shapes also report `exact:false`. `analyzeConstraints` leaves the branch
+  reachable rather than claiming it unreachable.
 - Cross-type equality is decided from literals and from exact numeric operands:
   `1 === true`, `1 == true`, `null == undefined`, `null === undefined` and
   `typeof x === '<non-tag>'` are claimed outright. `x === 'a'` and
@@ -107,8 +125,10 @@ returned only when it is coherent (`modelSafe: true`); otherwise `model` is
 interpretation.
 
 `analyzeConstraints` defaults to no assumptions. `solveConstraints` defaults to
-`assumeInt32` so a returned model is one coherent assignment rather than two
-unrelated interpretations.
+the automatic rule above: `assumeInt32` is on only when the constraint contains
+a bitwise operator. An explicit `assumeInt32` always wins. Models from a bitwise
+constraint are then one coherent assignment rather than two unrelated
+interpretations.
 
 ## API
 
@@ -182,7 +202,7 @@ await provePredicate('x + 1 > x', { assumeIntegers: true })
 // { status: 'always-true', assumptions: ['integers'] }
 
 await provePredicate('x > 5', { assumeIntegers: true })
-// { status: 'contingent', model: { x: 6 }, counterexample: { x: 0 } }
+// { status: 'contingent', model: { x: 6 }, counterexample: { x: 5 } }
 ```
 
 Statuses: `always-true`, `always-false`, `contingent`, `unknown`,
@@ -226,7 +246,7 @@ await proveEquivalent('x + y', 'y + x')
 // equivalent in the integer model, but not a JS proof (integers were not assumed)
 
 await proveEquivalent('x + 1', 'x + 2', { assumeIntegers: true })
-// { status: 'different', counterexample: { x: 0, y: 1 } }
+// { status: 'different', counterexample: { x: 0 } }
 
 await simplifyExpression('(x & 1) === 0 || (x & 1) === 1')
 // { simplified: '(or (= ((_ extract 0 0) v_x_bv) #b0) ...)',
