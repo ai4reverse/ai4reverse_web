@@ -155,6 +155,160 @@ test('entry-point stacks contain no host frames', async () => {
 })
 
 /**
+ * Marshalling budget: a shared-reference DAG multiplies paths, not distinct
+ * objects, so `ctx.dump()` expands `a = [a, a]` exponentially. The walk must
+ * recognise the repeated reference and refuse the dump before it runs.
+ */
+test('a shared-reference completion value over the node budget is unrepresentable', async () => {
+  const sb = await sandbox()
+  try {
+    const startedAt = Date.now()
+    const run = await sb.run('var a = []; for (var i = 0; i < 22; i += 1) a = [a, a]; a')
+    const elapsed = Date.now() - startedAt
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.deepEqual(run.result, { type: 'unrepresentable', reason: 'entries' })
+    assert.deepEqual(run.limitsHit, [])
+    assert.equal(run.stackExhaustion, false)
+    assert.ok(elapsed < 2000, `marshalling must stay bounded, took ${elapsed}ms`)
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+    const followUp = await sb.run('2 + 2')
+    assert.equal(followUp.ok, true)
+    assert.equal(followUp.result.value, 4)
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * Expansion budget, not node count: a large *flat* collection is cheap for
+ * `ctx.dump()` (one path per element), so it must stay representable. Counting
+ * every own property used to report a plain 1000-element array as
+ * `{type: 'unrepresentable', reason: 'entries'}`.
+ */
+test('a flat 1000-element array completion value stays representable', async () => {
+  const sb = await sandbox()
+  try {
+    const startedAt = Date.now()
+    const run = await sb.run('var a = []; for (var i = 0; i < 1000; i += 1) a.push(i); a')
+    const elapsed = Date.now() - startedAt
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.equal(run.result.type, 'array')
+    assert.equal(run.result.length, 1000)
+    assert.match(String(run.result.preview ?? ''), /^\[0,1,2,/)
+    assert.deepEqual(run.limitsHit, [])
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+    assert.ok(elapsed < 2000, `flat marshalling must stay fast, took ${elapsed}ms`)
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * The budget walk used to look only at own properties, so a promise completion
+ * value bypassed it entirely and `ctx.dump()` did the unbounded work itself.
+ * The settled value must be walked under the same depth budget.
+ */
+test('a promise settled with a deeply nested object is unrepresentable', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(`
+      var o = {};
+      for (var i = 0; i < 100; i += 1) o = { child: o };
+      Promise.resolve(o)
+    `)
+    assert.equal(run.ok, true, JSON.stringify(run.error))
+    assert.deepEqual(run.result, { type: 'unrepresentable', reason: 'depth' })
+    assert.deepEqual(run.limitsHit, [])
+    assert.equal(run.stackExhaustion, false)
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+    const followUp = await sb.run('2 + 2')
+    assert.equal(followUp.ok, true)
+    assert.equal(followUp.result.value, 4)
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * Same shape on the throw path: a rejected/fulfilled promise whose settled
+ * state is over budget must be reported as an unrepresentable error value.
+ * Host stack classification requires host evidence; marshalling a value is not
+ * one, so the error name must stay `Error` rather than the engine's
+ * `RangeError`.
+ */
+test('throwing a promise settled with a deep object is unrepresentable, not a stack breach', async () => {
+  const sb = await sandbox()
+  try {
+    const run = await sb.run(`
+      var o = {};
+      for (var i = 0; i < 100; i += 1) o = { child: o };
+      throw Promise.resolve(o)
+    `)
+    assert.equal(run.ok, false, JSON.stringify(run.result))
+    assert.equal(run.error.name, 'Error')
+    assert.match(String(run.error.message), /unrepresentable error value \(depth\)/)
+    assert.deepEqual(run.limitsHit, [])
+    assert.equal(run.stackExhaustion, false)
+    assert.equal(run.timedOut, false)
+    assert.deepEqual(run.disposal, { ok: true, errors: [] })
+    const followUp = await sb.run('6 * 7')
+    assert.equal(followUp.ok, true)
+    assert.equal(followUp.result.value, 42)
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * A Proxy whose traps never return burns the host deadline while the *host*
+ * marshals the completion value. The guest already returned, so the run used to
+ * report `ok: true` with an empty `limitsHit` and a garbled result.
+ */
+test('a proxy completion value that burns the host timeout is reported as a timeout', async () => {
+  const sb = await sandbox({ limits: { timeoutMs: 100 } })
+  try {
+    const run = await sb.run(`
+      new Proxy({}, {
+        ownKeys: function () { for (;;) {} },
+        get: function () { for (;;) {} }
+      })
+    `)
+    assert.equal(run.ok, false, JSON.stringify(run.result))
+    assert.deepEqual(run.limitsHit, ['timeout'])
+    assert.equal(run.timedOut, true)
+    assert.equal(run.stackExhaustion, false)
+    assert.equal(run.runtime.reason, 'timeout')
+    assert.match(String(run.error?.message ?? ''), /timeout/)
+    assert.equal(run.disposal.ok, true)
+    const followUp = await sb.run('6 * 7')
+    assert.equal(followUp.ok, true)
+    assert.equal(followUp.result.value, 42)
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
+ * Evidence boundary: `ctx.dump()` already releases a promise handle (it reports
+ * the promise state instead of its fields). Disposing it again made a sample
+ * able to reject its own run with a host `Lifetime not alive` error, losing the
+ * whole record.
+ */
+test('throwing a promise still returns a run record', async () => {
+  const sb = await sandbox()
+  try {
+    for (const source of ['throw Promise.resolve(1)', 'Promise.reject(Promise.resolve(1))']) {
+      const run = await sb.run(source)
+      assert.ok(run && typeof run === 'object', source)
+      assert.equal(run.stackExhaustion, false, source)
+      assert.deepEqual(run.disposal, { ok: true, errors: [] }, `${source}: ${JSON.stringify(run.disposal)}`)
+    }
+  } finally {
+    sb.dispose()
+  }
+})
+
+/**
  * The settle timer branch classifies from the clock's explicit host-throw marker
  * (residual): message text is guest data, so a callback that only *says*
  * "stack overflow" must neither be reported as a stack limit nor stop the

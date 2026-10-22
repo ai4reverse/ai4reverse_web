@@ -4,6 +4,21 @@ import { isHostStackExhaustion } from '../engine/runtime.js'
 
 const MAX_JOB_BATCH = 100
 const ENGINE_MEMORY_MESSAGE = /^(out of memory|allocation failed|string too long|array too long|memory limit)$/
+/** Depth and expansion budget for marshalling a guest completion value into the host. */
+const MARSHAL_MAX_DEPTH = 64
+/**
+ * Path budget, not a node ceiling: `ctx.dump()` expands one path per reference,
+ * so a large *flat* array is cheap while a shared-reference graph is not. This
+ * is high enough for ordinary bulk data (100k element visits) and only bounds
+ * how much work a single marshalling pass may do.
+ */
+const MARSHAL_MAX_VISITS = 100_000
+/**
+ * Cap on identity probes used to recognise a shared reference. Strict equality
+ * is host-side and cheap, but scanning every previously seen node is quadratic;
+ * past this many probes the walk falls back to the visit budget.
+ */
+const MARSHAL_MAX_IDENTITY_PROBES = 100_000
 
 /**
  * Traceless invocation.
@@ -144,8 +159,12 @@ export function createInvoker(options) {
       // `{ name: 'InternalError', message: 'Maximum call stack size exceeded' }`
       // or rename its own `Error`; no dumped field may establish provenance.
       const guestEvidence = isIntrinsicEngineError(stealth, evalResult.error)
-      const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(evalResult.error)) : ctx.dump(evalResult.error)
-      evalResult.error.dispose()
+      const marshalled = marshalValue(ctx, evalResult.error)
+      const raw = marshalled.ok ? marshalled.value : unrepresentableError(marshalled.reason)
+      const dumped = stealth?.sanitizeError ? stealth.sanitizeError(raw) : raw
+      // `marshalValue` reports promise handles' state; it never leaves one
+      // un-disposed, and dumping does not dispose non-promise handles.
+      disposeHandle(evalResult.error)
       const classified = classifyLimit(dumped, limitReason(), guestEvidence, hostEvidence)
       if (classified === 'stack') {
         // Same record, same trace event and the same (skipped) hooks as the
@@ -204,8 +223,43 @@ export function createInvoker(options) {
         }
       }
       const raw = entryResult?.ok ? entryResult.handle : valueHandle
-      const dumped = ctx.dump(raw)
-      const summary = summarizeResult(dumped)
+      const marshalled = marshalValue(ctx, raw)
+      // Marshalling is guest-executed work: a Proxy trap (or a shared-reference
+      // graph) can burn the host deadline *after* the script returned. The
+      // interrupt handler reports the same watchdog breach as an in-script
+      // timeout, so the success path must not return `ok: true` for it.
+      const lateReason = limitReason()
+      let lateLimit = classifyLimit(null, lateReason)
+      if (!lateLimit && runtime?.interrupted === true) lateLimit = 'timeout'
+      if (lateLimit) {
+        const error = {
+          name: 'Error',
+          message: limitMessage(lateLimit, limits),
+          code: 'SANDBOX_LIMIT',
+        }
+        trace?.emit('code', 'error', { event: 'invoke.failed', filename, error, limitsHit: [lateLimit] })
+        hooks?.emit('code:error', { source: text, filename, error, limitsHit: [lateLimit], prepared })
+        hooks?.emit('code:after', { source: text, filename, error, prepared, ok: false, limitsHit: [lateLimit] })
+        return {
+          ok: false,
+          error,
+          limitsHit: [lateLimit],
+          stackExhaustion: false,
+          timedOut: true,
+          filename,
+          prepared,
+          facts: prepared.facts,
+          vm: prepared.vm,
+          durationMs: Date.now() - startedAt,
+          virtualMs: Math.round(clock.elapsedMs),
+        }
+      }
+      // Host marshalling is bounded (depth/entry budget) and its failures are
+      // host evidence, never guest stack evidence: a completion value the WASM
+      // serialiser cannot represent is reported as such.
+      const summary = marshalled.ok
+        ? summarizeResult(marshalled.value)
+        : { type: 'unrepresentable', reason: marshalled.reason }
       // The evaluation itself can also burn the host stack without failing: a
       // guest `try { recurse() } catch {}` swallows the error the trampoline
       // converted. The host witness survives the catch, so the run is still
@@ -347,8 +401,10 @@ export function createInvoker(options) {
         // reason to distinguish a timeout from stack exhaustion.
         const hostEvidence = hostStackCount() > signalsBefore
         const guestEvidence = isIntrinsicEngineError(stealth, result.error)
-        const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
-        result.error.dispose()
+        const marshalled = marshalValue(ctx, result.error)
+        const raw = marshalled.ok ? marshalled.value : unrepresentableError(marshalled.reason)
+        const dumped = stealth?.sanitizeError ? stealth.sanitizeError(raw) : raw
+        disposeHandle(result.error)
         const classified = classifyLimit(dumped, limitReason(), guestEvidence, hostEvidence)
         const breach = classified === 'stack'
         const reported = breach ? stackBreachRecord(dumped) : dumped
@@ -479,8 +535,10 @@ export function createInvoker(options) {
         }
         if (result.error) {
           const engineStack = isIntrinsicEngineError(stealth, result.error)
-          const dumped = stealth?.sanitizeError ? stealth.sanitizeError(ctx.dump(result.error)) : ctx.dump(result.error)
-          result.error.dispose()
+          const marshalled = marshalValue(ctx, result.error)
+          const raw = marshalled.ok ? marshalled.value : unrepresentableError(marshalled.reason)
+          const dumped = stealth?.sanitizeError ? stealth.sanitizeError(raw) : raw
+          disposeHandle(result.error)
           if (noteHostStack('promise-job', signalsBefore)) break
           const classified = classifyLimit(dumped, limitReason(), engineStack)
           if (classified === 'stack' && noteStack('promise-job', null, true)) break
@@ -568,6 +626,237 @@ export function createInvoker(options) {
     },
   }
 }
+
+/**
+ * Dispose a QuickJS handle, tolerating one `ctx.dump()` already released it.
+ *
+ * `dump()` disposes promise handles and `consume()` disposes the result handle
+ * of a promise reaction, so a second `dispose()` throws `Lifetime not alive` —
+ * a host error that must never become a run failure caused by guest input.
+ *
+ * @param {{dispose?: Function}|null|undefined} handle
+ */
+function disposeHandle(handle) {
+  try {
+    handle?.dispose?.()
+  } catch {
+    /* already released */
+  }
+}
+
+/**
+ * Dump a guest value without re-entering quickjs-emscripten's recursive promise
+ * path.
+ *
+ * `ctx.dump()` disposes a promise handle and then calls `consume()` on its
+ * result, which disposes that result again when it is itself a promise. Walking
+ * the promise state here keeps every handle released exactly once. The caller
+ * still owns `handle`.
+ *
+ * @param {object} ctx
+ * @param {object} handle
+ * @param {number} [depth]
+ * @returns {unknown}
+ */
+function dumpGuestValue(ctx, handle, depth = 0) {
+  if (depth > MARSHAL_MAX_DEPTH) return { type: 'unrepresentable', reason: 'depth' }
+  // Minimal contexts (unit callers, fakes) expose only `dump()`. Without a
+  // promise-state probe a handle can only be reported as an ordinary value.
+  const state = typeof ctx.getPromiseState === 'function' ? ctx.getPromiseState(handle) : null
+  if (!state || state.notAPromise) return ctx.dump(handle)
+  if (state.type === 'pending') return { type: 'pending' }
+  const key = state.type === 'fulfilled' ? 'value' : 'error'
+  // `consume()` disposes the reaction handle exactly once, after this callback.
+  // Disposing it here as well is what produced the double-free.
+  const dumped = state[key].consume((child) => dumpGuestValue(ctx, child, depth + 1))
+  return { type: state.type, [key]: dumped }
+}
+
+/**
+ * Marshal a guest value with a depth/entry budget.
+ *
+ * Host marshalling is not guest execution: a host `RangeError` out of the WASM
+ * serialiser must never be classified as a guest stack breach.
+ *
+ * @param {object} ctx
+ * @param {object} handle
+ * @returns {{ok: true, value: unknown}|{ok: false, reason: string}}
+ */
+function marshalValue(ctx, handle) {
+  try {
+    const breach = marshalBudgetBreach(ctx, handle)
+    if (breach) return { ok: false, reason: breach }
+    return { ok: true, value: dumpGuestValue(ctx, handle) }
+  } catch (error) {
+    if (!isHostStackExhaustion(error)) throw error
+    return { ok: false, reason: 'host-stack' }
+  }
+}
+
+/**
+ * The error record used when a thrown value cannot be marshalled.
+ * @param {string} reason
+ * @returns {{name: string, message: string}}
+ */
+function unrepresentableError(reason) {
+  return { name: 'Error', message: `unrepresentable error value (${reason})` }
+}
+
+/**
+ * Walk a guest value graph under a depth and *expansion* budget.
+ *
+ * `ctx.dump()` costs one path per reference, so the interesting quantity is not
+ * the number of distinct objects but how many times the graph is expanded. A
+ * flat 1000-element array is linear and must stay representable; a
+ * shared-reference DAG (`a = [a, a]`) contains few distinct objects but
+ * exponentially many paths. Shared references are therefore detected by
+ * identity (`ctx.eq`) and reported immediately, and only otherwise does the
+ * total visit count act as the backstop. Promise states are part of the graph:
+ * a settlement value/error is walked under the same budget instead of being
+ * handed straight to `ctx.dump()`.
+ *
+ * Only containers are traversed and every handle created here is released, so
+ * the walk itself cannot exhaust the host stack.
+ *
+ * @param {object} ctx
+ * @param {object} root
+ * @returns {'depth'|'entries'|null} the breached budget, or null when within it
+ */
+function marshalBudgetBreach(ctx, root) {
+  const stack = [{ handle: root, depth: 0, owned: false, retained: false }]
+  /** Handles kept alive for identity comparison, plus their ownership. */
+  const retained = []
+  let visits = 1
+  let probes = 0
+  let reason = null
+
+  /**
+   * @param {object} handle
+   * @returns {boolean} true when an equal container was already expanded
+   */
+  const isShared = (handle) => {
+    if (typeof ctx.eq !== 'function') return false
+    for (const seen of retained) {
+      if (probes >= MARSHAL_MAX_IDENTITY_PROBES) return false
+      probes += 1
+      let same = false
+      try {
+        same = ctx.eq(seen.handle, handle) === true
+      } catch {
+        return false
+      }
+      if (same) return true
+    }
+    return false
+  }
+
+  try {
+    while (stack.length > 0 && !reason) {
+      const node = stack.pop()
+      try {
+        if (ctx.typeof(node.handle) !== 'object') continue
+        if (node.depth >= MARSHAL_MAX_DEPTH) {
+          reason = 'depth'
+          continue
+        }
+        // A promise's settlement state is inline in the dump; its own
+        // properties are engine bookkeeping, so walk the result instead.
+        const state = promiseState(ctx, node.handle)
+        if (state) {
+          if (state.type === 'pending') continue
+          if (state.type !== 'fulfilled' && state.type !== 'rejected') continue
+          visits += 1
+          if (visits > MARSHAL_MAX_VISITS) {
+            reason = 'entries'
+            disposeHandle(state[state.type === 'fulfilled' ? 'value' : 'error'])
+            continue
+          }
+          stack.push({
+            handle: state[state.type === 'fulfilled' ? 'value' : 'error'],
+            depth: node.depth + 1,
+            owned: true,
+            retained: false,
+          })
+          continue
+        }
+        if (isShared(node.handle)) {
+          reason = 'entries'
+          continue
+        }
+        // Keep one live handle per expanded container so later paths can be
+        // compared against it. Retained handles outlive their stack entry.
+        retained.push(node)
+        node.retained = true
+        let names
+        try {
+          names = ctx.getOwnPropertyNames(node.handle)
+        } catch {
+          continue
+        }
+        if (names.error) {
+          disposeHandle(names.error)
+          continue
+        }
+        try {
+          for (const key of names.value) {
+            if (visits >= MARSHAL_MAX_VISITS) {
+              reason = 'entries'
+              break
+            }
+            try {
+              stack.push({
+                handle: ctx.getProp(node.handle, key),
+                depth: node.depth + 1,
+                owned: true,
+                retained: false,
+              })
+              visits += 1
+            } catch {
+              /* unreadable property */
+            }
+          }
+        } finally {
+          disposeHandle(names.value)
+        }
+      } finally {
+        if (node.owned && !node.retained) disposeHandle(node.handle)
+      }
+    }
+  } catch {
+    return null
+  } finally {
+    for (const node of stack) {
+      if (node.owned && !node.retained) disposeHandle(node.handle)
+    }
+    for (const node of retained) {
+      if (node.owned) disposeHandle(node.handle)
+    }
+  }
+  return reason
+}
+
+/**
+ * Read a promise's settlement state without re-entering the dump path.
+ *
+ * Minimal contexts (unit callers, fakes) expose no promise probe; they keep the
+ * old behaviour of treating every handle as an ordinary value. The returned
+ * `value`/`error` handle for a settled promise is owned by the caller.
+ *
+ * @param {object} ctx
+ * @param {object} handle
+ * @returns {object|null} promise state, or null for non-promises / no probe
+ */
+function promiseState(ctx, handle) {
+  if (typeof ctx.getPromiseState !== 'function') return null
+  try {
+    const state = ctx.getPromiseState(handle)
+    if (!state || state.notAPromise === true) return null
+    return state
+  } catch {
+    return null
+  }
+}
+
 
 function safeProp(ctx, target, key) {
   try {
