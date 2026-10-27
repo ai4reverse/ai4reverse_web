@@ -733,3 +733,63 @@ Also confirmed at `c341f28`:
   Markdown pass table differed on `durationMs`. This wave classifies that as P1,
   not a new P0; it is consistent with the §11 admission that P0-12's gate checks
   only the provisional marker.
+
+## 14. 2026-10-23 acceptance wave (closed 2026-10-28)
+
+This addendum is appended, not a rewrite: §§1–13 stand as the historical record.
+It records an independent wave of 21 read-only reviewers covering the twelve
+`tools/` subsystems plus cross-cutting behaviour at base commit `23f9e6b`
+(Node.js v24.19.0; full suite 1136/1136, P0 gate 17/17), and the fix wave that
+closed its findings on 2026-10-28.
+
+**Verdict at `23f9e6b` before fixes: REJECT.** Two P0 classes, two correctness
+rejections and two declaration lies were reproduced by the integrator. Nothing
+below is claimed fixed on the strength of a green suite alone: every fixed class
+carries a regression test that was demonstrated red on the pre-fix tree.
+
+| Id | Severity | Confirmed defect at `23f9e6b` | Disposition |
+| --- | --- | --- | --- |
+| C1 | CRITICAL | `new Blob({ length: 5e6 })` walked a guest-supplied length inside one host callback, outside every engine budget; +1.25 GB host RSS measured. | **Fixed** (`env/blob.js`): `MAX_BLOB_PARTS` 65 536 and `MAX_BLOB_BYTES` 16 MiB; exceeding either throws `RangeError`. Regression: "a forged array-like initializer is refused instead of walked". |
+| C2 | CRITICAL | `new URLSearchParams({ length: 5e6 })` had the same shape. | **Fixed** (`env/url.js`): `MAX_PARAM_ENTRIES` 8 192. Same regression. |
+| H1 | HIGH | `AudioBuffer` was uncapped; `getChannelData` synthesised one host number per frame (+410 MB measured). | **Fixed** (`env/canvas.js`): `MAX_AUDIO_BUFFER_BYTES` 16 MiB, checked in both the `AudioBuffer` constructor and `createBuffer`. Regression: "an AudioBuffer whose channel data would exceed the sample budget is refused". |
+| H2 | HIGH | `crypto.subtle` key material was a permanent host allocation with no bound (+372 MB measured). | **Fixed** (`env/crypto.js`): `MAX_KEYS` 512 and `MAX_KEY_BYTES` 512, both reported as `QuotaExceededError`. Regression: "the host key store is bounded by per-key material and by key count". |
+| R1 | REJECT | The constraint solver answered `proved: true, always-false, exact: true` for `((a ?? b) + 1) === 3`: `??` returned a boolean leaf in value context. | **Fixed** (`constraint/translate.js`): `logical()` passes `expected` to `soft()` and loses exactness instead of borrowing boolean exactness. Regression: "nullish coalescing in value position stays an uninterpreted value". |
+| R2 | REJECT | `jsfuck` folded reads of a shadowed `NaN`/`Infinity`/`undefined`: `var NaN = 'hello'; NaN + []` restored to `'NaN'`. | **Fixed** (`restore/passes/jsfuck.js`): `referencesShadowedGlobal` runs on the source expression before evaluation. Regression: "jsfuck never folds an expression that reads a shadowed NaN or Infinity". |
+| H3 | HIGH | Declarations named members the runtime did not have: `SeededRandom.bool` and `HandleBag.size`. | **Fixed**: `bool` removed, `HandleBag.size` implemented. The new drift gate then found the inverse lie — `hex`, `uuid` and `bytes` existed but were undeclared — and they are now declared. Regressions: "SeededRandom declares only the members createSeededRandom returns", "HandleBag reports the size the declarations promise". |
+
+The shared root cause of C1/C2/H1/H2 is worth stating once, because new
+environment surfaces keep being written in the same shape: **a guest number used
+as a host loop bound or allocation size is invisible to `memoryBytes` and to the
+interrupt deadline**, because the interrupt only fires between guest bytecode
+instructions. Any surface that walks guest data must carry its own host-side
+constant. The caps are now recorded in `SECURITY-MODEL.md` under "Host-side work
+driven by guest data".
+
+### Gates (2026-10-28)
+
+1. `node --test --test-concurrency=1 tests/*.test.js` → **1143 tests, 1143 pass,
+   0 fail** (174 s), up from 1136 at `23f9e6b`; the seven added tests are the
+   regressions above.
+2. `pnpm test:types` (strict NodeNext consumer compile) → pass.
+3. Each fixed class was demonstrated red before its fix: `constructed` instead
+   of `RangeError`, `proved: true` for the nullish predicate, the restored string
+   `'NaN'`, and an undefined `HandleBag.size`.
+
+### Accepted, not closed by this wave
+
+- The systemic findings remain accepted technical debt, unchanged from the
+  wave's report: ~25 facade-bypassing deep imports, 14 source files over the
+  800-line ceiling, three divergent Markdown escapers, the dead exports
+  `walkAst`/`withHandles`, and `CONTRACTS.md` still describing `stringTable` and
+  `numericEncryption`, which were never implemented.
+- `crypto.subtle.generateKey` is installed twice in `env/crypto.js`; the second
+  install always rejects with `NotSupportedError`, so the first implementation
+  is unreachable. Recorded rather than removed: choosing which of the two
+  answers is a behaviour decision, not a fix. The unreachable path now bounds
+  the requested key length before allocating, so it carries the same cap if it
+  ever becomes live again.
+
+### Clean accepts
+
+`taint` and `examples/national-sdk` were accepted without findings: the SDK
+bundle is byte-reproducible per seed and polymorphic across seeds.
