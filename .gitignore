@@ -4,8 +4,10 @@ node_modules/
 
 # Agent and tooling state
 .pi/
-.mcp.json
-
+.serena/
+.mimir/
+.claude/memory.jsonl
+.mimir
 # Logs
 *.log
 logs/
