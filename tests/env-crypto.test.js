@@ -358,3 +358,37 @@ test('the crypto module installs standalone on a bare harness', async () => {
     harness.dispose()
   }
 })
+
+test('the host key store is bounded by per-key material and by key count', async () => {
+  // The key material lives on the host and is addressed by a hidden symbol, so
+  // every `importKey` was a permanent host allocation. A guest loop could grow
+  // it by +372 MB; the cap is host-side and constant.
+  const harness = await cryptoHarness()
+  try {
+    const oversized = runGuest(
+      harness,
+      `(function () {
+        try {
+          crypto.subtle.importKey('raw', new Uint8Array(1024), 'AES-GCM', false, ['decrypt']);
+          return 'no-throw';
+        } catch (error) { return error.name; }
+      })()`,
+    )
+    assert.equal(oversized, 'QuotaExceededError', 'raw material beyond the per-key cap must be refused')
+
+    const exhausted = runGuest(
+      harness,
+      `(function () {
+        try {
+          for (var index = 0; index < 600; index += 1) {
+            crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', false, ['decrypt']);
+          }
+          return 'no-throw';
+        } catch (error) { return error.name; }
+      })()`,
+    )
+    assert.equal(exhausted, 'QuotaExceededError', 'the key store must stop accepting keys at its cap')
+  } finally {
+    harness.dispose()
+  }
+})

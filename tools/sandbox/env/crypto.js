@@ -18,6 +18,15 @@ const HASH_ALGORITHMS = new Map([
   ['SHA-512', 'sha512'],
 ])
 
+/**
+ * Host-side key material is a permanent allocation per `importKey`, addressed
+ * by a hidden symbol the guest cannot reach. A guest loop could grow it by
+ * +372 MB; the caps are host-side and constant.
+ */
+const MAX_KEYS = 512
+/** Largest raw material one key may hold (AES keys are 16–32 bytes). */
+const MAX_KEY_BYTES = 512
+
 export function install(bridge) {
   const { ctx, profile } = bridge
   const rng = createSeededRandom(`${profile.seed}::crypto`)
@@ -100,6 +109,12 @@ export function install(bridge) {
   }
   const readBytesFrom = (handle) => readBytes(ctx, handle)
   const makeKey = (bytes, algorithm, extractable, usages) => {
+    if (bytes.length > MAX_KEY_BYTES) {
+      throw Object.assign(new Error(`Key material is limited to ${MAX_KEY_BYTES} bytes`), { name: 'QuotaExceededError' })
+    }
+    if (keyStore.size >= MAX_KEYS) {
+      throw Object.assign(new Error(`The key store is limited to ${MAX_KEYS} keys`), { name: 'QuotaExceededError' })
+    }
     nextKeyId += 1
     const keyId = nextKeyId
     keyStore.set(keyId, { bytes: new Uint8Array(bytes), algorithm, extractable, usages })
@@ -176,6 +191,12 @@ export function install(bridge) {
     const algorithm = bridge.value(args, 0) ?? {}
     const name = algorithmName(algorithm)
     const length = Number(algorithm.length ?? 256)
+    // The requested length is guest data used as an allocation size before
+    // `makeKey` can inspect it; bound it here too, so this path stays safe if
+    // it ever becomes the live `generateKey` again.
+    if (!Number.isFinite(length) || length <= 0 || length / 8 > MAX_KEY_BYTES) {
+      throw Object.assign(new Error(`Key length is limited to ${MAX_KEY_BYTES * 8} bits`), { name: 'QuotaExceededError' })
+    }
     const key = makeKey(rng.bytes(length / 8), name, Boolean(bridge.value(args, 1)), bridge.list(args[2]))
     const deferred = bridge.deferred()
     deferred.resolve(key)
