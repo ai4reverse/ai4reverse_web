@@ -1711,7 +1711,9 @@ export interface SeededRandom {
   next(): number
   int(min: number, max: number): number
   pick<T>(items: T[]): T
-  bool(probability?: number): boolean
+  hex(length: number): string
+  uuid(): string
+  bytes(length: number): Uint8Array
   [key: string]: unknown
 }
 

@@ -453,3 +453,24 @@ test('the root run() declaration accepts a caller-owned sandbox', async () => {
   assert.match(body, /SandboxRunOptions/, 'RunOptions must reuse the per-run options')
   assert.match(body, /\bsandbox\?: TracelessSandbox/, 'root run() must accept a caller-owned sandbox')
 })
+
+test('SeededRandom declares only the members createSeededRandom returns', async () => {
+  const { createSeededRandom } = await import('../tools/util/index.js')
+  const random = createSeededRandom(7)
+  const body = interfaceBody(await readTypes('ai4reverse.d.ts'), 'SeededRandom')
+
+  for (const name of Object.keys(random)) {
+    assert.match(body, new RegExp(`\\b${name}(<[^>]*>)?\\(`), `SeededRandom must declare ${name}`)
+  }
+  assert.doesNotMatch(body, /\bbool\(/, 'SeededRandom must not declare the phantom bool')
+})
+
+test('HandleBag reports the size the declarations promise', async () => {
+  const { HandleBag } = await import('../tools/util/index.js')
+  const bag = new HandleBag()
+  assert.equal(bag.size, 0, 'a fresh bag holds no handles')
+  bag.add({ dispose() {} })
+  assert.equal(bag.size, 1, 'HandleBag.size must count the tracked handles')
+  bag.dispose()
+  assert.equal(bag.size, 0, 'a disposed bag holds no handles')
+})

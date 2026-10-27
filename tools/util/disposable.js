@@ -32,6 +32,11 @@ export class HandleBag {
     this.disposed = false
   }
 
+  /** Number of handles the bag still owns. */
+  get size() {
+    return this.handles.length
+  }
+
   /**
    * Track a handle; returns it unchanged for fluent use.
    * @template {{dispose: () => void}} H
