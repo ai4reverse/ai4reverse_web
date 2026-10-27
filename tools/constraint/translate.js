@@ -752,6 +752,12 @@ export function createTranslator(api, context, options = {}) {
    */
   function logical(node, scope, expected, state, depth) {
     if (node.operator === '??') {
+      // `??` is not modelled. A BOOL leaf claims `exact: true`, which turned
+      // `((a ?? b) + 1) === 3` into a proved `always-false`; a value-context
+      // operand must lose exactness instead of borrowing boolean exactness.
+      if (isValueContext(expected)) {
+        return soft(node, expected, state, 'nullish coalescing is not modelled')
+      }
       return soft(node, BOOL, state, 'nullish coalescing is not modelled')
     }
     const leftValue = translateInner(node.left, scope, 'any', state, depth + 1)

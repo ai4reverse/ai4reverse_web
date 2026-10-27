@@ -386,3 +386,12 @@ test('invalid limits are ignored instead of disabling a bound', () => {
 test('an invalid expression is a typed syntax error, not a generic failure', () => {
   assert.throws(() => parseExpression('x +'), ConstraintSyntaxError)
 })
+
+test('nullish coalescing in value position stays an uninterpreted value', async () => {
+  // `a ?? b` is not modelled. Answering with a BOOL leaf made the translator
+  // report `((a ?? b) + 1) === 3` as `proved: true, always-false` — a wrong
+  // proof, not a gap. A value-context operand must lose exactness instead.
+  const proof = await provePredicate('((a ?? b) + 1) === 3')
+  assert.equal(proof.proved, false, JSON.stringify(proof))
+  assert.notEqual(proof.status, 'always-false', JSON.stringify(proof))
+})
