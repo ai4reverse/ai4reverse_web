@@ -1183,6 +1183,26 @@ test('AudioBuffer and AudioParam reject invalid construction and values', async 
   }
 })
 
+test('an AudioBuffer whose channel data would exceed the sample budget is refused', async () => {
+  // `getChannelData` synthesises one host number per frame; a guest-chosen
+  // length used to allocate +410 MB from a single construction call.
+  const harness = await createCanvasHarness()
+  try {
+    const name = runGuest(
+      harness,
+      `(function () {
+        try {
+          new AudioBuffer({ numberOfChannels: 2, length: 4000000, sampleRate: 44100 });
+          return 'constructed';
+        } catch (error) { return error.name; }
+      })()`,
+    )
+    assert.equal(name, 'RangeError')
+  } finally {
+    harness.dispose()
+  }
+})
+
 test('FontFace and document.fonts expose the profile font set', async () => {
   const harness = await createCanvasHarness()
   try {

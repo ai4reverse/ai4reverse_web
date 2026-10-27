@@ -44,6 +44,14 @@ const OP_TEXT_LIMIT = 64
 /** `getImageData` refuses allocations larger than a browser-style guard. */
 const MAX_IMAGE_DATA_BYTES = 4 * 1024 * 1024
 /**
+ * Largest sample payload an `AudioBuffer` may describe.
+ *
+ * `getChannelData` synthesises one host number per frame, so a guest-chosen
+ * length was +410 MB of host memory the engine never sees and `memoryBytes`
+ * cannot bound.
+ */
+const MAX_AUDIO_BUFFER_BYTES = 16 * 1024 * 1024
+/**
  * Largest pixel buffer `new ImageData(w, h)` may allocate.
  *
  * Unlike `getImageData`, whose payload is the fingerprint, this buffer is host
@@ -2027,10 +2035,22 @@ export function install(bridge) {
     return node
   }
 
+  /**
+   * Refuse a buffer whose synthesised channel data would exceed the budget.
+   * @param {number} channels
+   * @param {number} frames
+   */
+  const assertAudioBufferFits = (channels, frames) => {
+    if (!Number.isFinite(channels) || !Number.isFinite(frames) || channels * frames * 4 > MAX_AUDIO_BUFFER_BYTES) {
+      throw new RangeError('The number of frames and channels is too large for an AudioBuffer')
+    }
+  }
+
   const createAudioBuffer = (numberOfChannels, length, sampleRate, noise) => {
     const channels = Math.max(1, Math.trunc(numberOfChannels) || 1)
     const frames = Math.trunc(length)
     if (!Number.isFinite(frames) || frames <= 0) throw notSupported('The number of frames provided is zero or negative')
+    assertAudioBufferFits(channels, frames)
     const rate = Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : profile.audio.sampleRate
     const buffer = createInstance(AudioBufferCtor)
     attachState(buffer, {
@@ -2610,11 +2630,14 @@ export function install(bridge) {
       if (!options || typeof options !== 'object') {
         throw new TypeError("Failed to construct 'AudioBuffer': 1 argument required, but only 0 present.")
       }
+      const numberOfChannels = Math.max(1, Math.trunc(optionNumber(options, 'numberOfChannels', 1)) || 1)
+      const length = Math.max(1, Math.trunc(optionNumber(options, 'length', 1)) || 1)
+      assertAudioBufferFits(numberOfChannels, length)
       attachState(args[0], {
         id: nextStateId++,
         group: 'audio-buffer',
-        numberOfChannels: Math.max(1, Math.trunc(optionNumber(options, 'numberOfChannels', 1)) || 1),
-        length: Math.max(1, Math.trunc(optionNumber(options, 'length', 1)) || 1),
+        numberOfChannels,
+        length,
         sampleRate: optionNumber(options, 'sampleRate', profile.audio.sampleRate),
         noise: audioNoise,
         channels: new Map(),
