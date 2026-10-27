@@ -328,6 +328,12 @@ export function run(ast, context) {
       if (path.parentPath?.isTaggedTemplateExpression() && path.key === 'quasi') return
       if (isMutationTarget(path)) return
       if (isDirectiveSlot(path)) return
+      // `undefined`, `NaN` and `Infinity` are ordinary bindings: evaluating an
+      // expression that reads a shadowed one folds against global semantics,
+      // and the resulting literal can carry no identifier for the replacement
+      // check below to catch (`var NaN = 'x'; NaN + []` folds to the string
+      // 'NaN').
+      if (referencesShadowedGlobal(t, path.node, path.scope)) return
       const value = evaluate(t, path.node)
       if (value === UNEVALUABLE) return
       const replacement = literalNode(t, value)

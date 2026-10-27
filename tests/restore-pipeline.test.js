@@ -184,6 +184,15 @@ test('with-scope folds are refused', () => {
   assert.equal(execute(result.code).join(''), 'fake')
 })
 
+test('jsfuck never folds an expression that reads a shadowed NaN or Infinity', () => {
+  // `NaN`, `Infinity` and `undefined` are ordinary bindings: folding `NaN + []`
+  // to the string 'NaN' changes what a program that re-declares the name prints.
+  const source = "var NaN = 'hello'; console.log(NaN + [])"
+  const result = restoreWithPass('jsfuck', source)
+  assert.equal(result.passes[0].error ?? null, null)
+  assert.equal(execute(result.code).join(''), 'hello')
+})
+
 test('jsfuck leaves assignment targets alone and still folds siblings', () => {
   const result = restoreWithPass('jsfuck', "[1,2,3][0] = 9; console.log(![] + [])")
   assert.equal(result.passes[0].error ?? null, null)
