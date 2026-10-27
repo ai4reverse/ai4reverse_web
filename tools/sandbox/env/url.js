@@ -16,6 +16,13 @@ import { createKit } from './platform-kit.js'
 export const meta = { id: 'url', order: 88, requires: ['globals'] }
 
 /**
+ * Largest entry list a guest-supplied `URLSearchParams` initializer may
+ * describe. The length is guest data walked inside one host callback, where the
+ * QuickJS interrupt handler cannot fire; the cap is host-side and constant.
+ */
+const MAX_PARAM_ENTRIES = 8192
+
+/**
  * Install the URL surface.
  * @param {object} bridge host bridge
  */
@@ -53,6 +60,9 @@ function installUrlSearchParams(bridge, kit) {
       const length = ctx.typeof(lengthValue) === 'number' ? ctx.getNumber(lengthValue) : -1
       lengthValue.dispose()
       if (length >= 0) {
+        if (length > MAX_PARAM_ENTRIES) {
+          throw new RangeError(`The URLSearchParams initializer is limited to ${MAX_PARAM_ENTRIES} entries`)
+        }
         const params = new URLSearchParams()
         for (let i = 0; i < length; i += 1) {
           const item = ctx.getProp(source, i)

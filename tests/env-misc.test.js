@@ -186,6 +186,25 @@ test('URLSearchParams supports query operations and iteration', () => {
   )
 })
 
+test('a forged array-like initializer is refused instead of walked', () => {
+  // A guest-supplied `length` used to drive a host `for` loop inside one bridge
+  // callback, where no QuickJS interrupt can fire: `{ length: 5e6 }` cost
+  // 1.25 GB of host RSS before returning. The cap is host-side and constant.
+  for (const source of [
+    'new URLSearchParams({ length: 200000 })',
+    'new Blob({ length: 200000 })',
+  ]) {
+    assert.equal(
+      guest(
+        chromium,
+        `(function () { try { ${source}; return 'constructed'; } catch (error) { return error.name; } })()`,
+      ),
+      'RangeError',
+      `${source} must be refused by the host-side cap`,
+    )
+  }
+})
+
 test('Blob and File expose real bytes and metadata', () => {
   assert.deepEqual(
     guest(

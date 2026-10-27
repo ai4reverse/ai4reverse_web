@@ -18,6 +18,17 @@ import { createTextBuilder } from './encoding.js'
 export const meta = { id: 'blob', order: 92, requires: ['globals'] }
 
 /**
+ * Largest part list a guest-supplied array-like may describe.
+ *
+ * The length is guest data walked inside one host callback, where the QuickJS
+ * interrupt handler cannot fire: `new Blob({ length: 5e6 })` cost 1.25 GB of
+ * host RSS before returning. The cap is host-side and constant.
+ */
+const MAX_BLOB_PARTS = 65536
+/** Largest aggregate payload one `new Blob(parts)` may assemble. */
+const MAX_BLOB_BYTES = 16 * 1024 * 1024
+
+/**
  * Install the Blob family.
  * @param {object} bridge host bridge
  */
@@ -84,13 +95,21 @@ function readBlobBytes(bridge, kit, source) {
   const length = ctx.typeof(lengthValue) === 'number' ? ctx.getNumber(lengthValue) : -1
   lengthValue.dispose()
   if (length < 0) return bytesOf(source)
+  if (length > MAX_BLOB_PARTS) {
+    throw new RangeError(`The Blob part list is limited to ${MAX_BLOB_PARTS} entries`)
+  }
   const chunks = []
+  let total = 0
   for (let i = 0; i < length; i += 1) {
     const part = ctx.getProp(source, i)
-    chunks.push(bytesOf(part))
+    const chunk = bytesOf(part)
     part.dispose()
+    total += chunk.byteLength
+    if (total > MAX_BLOB_BYTES) {
+      throw new RangeError(`The Blob payload is limited to ${MAX_BLOB_BYTES} bytes`)
+    }
+    chunks.push(chunk)
   }
-  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
   const bytes = new Uint8Array(total)
   let offset = 0
   for (const chunk of chunks) {
