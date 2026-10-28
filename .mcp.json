@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "mcpServers": {
+    "codebase-memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "codebase-memory-mcp@0.12.1"
+      ]
+    },
+    "serena": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena@fe17776f5d8995b5957ccb16a72410e7c92a8da9",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "claude-code",
+        "--language-backend",
+        "LSP",
+        "--agent-interface",
+        "tools",
+        "--project-from-cwd",
+        "--enable-web-dashboard",
+        "false",
+        "--enable-gui-log-window",
+        "false",
+        "--open-web-dashboard",
+        "false"
+      ]
+    },
+    "semble": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "semble[mcp]==0.7.0",
+        "semble"
+      ],
+      "env": {
+        "HF_ENDPOINT": "https://hf-mirror.com"
+      }
+    },
+    "open-ontologies": {
+      "type": "stdio",
+      "command": "open-ontologies",
+      "args": ["serve"]
+    },
+    "mimir-ontology": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "mimir-ontology==0.3.2",
+        "mimir",
+        "serve-mcp",
+        "--dir",
+        ".mimir"
+      ]
+    },
+    "memory": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "MEMORY_FILE_PATH=\"$PWD/.claude/memory.jsonl\" exec npx -y @modelcontextprotocol/server-memory@2.0.0"
+      ]
+    }
+  }
+}
