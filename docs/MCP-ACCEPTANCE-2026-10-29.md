@@ -29,7 +29,7 @@ the same servers over stdio/CLI instead; that is noted where it matters.
 |---|---|---|
 | `codebase-memory` | **CONDITIONAL PASS** | Strong on the indexed zone, but eight documented silent-failure shapes; usable only with a coverage check before every conclusion. |
 | `serena` | **CONDITIONAL PASS (structure only)** | The only server that can see the untracked `src/tiktok` pipeline — but its reference tool returns `{}` for symbols with 19 real references. |
-| `semble` | **FAIL (as a decision instrument)** | Cannot represent "no results": a nonsense query returns five confident paths. |
+| `semble` | **FAIL** | Cannot start in this environment (cold start + proxy); when it does start, it cannot represent "no results" — a nonsense query returns five confident paths. |
 | `memory` | **DEMOTE** | No fact/hypothesis status, substring-only search, ~70–80 % redundant with existing docs. |
 | `mimir-ontology` | **PASS (narrow)** | The only store that preserves `verified: false`; useful for claim auditing, not code understanding. |
 | `open-ontologies` | **REMOVE** | Zero RDF/OWL/SPARQL in the repository; 119 tools of context for a capability nothing produces or consumes. |
@@ -179,10 +179,13 @@ false positives).
 
 ## 5. `semble` — FAIL (as a decision instrument)
 
-The dedicated probe failed before delivering: the `uvx` cold start did not complete in
-the time box and the retry hit a 502. The findings below come from the red team's direct
-CLI runs against the same package, and are consistent with the known instrument
-behaviour.
+The dedicated probe could **not start at all** in this session: `mcp__semble__*` never
+appeared in ToolSearch; reproducing the configured command failed at cold start (uv
+cache and tool dirs not writable under the sandbox); with the dirs redirected to
+`$TMPDIR`, the PyPI resolve was proxy-throttled to ~40 s per uncached index page and the
+~57-package graph never completed across four attempts (13:21, 13:32, 13:39, 13:45).
+**That is a hard availability finding, not a probe accident.** The behaviour findings
+below come from the red team's direct CLI runs, where the server did start.
 
 **Absence is unrepresentable.** [V]
 
@@ -200,6 +203,15 @@ concept.
 
 **Verdict:** keep as a *discovery* aid when names are unknown and a human will read the
 hits; do not use it as evidence of absence, and do not let it into an automated gate.
+
+**Index scope — source audit, [A], not empirically verified.** `semble` 0.7.0's
+`index/file_walker.py` honours only the repository-local `.gitignore` and
+`.sembleignore` plus a default denylist; it does **not** read `~/.gitignore_global` and
+does **not** use `git ls-files`. If that holds, semble — like `serena`, and unlike
+`codebase-memory` — would *see* `src/tiktok/scripts/`, because the numbered stages are
+hidden only by the machine-global rule. Default content types are `CODE` only, so
+`.md`/`.json` need `content="all"`. Verify this on any host where the cold start
+completes; it would be a second route into the blind spot.
 
 ---
 
@@ -481,8 +493,12 @@ failure modes into loud ones.
 
 ## 15. Not verified
 
-- The dedicated `semble` probe never delivered (cold-start timeout, then a 502 on
-  retry). §5 is from the red team's CLI runs only.
+- `semble` could not start in this session at all (cold start, then proxy throughput);
+  §5's behaviour findings are from the red team's CLI runs, where it did start. The
+  availability failure is itself a finding.
+- Every project MCP server disconnected mid-session in the lead session as well (reported
+  by the harness after a plugin reload). A session-wide MCP outage is a real operating
+  condition, not a probe artifact — retries must distinguish it from a broken server.
 - `codebase-memory` and `serena` probes in two subagent sessions could not see the MCP
   tools and drove the servers over CLI/stdio. Answers are the real implementations; the
   *transport* differs.
