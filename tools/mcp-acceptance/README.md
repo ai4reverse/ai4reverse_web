@@ -69,6 +69,14 @@ looks like.
   `C.create(` in the same file), not by type inference. A PASS is therefore
   strong; a FAIL is conservative.
 
+## Untrusted input
+
+`--gold` is a file a caller can supply, so its contents are treated as untrusted:
+every `symbol` must match `/^[A-Za-z_$][A-Za-z0-9_$]*$/` and is rejected
+otherwise, and `rg` is always invoked with `-e <symbol>` so a symbol can never be
+parsed as an option. Without that binding, a gold file containing
+`--pre=<command>` would be arbitrary command execution through `rg`.
+
 ## Known limits
 
 - The gold corpus is restricted to `tools/` and `src/` on purpose: excluded

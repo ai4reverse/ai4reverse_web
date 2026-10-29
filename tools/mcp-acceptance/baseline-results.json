@@ -1,6 +1,6 @@
 {
   "repo": "/Users/payne/Projects/ai4reverse_web",
-  "generatedAt": "2026-10-29T14:08:23.064Z",
+  "generatedAt": "2026-10-29T14:20:38.678Z",
   "gold": 42,
   "adapters": {
     "rg": {
@@ -14,7 +14,7 @@
             "high": 1
           },
           "meanRecall": 1,
-          "mrr": 1,
+          "mrr": null,
           "falseEmpty": {
             "p": 0,
             "low": 0,
@@ -31,7 +31,7 @@
             "high": 1
           },
           "meanRecall": 1,
-          "mrr": 1,
+          "mrr": null,
           "falseEmpty": {
             "p": 0,
             "low": 0,
@@ -48,7 +48,7 @@
             "high": 1
           },
           "meanRecall": 1,
-          "mrr": 1,
+          "mrr": null,
           "falseEmpty": {
             "p": 0,
             "low": 0,
@@ -258,10 +258,10 @@
   },
   "receiverInvariant": {
     "status": "FAIL",
-    "qualified": "Users-payne-Projects-ai4reverse_web.tools.util.disposable.HandleBag.dispose",
-    "constructorFiles": 12,
-    "attributableSites": 142,
-    "graphCallers": 1,
-    "note": "graph under-reports attributable call sites"
+    "qualified": "Users-payne-Projects-ai4reverse_web.tools.sandbox.sandbox.TracelessSandbox.run",
+    "constructorFiles": 72,
+    "attributableSites": 547,
+    "graphCallers": 0,
+    "note": "graph reported zero callers for a method with attributable call sites"
   }
 }

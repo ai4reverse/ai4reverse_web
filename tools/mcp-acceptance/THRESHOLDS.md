@@ -58,9 +58,9 @@ and no verdict from it may be used.
 | codebase-memory | excluded-subtree | 14 | 7 % [1–31] | 0.03 | **93 % [69–99]** |
 | codebase-memory | gitignore | 14 | 29 % [12–55] | 0.09 | **71 % [45–88]** |
 
-`receiverInvariant`: **FAIL** — `HandleBag.dispose`, declared in a class used by
-12 constructor files with 142 co-located `.dispose(` call sites, resolved to a
-single caller.
+`receiverInvariant`: **FAIL** — `TracelessSandbox.run`, reachable from 72 files
+that construct the class, with 547 co-located `.run(` call sites, resolved to
+**0** callers.
 
 Verdict under the rule above: **G1 pass, G2 fail, G3 fail** → `codebase-memory`
 and `trace_path` are hint sources only; `rg` remains primary; a coverage check is

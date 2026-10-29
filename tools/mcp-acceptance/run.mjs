@@ -21,6 +21,14 @@ import { parseArgs, run, wilson } from './shared.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CBM_FALLBACK = `${process.env.HOME}/.npm/_npx/1a4be6c4de01e972/node_modules/.bin/codebase-memory-mcp`
 
+/**
+ * Symbols come from a gold file that a caller can supply, so they are untrusted
+ * input. Every symbol must be a plain identifier: anything else is refused
+ * rather than passed to `rg`, where a leading `-` would be read as an option
+ * (`--pre` executes a command).
+ */
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/
+
 /** The project key the index server derives from the absolute root path. */
 const projectName = (repo) => repo.replace(/^\//, '').replace(/[\\/]/g, '-')
 
@@ -28,11 +36,12 @@ const projectName = (repo) => repo.replace(/^\//, '').replace(/[\\/]/g, '-')
 const rgAdapter = (repo) => ({
   name: 'rg',
   describe: 'rg --no-ignore (whole disk)',
+  ranked: false,
   query: (symbol) => {
     const result = run('rg', [
       '-l', '-w', '--no-ignore', '--hidden',
-      '--glob', '!node_modules', '--glob', '!.git', '--glob', '!.claude/worktrees',
-      symbol, '--', repo,
+      '--glob', '!node_modules', '--glob', '!.git', '--glob', '!.claude/worktrees/**',
+      '-e', symbol, '--', repo,
     ], { timeout: 60_000 })
     if (!result.ok && result.code !== 1) return { files: [], error: result.stderr.trim() }
     return {
@@ -48,6 +57,7 @@ const cbmAdapter = (repo) => {
   return {
     name: 'codebase-memory',
     describe: 'search_code mode=files over the indexed corpus',
+    ranked: true,
     query: (symbol) => {
       const payload = JSON.stringify({ project, pattern: symbol, mode: 'files', limit: 50 })
       const result = run(binary, ['cli', '--json', 'search_code', payload], { timeout: 120_000 })
@@ -104,7 +114,11 @@ const score = (adapter, items) => {
     n: total,
     foundAny: wilson(foundAny, total),
     meanRecall: total === 0 ? 0 : recallSum / total,
-    mrr: total === 0 ? 0 : reciprocalSum / total,
+    // MRR is only defined for an adapter that returns a ranked list. `rg -l`
+    // emits files in traversal order, which is not stable across runs, so
+    // reporting an MRR for it would make the gate fail its own reproducibility
+    // check for no reason.
+    mrr: adapter.ranked === false ? null : total === 0 ? 0 : reciprocalSum / total,
     falseEmpty: wilson(falseEmpty, total),
     falseEmptyCount: falseEmpty,
     violations,
@@ -157,7 +171,7 @@ const receiverInvariant = (repo, adapter) => {
 
   const classPattern = /(?:^|\n)\s*(?:export\s+)?class\s+([A-Z][A-Za-z0-9_]*)/g
   const methodPattern = /(?:^|\n)\s+(?:static\s+)?(?:async\s+)?#?([a-z][A-Za-z0-9_]*)\s*\(/g
-  const sources = classFiles.stdout.split('\n').filter(Boolean).slice(0, 12).map((file) => {
+  const sources = classFiles.stdout.split('\n').filter(Boolean).sort().slice(0, 12).map((file) => {
     const text = readFileSync(file, 'utf8')
     return {
       file,
@@ -172,12 +186,14 @@ const receiverInvariant = (repo, adapter) => {
   // files that construct the class (`new C(` or `C.create(`). That is
   // auditable by a reader and cannot be inflated by an unrelated object that
   // happens to share the method name.
-  let lastError = null
+  // Collect every qualifying candidate before choosing, so the chosen probe
+  // does not depend on the order `rg -l` happens to emit files in.
+  const candidates = []
   for (const source of sources) {
     for (const owner of source.owners) {
       const constructors = run('rg', ['-l', '--no-ignore', '--hidden', ...globs, ...sourceGlobs,
         `\\bnew ${owner}\\(|\\b${owner}\\.create\\(`, repo], { timeout: 60_000 })
-      const files = constructors.stdout.split('\n').filter(Boolean)
+      const files = constructors.stdout.split('\n').filter(Boolean).sort()
       if (files.length === 0) continue
 
       const tally = new Map()
@@ -203,22 +219,32 @@ const receiverInvariant = (repo, adapter) => {
         .slice(repo.length + 1)
         .replace(/\.[^./]+$/, '')
         .replace(/\//g, '.')
-      const qualified = `${project}.${modulePath}.${owner}.${best.method}`
-      const result = adapter.trace(qualified)
-      if (result.error) {
-        lastError = `${qualified}: ${result.error}`.slice(0, 240)
-        continue
-      }
-      return {
-        status: result.callers >= best.sites ? 'PASS' : 'FAIL',
-        qualified,
+      candidates.push({
+        qualified: `${project}.${modulePath}.${owner}.${best.method}`,
         constructorFiles: files.length,
-        attributableSites: best.sites,
-        graphCallers: result.callers,
-        note: result.callers === 0
-          ? 'graph reported zero callers for a method with attributable call sites'
-          : 'graph under-reports attributable call sites',
-      }
+        sites: best.sites,
+      })
+    }
+  }
+  candidates.sort((left, right) => right.sites - left.sites
+    || left.qualified.localeCompare(right.qualified))
+
+  let lastError = null
+  for (const candidate of candidates.slice(0, 6)) {
+    const result = adapter.trace(candidate.qualified)
+    if (result.error) {
+      lastError = `${candidate.qualified}: ${result.error}`.slice(0, 240)
+      continue
+    }
+    return {
+      status: result.callers >= candidate.sites ? 'PASS' : 'FAIL',
+      qualified: candidate.qualified,
+      constructorFiles: candidate.constructorFiles,
+      attributableSites: candidate.sites,
+      graphCallers: result.callers,
+      note: result.callers === 0
+        ? 'graph reported zero callers for a method with attributable call sites'
+        : 'graph under-reports attributable call sites',
     }
   }
 
@@ -243,7 +269,16 @@ const main = () => {
   const gold = readFileSync(String(args.gold), 'utf8')
     .split('\n')
     .filter(Boolean)
-    .map((line) => JSON.parse(line))
+    .map((line, index) => {
+      const entry = JSON.parse(line)
+      if (typeof entry.symbol !== 'string' || !IDENTIFIER.test(entry.symbol)) {
+        throw new Error(`gold line ${index + 1}: symbol is not a plain identifier: ${JSON.stringify(entry.symbol)}`)
+      }
+      if (!Array.isArray(entry?.oracle?.files)) {
+        throw new Error(`gold line ${index + 1}: missing oracle.files`)
+      }
+      return entry
+    })
 
   const cbm = cbmAdapter(repo)
   const adapters = [rgAdapter(repo), cbm]

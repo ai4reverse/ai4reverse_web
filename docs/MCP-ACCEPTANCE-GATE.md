@@ -19,8 +19,9 @@ disk. Adapter: `codebase-memory search_code` over the indexed corpus.
 | excluded-subtree | 14 | 7 % [1–31] | 0.03 | **93 % [69–99]** |
 | gitignore | 14 | 29 % [12–55] | 0.09 | **71 % [45–88]** |
 
-Receiver invariant: **FAIL** — `HandleBag.dispose`, reachable from 12
-constructor files with 142 co-located call sites, resolves to **1** caller.
+Receiver invariant: **FAIL** — `TracelessSandbox.run`, reachable from 72 files
+that construct the class with 547 co-located call sites, resolves to **0**
+callers.
 
 Fault injection: **DETECTED** — a symbol added and a file removed in a throwaway
 git repo were both reflected within 9 s. The index does follow a working tree;

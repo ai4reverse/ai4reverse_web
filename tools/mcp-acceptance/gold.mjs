@@ -70,7 +70,7 @@ const oracleFor = (repo, symbol) => {
       '--glob', '!node_modules',
       '--glob', '!.git',
       '--glob', '!.claude/worktrees/**',
-      symbol,
+      '-e', symbol,
       '--',
       repo,
     ],
