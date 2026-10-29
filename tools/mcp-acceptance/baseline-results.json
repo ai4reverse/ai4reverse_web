@@ -1,0 +1,267 @@
+{
+  "repo": "/Users/payne/Projects/ai4reverse_web",
+  "generatedAt": "2026-10-29T14:08:23.064Z",
+  "gold": 42,
+  "adapters": {
+    "rg": {
+      "description": "rg --no-ignore (whole disk)",
+      "byStratum": {
+        "indexed": {
+          "n": 14,
+          "foundAny": {
+            "p": 1,
+            "low": 0.7846829880728186,
+            "high": 1
+          },
+          "meanRecall": 1,
+          "mrr": 1,
+          "falseEmpty": {
+            "p": 0,
+            "low": 0,
+            "high": 0.21531701192718142
+          },
+          "falseEmptyCount": 0,
+          "violations": []
+        },
+        "excluded-subtree": {
+          "n": 14,
+          "foundAny": {
+            "p": 1,
+            "low": 0.7846829880728186,
+            "high": 1
+          },
+          "meanRecall": 1,
+          "mrr": 1,
+          "falseEmpty": {
+            "p": 0,
+            "low": 0,
+            "high": 0.21531701192718142
+          },
+          "falseEmptyCount": 0,
+          "violations": []
+        },
+        "gitignore": {
+          "n": 14,
+          "foundAny": {
+            "p": 1,
+            "low": 0.7846829880728186,
+            "high": 1
+          },
+          "meanRecall": 1,
+          "mrr": 1,
+          "falseEmpty": {
+            "p": 0,
+            "low": 0,
+            "high": 0.21531701192718142
+          },
+          "falseEmptyCount": 0,
+          "violations": []
+        }
+      }
+    },
+    "codebase-memory": {
+      "description": "search_code mode=files over the indexed corpus",
+      "byStratum": {
+        "indexed": {
+          "n": 14,
+          "foundAny": {
+            "p": 1,
+            "low": 0.7846829880728186,
+            "high": 1
+          },
+          "meanRecall": 0.3653344671201814,
+          "mrr": 1,
+          "falseEmpty": {
+            "p": 0,
+            "low": 0,
+            "high": 0.21531701192718142
+          },
+          "falseEmptyCount": 0,
+          "violations": []
+        },
+        "excluded-subtree": {
+          "n": 14,
+          "foundAny": {
+            "p": 0.07142857142857142,
+            "low": 0.012721886112291648,
+            "high": 0.3146926955395781
+          },
+          "meanRecall": 0.031746031746031744,
+          "mrr": 0.07142857142857142,
+          "falseEmpty": {
+            "p": 0.9285714285714286,
+            "low": 0.6853073044604219,
+            "high": 0.9872781138877085
+          },
+          "falseEmptyCount": 13,
+          "violations": [
+            {
+              "id": "g-015",
+              "symbol": "clipText",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-016",
+              "symbol": "installWorkers",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-017",
+              "symbol": "installAbort",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-018",
+              "symbol": "installBlob",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-019",
+              "symbol": "pngHeader",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-020",
+              "symbol": "gmtOffsetText",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-021",
+              "symbol": "installFormData",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-022",
+              "symbol": "utcFromFields",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-023",
+              "symbol": "parseProfileLocalString",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-024",
+              "symbol": "installStructuredClone",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-025",
+              "symbol": "installProtoAccessors",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-027",
+              "symbol": "rectOf",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-028",
+              "symbol": "analyserBin",
+              "stratum": "excluded-subtree",
+              "oracleFiles": 3
+            }
+          ]
+        },
+        "gitignore": {
+          "n": 14,
+          "foundAny": {
+            "p": 0.2857142857142857,
+            "low": 0.11721187910109102,
+            "high": 0.546495411724844
+          },
+          "meanRecall": 0.08896103896103895,
+          "mrr": 0.2857142857142857,
+          "falseEmpty": {
+            "p": 0.7142857142857143,
+            "low": 0.4535045882751561,
+            "high": 0.882788120898909
+          },
+          "falseEmptyCount": 10,
+          "violations": [
+            {
+              "id": "g-029",
+              "symbol": "namesMentioned",
+              "stratum": "gitignore",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-030",
+              "symbol": "handlerRebinds",
+              "stratum": "gitignore",
+              "oracleFiles": 2
+            },
+            {
+              "id": "g-031",
+              "symbol": "parseConditional",
+              "stratum": "gitignore",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-035",
+              "symbol": "collectMutatedObject",
+              "stratum": "gitignore",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-037",
+              "symbol": "stripHandlerBookkeeping",
+              "stratum": "gitignore",
+              "oracleFiles": 2
+            },
+            {
+              "id": "g-038",
+              "symbol": "ownDeclarations",
+              "stratum": "gitignore",
+              "oracleFiles": 2
+            },
+            {
+              "id": "g-039",
+              "symbol": "decodePair",
+              "stratum": "gitignore",
+              "oracleFiles": 2
+            },
+            {
+              "id": "g-040",
+              "symbol": "renderInstruction",
+              "stratum": "gitignore",
+              "oracleFiles": 2
+            },
+            {
+              "id": "g-041",
+              "symbol": "collectPatternNames",
+              "stratum": "gitignore",
+              "oracleFiles": 3
+            },
+            {
+              "id": "g-042",
+              "symbol": "collectRebinds",
+              "stratum": "gitignore",
+              "oracleFiles": 3
+            }
+          ]
+        }
+      }
+    }
+  },
+  "receiverInvariant": {
+    "status": "FAIL",
+    "qualified": "Users-payne-Projects-ai4reverse_web.tools.util.disposable.HandleBag.dispose",
+    "constructorFiles": 12,
+    "attributableSites": 142,
+    "graphCallers": 1,
+    "note": "graph under-reports attributable call sites"
+  }
+}
