@@ -159,7 +159,23 @@ add('provenance:live-references', 'claims do not point at deleted files', {
     : { status: 'FAIL', detail: `${dead.length}/${refs.length} references are dead: ${dead.slice(0, 3).join(', ')}` }
 })
 
-// --- 6. baseline consistency -------------------------------------------------
+// --- 6. host execution of untrusted source ----------------------------------
+add('security:host-vm', 'bundle source is never evaluated in the host process', {
+  '2026-10-30': 'src/tiktok/scripts/05-strings.mjs:266 evaluates a slice of the sample with vm.runInContext',
+  fix: 'evaluate the AST statically, or run the slice inside TracelessSandbox',
+}, () => {
+  const direct = join(ROOT, 'src/tiktok/scripts')
+  if (!existsSync(direct)) return { status: 'SKIP', detail: 'pipeline absent in this checkout' }
+  const result = run('rg', ['-n', '--no-ignore', '--hidden',
+    'vm\\.(?:runInContext|runInNewContext|runInThisContext|createScript)\\s*\\(', direct],
+  { timeout: 30_000 })
+  const hits = result.stdout.split('\n').filter(Boolean)
+  return hits.length === 0
+    ? { status: 'PASS', detail: 'no host VM evaluation of bundle source' }
+    : { status: 'FAIL', detail: `${hits.length} site(s), first: ${hits[0].replace(`${ROOT}/`, '')}` }
+})
+
+// --- 7. baseline consistency -------------------------------------------------
 add('thresholds:baseline', 'the committed baseline still satisfies G1', {
   '2026-10-29': 'the gate exists so its verdict cannot drift with the prose',
   fix: 're-run tools/mcp-acceptance/run.mjs and commit the new baseline',
