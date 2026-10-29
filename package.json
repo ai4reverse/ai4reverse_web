@@ -90,6 +90,7 @@
     "restore": "node tools/cli.js restore",
     "run": "node tools/cli.js run",
     "test:watch": "node --test --watch tests/*.test.js",
+    "verify:all": "node tools/mcp-acceptance/ratchet.mjs && node --test --test-concurrency=1 tests/*.test.js",
     "build:sdk": "node examples/national-sdk/build/build-sdk.mjs --seeds 1001-1003",
     "verify:sdk": "node examples/national-sdk/verify.mjs",
     "demo:sdk": "node examples/national-sdk/demo.mjs"
